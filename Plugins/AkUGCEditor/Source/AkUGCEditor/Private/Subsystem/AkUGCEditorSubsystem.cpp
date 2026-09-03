@@ -280,6 +280,65 @@ FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::SetEntityTransforms(
     return Session->Execute(Document, Transaction);
 }
 
+FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::SetEntityProperty(
+    const FGuid& EntityId,
+    FName ComponentTypeId,
+    FName PropertyId,
+    const FAkUGCValue& Value)
+{
+    if (!Session || !PrefabRegistry)
+    {
+        return NoSessionResult();
+    }
+
+    const FAkUGCPrefabDefinition* Prefab = FindPrefabForEntity(EntityId);
+    if (!Prefab)
+    {
+        return FAkUGCCommandExecutionResult::Failure(TEXT("editor.entityId"), TEXT("Entity or prefab definition does not exist."));
+    }
+
+    const FAkUGCPropertyDefinition* Property = Prefab->EditableProperties.FindByPredicate(
+        [ComponentTypeId, PropertyId](const FAkUGCPropertyDefinition& Candidate)
+        {
+            return Candidate.ComponentTypeId == ComponentTypeId && Candidate.PropertyId == PropertyId;
+        });
+    if (!Property)
+    {
+        return FAkUGCCommandExecutionResult::Failure(TEXT("editor.propertyId"), TEXT("Property is not exposed by the prefab schema."));
+    }
+    if (Property->ValueType != Value.Type)
+    {
+        return FAkUGCCommandExecutionResult::Failure(TEXT("editor.propertyValue"), TEXT("Property value type does not match the prefab schema."));
+    }
+
+    const double NumericValue = Value.Type == EAkUGCValueType::Integer
+        ? static_cast<double>(Value.IntegerValue)
+        : Value.NumberValue;
+    if ((Value.Type == EAkUGCValueType::Integer || Value.Type == EAkUGCValueType::Number)
+        && ((Property->bHasMinimum && NumericValue < Property->Minimum)
+            || (Property->bHasMaximum && NumericValue > Property->Maximum)))
+    {
+        return FAkUGCCommandExecutionResult::Failure(TEXT("editor.propertyValue"), TEXT("Property value is outside the allowed range."));
+    }
+
+    FAkUGCCommand Command;
+    Command.CommandId = FGuid::NewGuid();
+    Command.Type = EAkUGCCommandType::SetProperty;
+    Command.SceneId = ActiveSceneId;
+    Command.EntityId = EntityId;
+    Command.ComponentTypeId = ComponentTypeId;
+    Command.PropertyId = PropertyId;
+    Command.PropertyValue = Value;
+
+    FAkUGCCommandTransaction Transaction;
+    Transaction.TransactionId = FGuid::NewGuid();
+    Transaction.Label = FString::Printf(TEXT("Set %s.%s"), *ComponentTypeId.ToString(), *PropertyId.ToString());
+    Transaction.Commands.Add(MoveTemp(Command));
+
+    TGuardValue<bool> ApplyingGuard(bApplyingUGCTransaction, true);
+    return Session->Execute(Document, Transaction);
+}
+
 FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::DeleteSelectedEntity()
 {
     return SelectedEntityId.IsValid()
@@ -337,6 +396,27 @@ bool UAkUGCEditorSubsystem::SelectEntity(const FGuid& EntityId)
 FGuid UAkUGCEditorSubsystem::GetSelectedEntityId() const
 {
     return SelectedEntityId;
+}
+
+const FAkUGCEntityRecord* UAkUGCEditorSubsystem::FindEntity(const FGuid& EntityId) const
+{
+    for (const FAkUGCSceneDocument& Scene : Document.Scenes)
+    {
+        if (const FAkUGCEntityRecord* Entity = Scene.Entities.FindByPredicate([&EntityId](const FAkUGCEntityRecord& Candidate)
+        {
+            return Candidate.EntityId == EntityId;
+        }))
+        {
+            return Entity;
+        }
+    }
+    return nullptr;
+}
+
+const FAkUGCPrefabDefinition* UAkUGCEditorSubsystem::FindPrefabForEntity(const FGuid& EntityId) const
+{
+    const FAkUGCEntityRecord* Entity = FindEntity(EntityId);
+    return Entity && PrefabRegistry ? PrefabRegistry->Find(Entity->PrefabId) : nullptr;
 }
 
 bool UAkUGCEditorSubsystem::HasOpenProject() const

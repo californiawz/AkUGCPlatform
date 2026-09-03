@@ -33,6 +33,11 @@ public:
     FAkUGCCommandExecutionResult DuplicateEntity(const FGuid& SourceEntityId, FGuid& OutEntityId);
     FAkUGCCommandExecutionResult SetEntityTransform(const FGuid& EntityId, const FTransform& Transform);
     FAkUGCCommandExecutionResult SetEntityTransforms(const TMap<FGuid, FTransform>& Transforms, const FString& Label);
+    FAkUGCCommandExecutionResult SetEntityProperty(
+        const FGuid& EntityId,
+        FName ComponentTypeId,
+        FName PropertyId,
+        const FAkUGCValue& Value);
     FAkUGCCommandExecutionResult DeleteSelectedEntity();
     FAkUGCCommandExecutionResult DuplicateSelectedEntity(FGuid& OutEntityId);
     FAkUGCCommandExecutionResult Undo();
@@ -40,6 +45,8 @@ public:
 
     bool SelectEntity(const FGuid& EntityId);
     FGuid GetSelectedEntityId() const;
+    const FAkUGCEntityRecord* FindEntity(const FGuid& EntityId) const;
+    const FAkUGCPrefabDefinition* FindPrefabForEntity(const FGuid& EntityId) const;
     bool HasOpenProject() const;
     bool CanUndo() const;
     bool CanRedo() const;
