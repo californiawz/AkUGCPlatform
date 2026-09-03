@@ -491,6 +491,7 @@ bool FAkUGCSceneRuntime::SpawnEntity(
     }
 
     FActorSpawnParameters SpawnParameters;
+    SpawnParameters.ObjectFlags |= RF_Transient;
     SpawnParameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
     SpawnParameters.Name = MakeUniqueObjectName(
         RuntimeWorld->PersistentLevel,

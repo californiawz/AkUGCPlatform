@@ -19,6 +19,13 @@
 			"Enabled": true
 		},
 		{
+			"Name": "AkUGCEditor",
+			"Enabled": true,
+			"TargetAllowList": [
+				"Editor"
+			]
+		},
+		{
 			"Name": "PythonScriptPlugin",
 			"Enabled": true,
 			"TargetAllowList": [

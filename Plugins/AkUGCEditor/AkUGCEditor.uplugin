@@ -1,0 +1,29 @@
+{
+  "FileVersion": 3,
+  "Version": 1,
+  "VersionName": "0.1.0",
+  "FriendlyName": "Ak UGC Creator Studio",
+  "Description": "Desktop authoring tools for creating and previewing AkUGC projects.",
+  "Category": "UGC",
+  "CreatedBy": "AkStudio",
+  "EnabledByDefault": true,
+  "CanContainContent": false,
+  "IsBetaVersion": true,
+  "Modules": [
+    {
+      "Name": "AkUGCEditor",
+      "Type": "Editor",
+      "LoadingPhase": "Default"
+    }
+  ],
+  "Plugins": [
+    {
+      "Name": "AkUGCCore",
+      "Enabled": true
+    },
+    {
+      "Name": "AkUGCAssetRuntime",
+      "Enabled": true
+    }
+  ]
+}
