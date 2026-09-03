@@ -23,6 +23,8 @@ Plugins/**/Intermediate/
 # Local build output
 BuildOutput/
 OutDir/
+Build/Android/
+Build/*Client/
 
 # OS files
 .DS_Store
