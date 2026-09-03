@@ -1,0 +1,41 @@
+{
+	"FileVersion": 3,
+	"Category": "Games",
+	"Description": "AkStudio UGC creation and runtime platform",
+	"Modules": [
+		{
+			"Name": "AkUGCPlatform",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "AkUGCCore",
+			"Enabled": true
+		},
+		{
+			"Name": "PythonScriptPlugin",
+			"Enabled": true,
+			"TargetAllowList": [
+				"Editor"
+			]
+		},
+		{
+			"Name": "EditorScriptingUtilities",
+			"Enabled": true,
+			"TargetAllowList": [
+				"Editor"
+			]
+		},
+		{
+			"Name": "AndroidFileServer",
+			"Enabled": false
+		},
+		{
+			"Name": "Landmass",
+			"Enabled": false
+		}
+	],
+	"EngineAssociation": "{F0A09192-4D34-0A05-DA81-0B8CE24F0D08}"
+}

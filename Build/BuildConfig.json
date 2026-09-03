@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "defaultProfile": "win64",
+  "defaults": {
+    "engineDir": "${workspace_dir}/UnrealEngine",
+    "projectDir": "${config_dir}/..",
+    "uproject": "${config_dir}/../AkUGCPlatform.uproject",
+    "outputDir": "${workspace_dir}/OutDir/AkUGCPlatform",
+    "projectName": "AkUGCPlatform",
+    "clientTarget": "AkUGCPlatformClient",
+    "serverTarget": "AkUGCPlatformServer",
+    "editorTarget": "AkUGCPlatformEditor",
+    "mode": "game",
+    "targetPlatform": "Win64",
+    "configuration": "Development",
+    "timestampOutput": true,
+    "clean": false,
+    "gitSync": false,
+    "runSetup": false,
+    "generateProjectFiles": false,
+    "compileTools": false,
+    "buildEditor": false,
+    "buildProjectEditor": false,
+    "forceBuildProjectEditor": false,
+    "skipBuild": false,
+    "compileLua": false,
+    "usePak": true,
+    "useIoStore": false,
+    "customPakChunks": false,
+    "restoreProjectConfigAfterBuild": true,
+    "distribution": false,
+    "useLoggingInShipping": false,
+    "zenPort": 8558,
+    "fallbackDDCPath": "${workspace_dir}/DDC",
+    "additionalCookerOptions": [],
+    "extraUatArgs": [],
+    "gameConfig": "GameConfig.json",
+    "packageConfig": "PackageConfig.csv",
+    "chunkConfig": "Chunk.csv"
+  },
+  "profiles": {
+    "win64": {
+      "targetPlatform": "Win64",
+      "configuration": "Development"
+    },
+    "win64-server": {
+      "mode": "server",
+      "targetPlatform": "Win64",
+      "configuration": "Development"
+    },
+    "android": {
+      "targetPlatform": "Android",
+      "cookFlavor": "ASTC",
+      "configuration": "Development"
+    },
+    "shipping-win64": {
+      "targetPlatform": "Win64",
+      "configuration": "Shipping",
+      "distribution": true
+    }
+  }
+}

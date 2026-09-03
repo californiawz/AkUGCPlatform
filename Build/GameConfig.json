@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "description": "AkUGCPlatform Phase 0 build-time INI overrides.",
+  "profiles": {
+    "Base": {
+      "DefaultGame.ini": {
+        "/Script/UnrealEd.ProjectPackagingSettings": {
+          "Build": "IfProjectHasCode",
+          "FullRebuild": "False",
+          "ForDistribution": "False",
+          "IncludeDebugFiles": "False",
+          "UsePakFile": "True",
+          "bUseIoStore": "False",
+          "bUseZenStore": "False",
+          "bGenerateChunks": "False",
+          "bCompressed": "True",
+          "IncludePrerequisites": "True",
+          "IncludeCrashReporter": "False",
+          "bCookAll": "False",
+          "bCookMapsOnly": "False",
+          "bSkipEditorContent": "True",
+          "bSkipMovies": "False"
+        }
+      }
+    },
+    "Development": {
+      "DefaultGame.ini": {
+        "/Script/UnrealEd.ProjectPackagingSettings": {
+          "BuildConfiguration": "PPBC_Development",
+          "ForDistribution": "False",
+          "IncludeDebugFiles": "True"
+        }
+      }
+    },
+    "Shipping": {
+      "DefaultGame.ini": {
+        "/Script/UnrealEd.ProjectPackagingSettings": {
+          "BuildConfiguration": "PPBC_Shipping",
+          "ForDistribution": "True",
+          "IncludeDebugFiles": "False"
+        }
+      }
+    }
+  }
+}

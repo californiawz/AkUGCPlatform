@@ -1,0 +1,19 @@
+{
+  "FileVersion": 3,
+  "Version": 1,
+  "VersionName": "0.1.0",
+  "FriendlyName": "Ak UGC Core",
+  "Description": "Shared IDs, manifests, schemas, and version contracts for AkUGCPlatform.",
+  "Category": "UGC",
+  "CreatedBy": "AkStudio",
+  "EnabledByDefault": true,
+  "CanContainContent": false,
+  "IsBetaVersion": true,
+  "Modules": [
+    {
+      "Name": "AkUGCCore",
+      "Type": "Runtime",
+      "LoadingPhase": "Default"
+    }
+  ]
+}

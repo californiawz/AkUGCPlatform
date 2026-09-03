@@ -1,0 +1,30 @@
+# Unreal generated files
+Binaries/
+DerivedDataCache/
+Intermediate/
+Saved/
+.vs/
+.vscode/
+.idea/
+*.VC.db
+*.VC.opendb
+*.sln
+*.slnx
+*.vsconfig
+*.suo
+*.user
+*.opensdf
+*.sdf
+
+# Plugin generated files
+Plugins/**/Binaries/
+Plugins/**/Intermediate/
+
+# Local build output
+BuildOutput/
+OutDir/
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini

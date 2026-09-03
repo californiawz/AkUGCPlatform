@@ -1,0 +1,6 @@
+Type,Path,Enabled,Description
+CookMap,/Game/Maps/Phase0,true,Phase 0 project entry map
+CookDirectory,/Game/AkUGCPlatform/UGC,false,Enable after soft-reference content exists
+NeverCook,/Game/Developers,true,Exclude developer-local assets
+NeverCook,/Landmass/Landscape/BlueprintBrushes,true,Exclude Landmass editor brush assets that reference editor-only materials
+StageUFS,Config/UGC,false,Enable after runtime UFS configuration exists
