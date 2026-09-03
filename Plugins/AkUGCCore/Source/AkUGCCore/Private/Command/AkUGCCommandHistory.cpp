@@ -7,13 +7,30 @@ FAkUGCCommandHistory::FAkUGCCommandHistory(int32 InMaxEntries)
 
 FAkUGCCommandExecutionResult FAkUGCCommandHistory::Execute(
     FAkUGCProjectDocument& Document,
-    const FAkUGCCommandTransaction& Transaction)
+    const FAkUGCCommandTransaction& Transaction,
+    FAkUGCCommandProjection Projection)
 {
+    TOptional<FAkUGCProjectDocument> BeforeDocument;
+    if (Projection)
+    {
+        BeforeDocument.Emplace(Document);
+    }
+
     FAkUGCCommandTransaction UndoTransaction;
     FAkUGCCommandExecutionResult Result = FAkUGCCommandExecutor::Apply(Document, Transaction, &UndoTransaction);
     if (!Result.bSucceeded)
     {
         return Result;
+    }
+
+    if (Projection)
+    {
+        Result = Projection(BeforeDocument.GetValue(), Document, Transaction);
+        if (!Result.bSucceeded)
+        {
+            Document = MoveTemp(BeforeDocument.GetValue());
+            return Result;
+        }
     }
 
     UndoStack.Add(MoveTemp(UndoTransaction));
@@ -22,11 +39,19 @@ FAkUGCCommandExecutionResult FAkUGCCommandHistory::Execute(
     return Result;
 }
 
-FAkUGCCommandExecutionResult FAkUGCCommandHistory::Undo(FAkUGCProjectDocument& Document)
+FAkUGCCommandExecutionResult FAkUGCCommandHistory::Undo(
+    FAkUGCProjectDocument& Document,
+    FAkUGCCommandProjection Projection)
 {
     if (!CanUndo())
     {
         return FAkUGCCommandExecutionResult::Failure(TEXT("history.undo"), TEXT("There is no transaction to undo."));
+    }
+
+    TOptional<FAkUGCProjectDocument> BeforeDocument;
+    if (Projection)
+    {
+        BeforeDocument.Emplace(Document);
     }
 
     const FAkUGCCommandTransaction UndoTransaction = UndoStack.Last();
@@ -37,16 +62,34 @@ FAkUGCCommandExecutionResult FAkUGCCommandHistory::Undo(FAkUGCProjectDocument& D
         return Result;
     }
 
+    if (Projection)
+    {
+        Result = Projection(BeforeDocument.GetValue(), Document, UndoTransaction);
+        if (!Result.bSucceeded)
+        {
+            Document = MoveTemp(BeforeDocument.GetValue());
+            return Result;
+        }
+    }
+
     UndoStack.Pop(EAllowShrinking::No);
     RedoStack.Add(MoveTemp(RedoTransaction));
     return Result;
 }
 
-FAkUGCCommandExecutionResult FAkUGCCommandHistory::Redo(FAkUGCProjectDocument& Document)
+FAkUGCCommandExecutionResult FAkUGCCommandHistory::Redo(
+    FAkUGCProjectDocument& Document,
+    FAkUGCCommandProjection Projection)
 {
     if (!CanRedo())
     {
         return FAkUGCCommandExecutionResult::Failure(TEXT("history.redo"), TEXT("There is no transaction to redo."));
+    }
+
+    TOptional<FAkUGCProjectDocument> BeforeDocument;
+    if (Projection)
+    {
+        BeforeDocument.Emplace(Document);
     }
 
     const FAkUGCCommandTransaction RedoTransaction = RedoStack.Last();
@@ -55,6 +98,16 @@ FAkUGCCommandExecutionResult FAkUGCCommandHistory::Redo(FAkUGCProjectDocument& D
     if (!Result.bSucceeded)
     {
         return Result;
+    }
+
+    if (Projection)
+    {
+        Result = Projection(BeforeDocument.GetValue(), Document, RedoTransaction);
+        if (!Result.bSucceeded)
+        {
+            Document = MoveTemp(BeforeDocument.GetValue());
+            return Result;
+        }
     }
 
     RedoStack.Pop(EAllowShrinking::No);

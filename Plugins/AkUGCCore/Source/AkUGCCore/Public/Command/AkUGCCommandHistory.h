@@ -3,6 +3,11 @@
 #include "CoreMinimal.h"
 #include "Command/AkUGCCommandExecutor.h"
 
+using FAkUGCCommandProjection = TFunction<FAkUGCCommandExecutionResult(
+    const FAkUGCProjectDocument& Before,
+    const FAkUGCProjectDocument& After,
+    const FAkUGCCommandTransaction& AppliedTransaction)>;
+
 class AKUGCCORE_API FAkUGCCommandHistory
 {
 public:
@@ -10,10 +15,16 @@ public:
 
     FAkUGCCommandExecutionResult Execute(
         FAkUGCProjectDocument& Document,
-        const FAkUGCCommandTransaction& Transaction);
+        const FAkUGCCommandTransaction& Transaction,
+        FAkUGCCommandProjection Projection = {});
 
-    FAkUGCCommandExecutionResult Undo(FAkUGCProjectDocument& Document);
-    FAkUGCCommandExecutionResult Redo(FAkUGCProjectDocument& Document);
+    FAkUGCCommandExecutionResult Undo(
+        FAkUGCProjectDocument& Document,
+        FAkUGCCommandProjection Projection = {});
+
+    FAkUGCCommandExecutionResult Redo(
+        FAkUGCProjectDocument& Document,
+        FAkUGCCommandProjection Projection = {});
 
     bool CanUndo() const;
     bool CanRedo() const;

@@ -40,42 +40,9 @@ bool FAkUGCSceneRuntime::LoadScene(
     const FAkUGCPrefabRegistry& Registry,
     FString* OutError)
 {
-    if (!World.IsValid())
+    if (!ValidateScene(Scene, Registry, OutError))
     {
-        return Fail(OutError, TEXT("Runtime world is not valid."));
-    }
-    if (!Scene.SceneId.IsValid())
-    {
-        return Fail(OutError, TEXT("Scene ID must be a valid GUID."));
-    }
-
-    TSet<FGuid> EntityIds;
-    for (const FAkUGCEntityRecord& Entity : Scene.Entities)
-    {
-        if (!Entity.EntityId.IsValid())
-        {
-            return Fail(OutError, TEXT("Scene contains an invalid entity ID."));
-        }
-        if (EntityIds.Contains(Entity.EntityId))
-        {
-            return Fail(OutError, TEXT("Scene contains a duplicate entity ID."));
-        }
-        if (!Registry.Find(Entity.PrefabId))
-        {
-            return Fail(OutError, FString::Printf(TEXT("Prefab '%s' is not registered."), *Entity.PrefabId.ToString()));
-        }
-        EntityIds.Add(Entity.EntityId);
-    }
-
-    for (const FAkUGCEntityRecord& Entity : Scene.Entities)
-    {
-        if (Entity.ParentEntityId.IsValid() && !EntityIds.Contains(Entity.ParentEntityId))
-        {
-            return Fail(OutError, FString::Printf(
-                TEXT("Parent '%s' for entity '%s' is not part of the scene."),
-                *Entity.ParentEntityId.ToString(),
-                *Entity.EntityId.ToString()));
-        }
+        return false;
     }
 
     Unload();
@@ -97,6 +64,69 @@ bool FAkUGCSceneRuntime::LoadScene(
     }
 
     return true;
+}
+
+bool FAkUGCSceneRuntime::SynchronizeScene(
+    const FAkUGCSceneDocument& Scene,
+    const FAkUGCPrefabRegistry& Registry,
+    FString* OutError)
+{
+    if (!ValidateScene(Scene, Registry, OutError))
+    {
+        return false;
+    }
+    if (ActiveSceneId != Scene.SceneId)
+    {
+        return LoadScene(Scene, Registry, OutError);
+    }
+
+    TSet<FGuid> DesiredEntityIds;
+    for (const FAkUGCEntityRecord& Entity : Scene.Entities)
+    {
+        DesiredEntityIds.Add(Entity.EntityId);
+    }
+
+    TArray<FGuid> ExistingEntityIds;
+    Actors.GetKeys(ExistingEntityIds);
+    for (const FGuid& ExistingEntityId : ExistingEntityIds)
+    {
+        if (!DesiredEntityIds.Contains(ExistingEntityId))
+        {
+            RemoveEntity(ExistingEntityId);
+        }
+    }
+
+    for (const FAkUGCEntityRecord& Entity : Scene.Entities)
+    {
+        AActor* ExistingActor = FindActor(Entity.EntityId);
+        const UAkUGCEntityBindingComponent* Binding = FindBinding(ExistingActor);
+        if (Binding && Binding->PrefabId != Entity.PrefabId)
+        {
+            RemoveEntity(Entity.EntityId);
+            ExistingActor = nullptr;
+        }
+
+        if (ExistingActor)
+        {
+            if (!ApplyEntity(Entity, Registry, OutError))
+            {
+                return false;
+            }
+        }
+        else if (!SpawnEntity(Entity, Registry, OutError))
+        {
+            return false;
+        }
+    }
+
+    for (const TPair<FGuid, TWeakObjectPtr<AActor>>& Pair : Actors)
+    {
+        if (AActor* Actor = Pair.Value.Get())
+        {
+            Actor->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+        }
+    }
+    return AttachParents(Scene, OutError);
 }
 
 bool FAkUGCSceneRuntime::ApplyEntity(
@@ -191,6 +221,55 @@ FName FAkUGCSceneRuntime::GetCurrentPlatformVariant()
 #else
     return TEXT("Default");
 #endif
+}
+
+bool FAkUGCSceneRuntime::ValidateScene(
+    const FAkUGCSceneDocument& Scene,
+    const FAkUGCPrefabRegistry& Registry,
+    FString* OutError) const
+{
+    if (!World.IsValid())
+    {
+        return Fail(OutError, TEXT("Runtime world is not valid."));
+    }
+    if (!Scene.SceneId.IsValid())
+    {
+        return Fail(OutError, TEXT("Scene ID must be a valid GUID."));
+    }
+
+    TSet<FGuid> EntityIds;
+    for (const FAkUGCEntityRecord& Entity : Scene.Entities)
+    {
+        if (!Entity.EntityId.IsValid())
+        {
+            return Fail(OutError, TEXT("Scene contains an invalid entity ID."));
+        }
+        if (EntityIds.Contains(Entity.EntityId))
+        {
+            return Fail(OutError, TEXT("Scene contains a duplicate entity ID."));
+        }
+        if (!Registry.Find(Entity.PrefabId))
+        {
+            return Fail(OutError, FString::Printf(TEXT("Prefab '%s' is not registered."), *Entity.PrefabId.ToString()));
+        }
+        EntityIds.Add(Entity.EntityId);
+    }
+
+    for (const FAkUGCEntityRecord& Entity : Scene.Entities)
+    {
+        if (Entity.ParentEntityId.IsValid() && !EntityIds.Contains(Entity.ParentEntityId))
+        {
+            return Fail(OutError, FString::Printf(
+                TEXT("Parent '%s' for entity '%s' is not part of the scene."),
+                *Entity.ParentEntityId.ToString(),
+                *Entity.EntityId.ToString()));
+        }
+        if (Entity.ParentEntityId == Entity.EntityId)
+        {
+            return Fail(OutError, TEXT("Entity cannot be parented to itself."));
+        }
+    }
+    return true;
 }
 
 bool FAkUGCSceneRuntime::SpawnEntity(

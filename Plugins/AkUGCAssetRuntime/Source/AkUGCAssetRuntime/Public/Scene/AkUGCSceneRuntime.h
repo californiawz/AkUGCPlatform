@@ -20,6 +20,11 @@ public:
         const FAkUGCPrefabRegistry& Registry,
         FString* OutError = nullptr);
 
+    bool SynchronizeScene(
+        const FAkUGCSceneDocument& Scene,
+        const FAkUGCPrefabRegistry& Registry,
+        FString* OutError = nullptr);
+
     bool ApplyEntity(
         const FAkUGCEntityRecord& Entity,
         const FAkUGCPrefabRegistry& Registry,
@@ -35,6 +40,11 @@ public:
     static FName GetCurrentPlatformVariant();
 
 private:
+    bool ValidateScene(
+        const FAkUGCSceneDocument& Scene,
+        const FAkUGCPrefabRegistry& Registry,
+        FString* OutError) const;
+
     bool SpawnEntity(
         const FAkUGCEntityRecord& Entity,
         const FAkUGCPrefabRegistry& Registry,
