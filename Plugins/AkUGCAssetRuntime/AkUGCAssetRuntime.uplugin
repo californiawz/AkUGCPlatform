@@ -1,0 +1,25 @@
+{
+  "FileVersion": 3,
+  "Version": 1,
+  "VersionName": "0.1.0",
+  "FriendlyName": "Ak UGC Asset Runtime",
+  "Description": "Projects validated UGC scene documents and prefab definitions into Unreal runtime actors.",
+  "Category": "UGC",
+  "CreatedBy": "AkStudio",
+  "EnabledByDefault": true,
+  "CanContainContent": false,
+  "IsBetaVersion": true,
+  "Modules": [
+    {
+      "Name": "AkUGCAssetRuntime",
+      "Type": "Runtime",
+      "LoadingPhase": "Default"
+    }
+  ],
+  "Plugins": [
+    {
+      "Name": "AkUGCCore",
+      "Enabled": true
+    }
+  ]
+}

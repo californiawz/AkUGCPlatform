@@ -15,6 +15,10 @@
 			"Enabled": true
 		},
 		{
+			"Name": "AkUGCAssetRuntime",
+			"Enabled": true
+		},
+		{
 			"Name": "PythonScriptPlugin",
 			"Enabled": true,
 			"TargetAllowList": [
