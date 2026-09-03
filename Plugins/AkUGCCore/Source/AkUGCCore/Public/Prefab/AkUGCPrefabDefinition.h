@@ -21,6 +21,9 @@ struct AKUGCCORE_API FAkUGCPropertyDefinition
     GENERATED_BODY()
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC")
+    FName ComponentTypeId;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC")
     FName PropertyId;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC")

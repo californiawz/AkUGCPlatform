@@ -15,7 +15,11 @@ namespace
         Definition.AssetVariants.Add(TEXT("Win64"), FSoftObjectPath(TEXT("/Game/UGC/Prefabs/Base_Win64.Base_Win64")));
         Definition.AssetVariants.Add(TEXT("Default"), FSoftObjectPath(TEXT("/Game/UGC/Prefabs/Base_Mobile.Base_Mobile")));
 
+        FAkUGCComponentRecord& HealthComponent = Definition.DefaultComponents.AddDefaulted_GetRef();
+        HealthComponent.TypeId = TEXT("core.health");
+
         FAkUGCPropertyDefinition Health;
+        Health.ComponentTypeId = TEXT("core.health");
         Health.PropertyId = TEXT("maxHealth");
         Health.ValueType = EAkUGCValueType::Number;
         Health.DefaultValue.Type = EAkUGCValueType::Number;
