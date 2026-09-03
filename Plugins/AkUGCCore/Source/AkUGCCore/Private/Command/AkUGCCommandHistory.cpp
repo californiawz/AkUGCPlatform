@@ -9,14 +9,14 @@ FAkUGCCommandExecutionResult FAkUGCCommandHistory::Execute(
     FAkUGCProjectDocument& Document,
     const FAkUGCCommandTransaction& Transaction)
 {
-    FAkUGCCommandTransaction Inverse;
-    FAkUGCCommandExecutionResult Result = FAkUGCCommandExecutor::Apply(Document, Transaction, &Inverse);
+    FAkUGCCommandTransaction UndoTransaction;
+    FAkUGCCommandExecutionResult Result = FAkUGCCommandExecutor::Apply(Document, Transaction, &UndoTransaction);
     if (!Result.bSucceeded)
     {
         return Result;
     }
 
-    UndoStack.Add({Transaction, MoveTemp(Inverse)});
+    UndoStack.Add(MoveTemp(UndoTransaction));
     TrimUndoStack();
     RedoStack.Reset();
     return Result;
@@ -29,15 +29,16 @@ FAkUGCCommandExecutionResult FAkUGCCommandHistory::Undo(FAkUGCProjectDocument& D
         return FAkUGCCommandExecutionResult::Failure(TEXT("history.undo"), TEXT("There is no transaction to undo."));
     }
 
-    const FEntry& Entry = UndoStack.Last();
-    FAkUGCCommandExecutionResult Result = FAkUGCCommandExecutor::Apply(Document, Entry.Inverse);
+    const FAkUGCCommandTransaction UndoTransaction = UndoStack.Last();
+    FAkUGCCommandTransaction RedoTransaction;
+    FAkUGCCommandExecutionResult Result = FAkUGCCommandExecutor::Apply(Document, UndoTransaction, &RedoTransaction);
     if (!Result.bSucceeded)
     {
         return Result;
     }
 
-    RedoStack.Add(Entry);
     UndoStack.Pop(EAllowShrinking::No);
+    RedoStack.Add(MoveTemp(RedoTransaction));
     return Result;
 }
 
@@ -48,16 +49,17 @@ FAkUGCCommandExecutionResult FAkUGCCommandHistory::Redo(FAkUGCProjectDocument& D
         return FAkUGCCommandExecutionResult::Failure(TEXT("history.redo"), TEXT("There is no transaction to redo."));
     }
 
-    const FEntry& Entry = RedoStack.Last();
-    FAkUGCCommandExecutionResult Result = FAkUGCCommandExecutor::Apply(Document, Entry.Forward);
+    const FAkUGCCommandTransaction RedoTransaction = RedoStack.Last();
+    FAkUGCCommandTransaction UndoTransaction;
+    FAkUGCCommandExecutionResult Result = FAkUGCCommandExecutor::Apply(Document, RedoTransaction, &UndoTransaction);
     if (!Result.bSucceeded)
     {
         return Result;
     }
 
-    UndoStack.Add(Entry);
-    TrimUndoStack();
     RedoStack.Pop(EAllowShrinking::No);
+    UndoStack.Add(MoveTemp(UndoTransaction));
+    TrimUndoStack();
     return Result;
 }
 

@@ -20,15 +20,9 @@ public:
     void Reset();
 
 private:
-    struct FEntry
-    {
-        FAkUGCCommandTransaction Forward;
-        FAkUGCCommandTransaction Inverse;
-    };
-
     void TrimUndoStack();
 
     int32 MaxEntries;
-    TArray<FEntry> UndoStack;
-    TArray<FEntry> RedoStack;
+    TArray<FAkUGCCommandTransaction> UndoStack;
+    TArray<FAkUGCCommandTransaction> RedoStack;
 };
