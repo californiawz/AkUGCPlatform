@@ -24,8 +24,10 @@ Build/                  项目构建配置
 Config/                 Unreal 项目配置
 Docs/ADR/               架构决策记录
 Docs/Phase0/            Phase 0 范围与验收
-Plugins/AkUGCCore/      共享 ID、Manifest、Schema 与版本契约
-Source/AkUGCPlatform/   最小项目宿主模块
+Plugins/AkUGCCore/          共享 ID、Document、Command、Prefab 与校验契约
+Plugins/AkUGCAssetRuntime/  SceneDocument 到 Runtime Actor 的投影
+Plugins/AkUGCEditor/        Creator Studio Desktop 编辑器入口
+Source/AkUGCPlatform/       最小项目宿主模块
 ```
 
 ## 生成项目文件

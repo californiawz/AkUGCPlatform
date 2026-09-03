@@ -147,6 +147,18 @@ bool FAkUGCSceneRuntime::ApplyTransaction(
         {
             return Fail(OutError, TEXT("Command targets a different scene than the active runtime scene."));
         }
+        if (Command.Type == EAkUGCCommandType::SetTransform)
+        {
+            if (AActor* Actor = FindActor(Command.EntityId))
+            {
+                Actor->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+                AttachmentUpdates.Add(Command.EntityId);
+            }
+        }
+    }
+
+    for (const FAkUGCCommand& Command : Transaction.Commands)
+    {
         if (!ApplyCommand(Command, Registry, AttachmentUpdates, OutError))
         {
             return false;

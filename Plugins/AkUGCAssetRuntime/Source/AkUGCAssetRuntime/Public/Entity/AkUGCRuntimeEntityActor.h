@@ -3,6 +3,7 @@
 #include "GameFramework/Actor.h"
 #include "AkUGCRuntimeEntityActor.generated.h"
 
+class UBillboardComponent;
 class USceneComponent;
 class UStaticMesh;
 class UStaticMeshComponent;
@@ -22,4 +23,9 @@ public:
 
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "UGC")
     TObjectPtr<UStaticMeshComponent> VisualMesh;
+
+#if WITH_EDITORONLY_DATA
+    UPROPERTY(Transient)
+    TObjectPtr<UBillboardComponent> EditorSprite;
+#endif
 };

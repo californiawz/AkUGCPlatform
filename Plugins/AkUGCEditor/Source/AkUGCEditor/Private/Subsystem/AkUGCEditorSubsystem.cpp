@@ -3,10 +3,16 @@
 #include "Command/AkUGCCommand.h"
 #include "Document/AkUGCDocumentJson.h"
 #include "Editor.h"
+#include "Editor/EditorEngine.h"
 #include "Engine/World.h"
+#include "Entity/AkUGCEntityBindingComponent.h"
+#include "GameFramework/Actor.h"
+#include "LevelEditor.h"
 #include "HAL/FileManager.h"
+#include "Misc/App.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "Modules/ModuleManager.h"
 #include "Prefab/AkUGCOfficialPrefabCatalog.h"
 #include "Prefab/AkUGCPrefabRegistry.h"
 #include "Scene/AkUGCSceneRuntime.h"
@@ -23,10 +29,12 @@ void UAkUGCEditorSubsystem::Initialize(FSubsystemCollectionBase& Collection)
     {
         UE_LOG(LogTemp, Error, TEXT("Failed to register official UGC prefab catalog: %s"), *Error);
     }
+    RegisterEditorDelegates();
 }
 
 void UAkUGCEditorSubsystem::Deinitialize()
 {
+    UnregisterEditorDelegates();
     CloseProject();
     PrefabRegistry.Reset();
     Super::Deinitialize();
@@ -100,6 +108,14 @@ bool UAkUGCEditorSubsystem::LoadProject(const FString& FilePath, FString* OutErr
 
 void UAkUGCEditorSubsystem::CloseProject()
 {
+    bUpdatingEditorSelection = true;
+    if (GEditor && !IsRunningCommandlet() && !FApp::IsUnattended())
+    {
+        GEditor->SelectNone(false, true, false);
+    }
+    bUpdatingEditorSelection = false;
+    SelectedEntityId.Invalidate();
+
     Session.Reset();
     if (Runtime)
     {
@@ -140,7 +156,14 @@ FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::PlacePrefab(
     Transaction.TransactionId = FGuid::NewGuid();
     Transaction.Label = FString::Printf(TEXT("Place %s"), *PrefabId.ToString());
     Transaction.Commands.Add(MoveTemp(Command));
-    return Session->Execute(Document, Transaction);
+
+    TGuardValue<bool> ApplyingGuard(bApplyingUGCTransaction, true);
+    FAkUGCCommandExecutionResult Result = Session->Execute(Document, Transaction);
+    if (Result.bSucceeded && !IsRunningCommandlet() && !FApp::IsUnattended())
+    {
+        SelectEntity(OutEntityId);
+    }
+    return Result;
 }
 
 FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::DeleteEntity(const FGuid& EntityId)
@@ -160,40 +183,160 @@ FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::DeleteEntity(const FGuid& En
     Transaction.TransactionId = FGuid::NewGuid();
     Transaction.Label = TEXT("Delete entity");
     Transaction.Commands.Add(MoveTemp(Command));
-    return Session->Execute(Document, Transaction);
+
+    TGuardValue<bool> ApplyingGuard(bApplyingUGCTransaction, true);
+    FAkUGCCommandExecutionResult Result = Session->Execute(Document, Transaction);
+    if (Result.bSucceeded && SelectedEntityId == EntityId)
+    {
+        SelectedEntityId.Invalidate();
+    }
+    return Result;
+}
+
+FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::DuplicateEntity(
+    const FGuid& SourceEntityId,
+    FGuid& OutEntityId)
+{
+    if (!Session || !Runtime)
+    {
+        return NoSessionResult();
+    }
+
+    AActor* SourceActor = Runtime->FindActor(SourceEntityId);
+    if (!SourceActor)
+    {
+        return FAkUGCCommandExecutionResult::Failure(
+            TEXT("editor.sourceEntityId"),
+            TEXT("Selected UGC entity does not exist in the runtime scene."));
+    }
+
+    OutEntityId = FGuid::NewGuid();
+    FAkUGCCommand Command;
+    Command.CommandId = FGuid::NewGuid();
+    Command.Type = EAkUGCCommandType::DuplicateEntity;
+    Command.SceneId = ActiveSceneId;
+    Command.EntityId = OutEntityId;
+    Command.SourceEntityId = SourceEntityId;
+    Command.Transform = SourceActor->GetActorTransform();
+    Command.Transform.AddToTranslation(FVector(100.0, 100.0, 0.0));
+
+    FAkUGCCommandTransaction Transaction;
+    Transaction.TransactionId = FGuid::NewGuid();
+    Transaction.Label = TEXT("Duplicate entity");
+    Transaction.Commands.Add(MoveTemp(Command));
+
+    TGuardValue<bool> ApplyingGuard(bApplyingUGCTransaction, true);
+    FAkUGCCommandExecutionResult Result = Session->Execute(Document, Transaction);
+    if (Result.bSucceeded && !IsRunningCommandlet() && !FApp::IsUnattended())
+    {
+        SelectEntity(OutEntityId);
+    }
+    return Result;
 }
 
 FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::SetEntityTransform(
     const FGuid& EntityId,
     const FTransform& Transform)
 {
+    return SetEntityTransforms({{EntityId, Transform}}, TEXT("Move entity"));
+}
+
+FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::SetEntityTransforms(
+    const TMap<FGuid, FTransform>& Transforms,
+    const FString& Label)
+{
     if (!Session)
     {
         return NoSessionResult();
     }
+    if (Transforms.IsEmpty())
+    {
+        return FAkUGCCommandExecutionResult::Failure(
+            TEXT("editor.transforms"),
+            TEXT("At least one entity transform is required."));
+    }
 
-    FAkUGCCommand Command;
-    Command.CommandId = FGuid::NewGuid();
-    Command.Type = EAkUGCCommandType::SetTransform;
-    Command.SceneId = ActiveSceneId;
-    Command.EntityId = EntityId;
-    Command.Transform = Transform;
+    TArray<FGuid> EntityIds;
+    Transforms.GetKeys(EntityIds);
+    EntityIds.Sort([](const FGuid& Left, const FGuid& Right)
+    {
+        return Left.ToString(EGuidFormats::Digits) < Right.ToString(EGuidFormats::Digits);
+    });
 
     FAkUGCCommandTransaction Transaction;
     Transaction.TransactionId = FGuid::NewGuid();
-    Transaction.Label = TEXT("Move entity");
-    Transaction.Commands.Add(MoveTemp(Command));
+    Transaction.Label = Label;
+    for (const FGuid& EntityId : EntityIds)
+    {
+        FAkUGCCommand& Command = Transaction.Commands.AddDefaulted_GetRef();
+        Command.CommandId = FGuid::NewGuid();
+        Command.Type = EAkUGCCommandType::SetTransform;
+        Command.SceneId = ActiveSceneId;
+        Command.EntityId = EntityId;
+        Command.Transform = Transforms.FindChecked(EntityId);
+    }
+
+    TGuardValue<bool> ApplyingGuard(bApplyingUGCTransaction, true);
     return Session->Execute(Document, Transaction);
+}
+
+FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::DeleteSelectedEntity()
+{
+    return SelectedEntityId.IsValid()
+        ? DeleteEntity(SelectedEntityId)
+        : FAkUGCCommandExecutionResult::Failure(TEXT("editor.selection"), TEXT("No UGC entity is selected."));
+}
+
+FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::DuplicateSelectedEntity(FGuid& OutEntityId)
+{
+    return SelectedEntityId.IsValid()
+        ? DuplicateEntity(SelectedEntityId, OutEntityId)
+        : FAkUGCCommandExecutionResult::Failure(TEXT("editor.selection"), TEXT("No UGC entity is selected."));
 }
 
 FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::Undo()
 {
-    return Session ? Session->Undo(Document) : NoSessionResult();
+    if (!Session)
+    {
+        return NoSessionResult();
+    }
+    TGuardValue<bool> ApplyingGuard(bApplyingUGCTransaction, true);
+    return Session->Undo(Document);
 }
 
 FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::Redo()
 {
-    return Session ? Session->Redo(Document) : NoSessionResult();
+    if (!Session)
+    {
+        return NoSessionResult();
+    }
+    TGuardValue<bool> ApplyingGuard(bApplyingUGCTransaction, true);
+    return Session->Redo(Document);
+}
+
+bool UAkUGCEditorSubsystem::SelectEntity(const FGuid& EntityId)
+{
+    if (!Runtime || !GEditor || IsRunningCommandlet())
+    {
+        return false;
+    }
+
+    AActor* Actor = Runtime->FindActor(EntityId);
+    if (!Actor)
+    {
+        return false;
+    }
+
+    TGuardValue<bool> SelectionGuard(bUpdatingEditorSelection, true);
+    GEditor->SelectNone(false, true, false);
+    GEditor->SelectActor(Actor, true, true, true, true);
+    SelectedEntityId = EntityId;
+    return true;
+}
+
+FGuid UAkUGCEditorSubsystem::GetSelectedEntityId() const
+{
+    return SelectedEntityId;
 }
 
 bool UAkUGCEditorSubsystem::HasOpenProject() const
@@ -312,4 +455,122 @@ bool UAkUGCEditorSubsystem::CreateSession(FString* OutError)
 FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::NoSessionResult() const
 {
     return FAkUGCCommandExecutionResult::Failure(TEXT("editor.session"), TEXT("No UGC project is open."));
+}
+
+void UAkUGCEditorSubsystem::RegisterEditorDelegates()
+{
+    FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>(TEXT("LevelEditor"));
+    SelectionChangedHandle = LevelEditorModule.OnActorSelectionChanged().AddUObject(
+        this,
+        &UAkUGCEditorSubsystem::OnActorSelectionChanged);
+
+    if (GEditor)
+    {
+        ActorsMovedHandle = GEditor->OnActorsMoved().AddUObject(
+            this,
+            &UAkUGCEditorSubsystem::OnActorsMoved);
+    }
+}
+
+void UAkUGCEditorSubsystem::UnregisterEditorDelegates()
+{
+    if (SelectionChangedHandle.IsValid() && FModuleManager::Get().IsModuleLoaded(TEXT("LevelEditor")))
+    {
+        FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor"))
+            .OnActorSelectionChanged()
+            .Remove(SelectionChangedHandle);
+        SelectionChangedHandle.Reset();
+    }
+
+    if (ActorsMovedHandle.IsValid() && GEditor)
+    {
+        GEditor->OnActorsMoved().Remove(ActorsMovedHandle);
+        ActorsMovedHandle.Reset();
+    }
+}
+
+void UAkUGCEditorSubsystem::OnActorSelectionChanged(
+    const TArray<UObject*>& NewSelection,
+    bool bForceRefresh)
+{
+    if (bUpdatingEditorSelection)
+    {
+        return;
+    }
+
+    SelectedEntityId.Invalidate();
+    if (!Runtime)
+    {
+        return;
+    }
+
+    for (UObject* SelectedObject : NewSelection)
+    {
+        AActor* Actor = Cast<AActor>(SelectedObject);
+        const UAkUGCEntityBindingComponent* Binding = Actor
+            ? Actor->FindComponentByClass<UAkUGCEntityBindingComponent>()
+            : nullptr;
+        if (Binding && Runtime->FindActor(Binding->EntityId) == Actor)
+        {
+            SelectedEntityId = Binding->EntityId;
+            return;
+        }
+    }
+}
+
+void UAkUGCEditorSubsystem::OnActorsMoved(TArray<AActor*>& Actors)
+{
+    if (bApplyingUGCTransaction || !Session || !Runtime)
+    {
+        return;
+    }
+
+    TMap<FGuid, FTransform> ChangedTransforms;
+    for (AActor* Actor : Actors)
+    {
+        AddActorAndUGCDescendants(Actor, ChangedTransforms);
+    }
+    if (ChangedTransforms.IsEmpty())
+    {
+        return;
+    }
+
+    const FAkUGCCommandExecutionResult Result = SetEntityTransforms(
+        ChangedTransforms,
+        ChangedTransforms.Num() == 1 ? TEXT("Move entity") : TEXT("Move entity hierarchy"));
+    if (!Result.bSucceeded)
+    {
+        UE_LOG(LogTemp, Error, TEXT("Failed to commit UGC actor movement: %s"), *Result.ErrorMessage);
+    }
+}
+
+void UAkUGCEditorSubsystem::AddActorAndUGCDescendants(
+    AActor* Actor,
+    TMap<FGuid, FTransform>& OutTransforms) const
+{
+    if (!Actor || !Runtime)
+    {
+        return;
+    }
+
+    TArray<AActor*> CandidateActors;
+    CandidateActors.Add(Actor);
+    Actor->GetAttachedActors(CandidateActors, false, true);
+
+    for (AActor* Candidate : CandidateActors)
+    {
+        const UAkUGCEntityBindingComponent* Binding = Candidate
+            ? Candidate->FindComponentByClass<UAkUGCEntityBindingComponent>()
+            : nullptr;
+        if (!Binding || Runtime->FindActor(Binding->EntityId) != Candidate)
+        {
+            continue;
+        }
+
+        const FTransform CurrentTransform = Candidate->GetActorTransform();
+        if (!Binding->SourceRecord.Transform.Equals(CurrentTransform, 0.01))
+        {
+            OutTransforms.Add(Binding->EntityId, CurrentTransform);
+        }
+    }
 }

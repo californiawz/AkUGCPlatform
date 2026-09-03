@@ -18,6 +18,8 @@ private:
     FReply LoadProject();
     FReply Undo();
     FReply Redo();
+    FReply DeleteSelected();
+    FReply DuplicateSelected();
     FReply PlacePrefab(FName PrefabId);
     FText GetStatusText() const;
 

@@ -8,6 +8,8 @@
 #include "Session/AkUGCDocumentRuntimeSession.h"
 #include "AkUGCEditorSubsystem.generated.h"
 
+class AActor;
+
 UCLASS()
 class AKUGCEDITOR_API UAkUGCEditorSubsystem : public UEditorSubsystem
 {
@@ -28,10 +30,16 @@ public:
         FGuid& OutEntityId);
 
     FAkUGCCommandExecutionResult DeleteEntity(const FGuid& EntityId);
+    FAkUGCCommandExecutionResult DuplicateEntity(const FGuid& SourceEntityId, FGuid& OutEntityId);
     FAkUGCCommandExecutionResult SetEntityTransform(const FGuid& EntityId, const FTransform& Transform);
+    FAkUGCCommandExecutionResult SetEntityTransforms(const TMap<FGuid, FTransform>& Transforms, const FString& Label);
+    FAkUGCCommandExecutionResult DeleteSelectedEntity();
+    FAkUGCCommandExecutionResult DuplicateSelectedEntity(FGuid& OutEntityId);
     FAkUGCCommandExecutionResult Undo();
     FAkUGCCommandExecutionResult Redo();
 
+    bool SelectEntity(const FGuid& EntityId);
+    FGuid GetSelectedEntityId() const;
     bool HasOpenProject() const;
     bool CanUndo() const;
     bool CanRedo() const;
@@ -43,10 +51,20 @@ private:
     bool OpenDocument(FAkUGCProjectDocument&& NewDocument, FString* OutError);
     bool CreateSession(FString* OutError);
     FAkUGCCommandExecutionResult NoSessionResult() const;
+    void RegisterEditorDelegates();
+    void UnregisterEditorDelegates();
+    void OnActorSelectionChanged(const TArray<UObject*>& NewSelection, bool bForceRefresh);
+    void OnActorsMoved(TArray<AActor*>& Actors);
+    void AddActorAndUGCDescendants(AActor* Actor, TMap<FGuid, FTransform>& OutTransforms) const;
 
     FAkUGCProjectDocument Document;
     TUniquePtr<FAkUGCPrefabRegistry> PrefabRegistry;
     TUniquePtr<FAkUGCSceneRuntime> Runtime;
     TUniquePtr<FAkUGCDocumentRuntimeSession> Session;
     FGuid ActiveSceneId;
+    FGuid SelectedEntityId;
+    FDelegateHandle SelectionChangedHandle;
+    FDelegateHandle ActorsMovedHandle;
+    bool bUpdatingEditorSelection = false;
+    bool bApplyingUGCTransaction = false;
 };

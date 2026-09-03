@@ -1,6 +1,7 @@
 #include "Misc/AutomationTest.h"
 
 #include "Editor.h"
+#include "Misc/App.h"
 #include "HAL/FileManager.h"
 #include "Misc/Paths.h"
 #include "Subsystem/AkUGCEditorSubsystem.h"
@@ -33,6 +34,24 @@ bool FAkUGCEditorSubsystemWorkflowTest::RunTest(const FString& Parameters)
         EntityId);
     TestTrue(TEXT("Official prefab is placed"), PlaceResult.bSucceeded);
     TestEqual(TEXT("Document contains placed entity"), Subsystem->GetDocument().Scenes[0].Entities.Num(), 1);
+    if (!IsRunningCommandlet() && !FApp::IsUnattended())
+    {
+        TestEqual(TEXT("Placed entity is selected in the editor"), Subsystem->GetSelectedEntityId(), EntityId);
+    }
+
+    FGuid DuplicateId;
+    TestTrue(TEXT("Entity duplicates"), Subsystem->DuplicateEntity(EntityId, DuplicateId).bSucceeded);
+    if (!IsRunningCommandlet() && !FApp::IsUnattended())
+    {
+        TestEqual(TEXT("Duplicate is selected"), Subsystem->GetSelectedEntityId(), DuplicateId);
+    }
+    TestEqual(TEXT("Document contains duplicate"), Subsystem->GetDocument().Scenes[0].Entities.Num(), 2);
+    TestTrue(TEXT("Duplicate deletes"), Subsystem->DeleteEntity(DuplicateId).bSucceeded);
+    TestEqual(TEXT("Delete removes duplicate"), Subsystem->GetDocument().Scenes[0].Entities.Num(), 1);
+    TestTrue(TEXT("Undo delete restores duplicate"), Subsystem->Undo().bSucceeded);
+    TestEqual(TEXT("Undo delete restores document entity"), Subsystem->GetDocument().Scenes[0].Entities.Num(), 2);
+    TestTrue(TEXT("Undo duplicate removes duplicate"), Subsystem->Undo().bSucceeded);
+    TestEqual(TEXT("Undo duplicate restores one entity"), Subsystem->GetDocument().Scenes[0].Entities.Num(), 1);
 
     TestTrue(TEXT("Creator undo succeeds"), Subsystem->Undo().bSucceeded);
     TestEqual(TEXT("Undo removes document entity"), Subsystem->GetDocument().Scenes[0].Entities.Num(), 0);

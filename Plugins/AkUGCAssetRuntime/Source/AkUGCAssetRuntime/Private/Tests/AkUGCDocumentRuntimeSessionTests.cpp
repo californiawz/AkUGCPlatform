@@ -343,4 +343,71 @@ bool FAkUGCDocumentRuntimeReplaceParentTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FAkUGCDocumentRuntimeHierarchyTransformTest,
+    "AkUGC.Runtime.Session.HierarchyTransformUndoRedo",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCDocumentRuntimeHierarchyTransformTest::RunTest(const FString& Parameters)
+{
+    UWorld* World = UWorld::CreateWorld(EWorldType::Game, false, TEXT("AkUGCHierarchyTransformTest"));
+    if (!World)
+    {
+        AddError(TEXT("Failed to create test world."));
+        return false;
+    }
+    FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Game);
+    WorldContext.SetCurrentWorld(World);
+
+    FGuid SceneId;
+    FAkUGCProjectDocument Document = MakeSessionDocument(SceneId);
+    FAkUGCPrefabRegistry Registry;
+    FString RegistryError;
+    Registry.Register(MakeSessionPrefab(TEXT("official.gameplay.base")), &RegistryError);
+
+    FAkUGCEntityRecord Parent;
+    Parent.EntityId = FGuid::NewGuid();
+    Parent.PrefabId = TEXT("official.gameplay.base");
+    Parent.Transform.SetLocation(FVector(100.0, 0.0, 0.0));
+
+    FAkUGCEntityRecord Child;
+    Child.EntityId = FGuid::NewGuid();
+    Child.PrefabId = TEXT("official.gameplay.base");
+    Child.ParentEntityId = Parent.EntityId;
+    Child.Transform.SetLocation(FVector(200.0, 0.0, 0.0));
+    Document.Scenes[0].Entities = {Child, Parent};
+
+    {
+        FAkUGCSceneRuntime Runtime(World);
+        FAkUGCDocumentRuntimeSession Session(Runtime, Registry, SceneId);
+        TestTrue(TEXT("Hierarchy session initializes"), Session.Initialize(Document).bSucceeded);
+
+        FAkUGCCommand MoveParent = MakeSessionCommand(EAkUGCCommandType::SetTransform, SceneId, Parent.EntityId);
+        MoveParent.Transform.SetLocation(FVector(300.0, 0.0, 0.0));
+        FAkUGCCommand MoveChild = MakeSessionCommand(EAkUGCCommandType::SetTransform, SceneId, Child.EntityId);
+        MoveChild.Transform.SetLocation(FVector(400.0, 0.0, 0.0));
+
+        TestTrue(
+            TEXT("Hierarchy transform transaction succeeds"),
+            Session.Execute(
+                Document,
+                MakeSessionTransaction(TEXT("Move hierarchy"), {MoveParent, MoveChild})).bSucceeded);
+        TestEqual(TEXT("Parent reaches final world transform"), Runtime.FindActor(Parent.EntityId)->GetActorLocation(), FVector(300.0, 0.0, 0.0));
+        TestEqual(TEXT("Child reaches final world transform"), Runtime.FindActor(Child.EntityId)->GetActorLocation(), FVector(400.0, 0.0, 0.0));
+
+        TestTrue(TEXT("Hierarchy undo succeeds"), Session.Undo(Document).bSucceeded);
+        TestEqual(TEXT("Undo restores parent world transform"), Runtime.FindActor(Parent.EntityId)->GetActorLocation(), FVector(100.0, 0.0, 0.0));
+        TestEqual(TEXT("Undo restores child world transform"), Runtime.FindActor(Child.EntityId)->GetActorLocation(), FVector(200.0, 0.0, 0.0));
+
+        TestTrue(TEXT("Hierarchy redo succeeds"), Session.Redo(Document).bSucceeded);
+        TestEqual(TEXT("Redo restores parent world transform"), Runtime.FindActor(Parent.EntityId)->GetActorLocation(), FVector(300.0, 0.0, 0.0));
+        TestEqual(TEXT("Redo restores child world transform"), Runtime.FindActor(Child.EntityId)->GetActorLocation(), FVector(400.0, 0.0, 0.0));
+        Runtime.Unload();
+    }
+
+    GEngine->DestroyWorldContext(World);
+    World->DestroyWorld(false);
+    return true;
+}
+
 #endif

@@ -54,6 +54,10 @@ void SAkUGCCreatorPanel::Construct(const FArguments& InArgs, UAkUGCEditorSubsyst
                 [SNew(SButton).Text(FText::FromString(TEXT("Undo"))).OnClicked(this, &SAkUGCCreatorPanel::Undo)]
                 + SHorizontalBox::Slot().AutoWidth().Padding(2.0f)
                 [SNew(SButton).Text(FText::FromString(TEXT("Redo"))).OnClicked(this, &SAkUGCCreatorPanel::Redo)]
+                + SHorizontalBox::Slot().AutoWidth().Padding(2.0f)
+                [SNew(SButton).Text(FText::FromString(TEXT("Duplicate Selected"))).OnClicked(this, &SAkUGCCreatorPanel::DuplicateSelected)]
+                + SHorizontalBox::Slot().AutoWidth().Padding(2.0f)
+                [SNew(SButton).Text(FText::FromString(TEXT("Delete Selected"))).OnClicked(this, &SAkUGCCreatorPanel::DeleteSelected)]
             ]
             + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 4.0f)
             [SNew(SSeparator)]
@@ -117,6 +121,29 @@ FReply SAkUGCCreatorPanel::Redo()
     return FReply::Handled();
 }
 
+FReply SAkUGCCreatorPanel::DeleteSelected()
+{
+    if (Subsystem.IsValid())
+    {
+        const FAkUGCCommandExecutionResult Result = Subsystem->DeleteSelectedEntity();
+        Status = Result.bSucceeded ? TEXT("Deleted selected UGC entity.") : Result.ErrorMessage;
+    }
+    return FReply::Handled();
+}
+
+FReply SAkUGCCreatorPanel::DuplicateSelected()
+{
+    if (Subsystem.IsValid())
+    {
+        FGuid EntityId;
+        const FAkUGCCommandExecutionResult Result = Subsystem->DuplicateSelectedEntity(EntityId);
+        Status = Result.bSucceeded
+            ? FString::Printf(TEXT("Duplicated selected UGC entity as %s."), *EntityId.ToString())
+            : Result.ErrorMessage;
+    }
+    return FReply::Handled();
+}
+
 FReply SAkUGCCreatorPanel::PlacePrefab(FName PrefabId)
 {
     if (!Subsystem.IsValid())
@@ -141,5 +168,12 @@ FReply SAkUGCCreatorPanel::PlacePrefab(FName PrefabId)
 
 FText SAkUGCCreatorPanel::GetStatusText() const
 {
+    if (Subsystem.IsValid() && Subsystem->GetSelectedEntityId().IsValid())
+    {
+        return FText::FromString(FString::Printf(
+            TEXT("%s\nSelected Entity: %s"),
+            *Status,
+            *Subsystem->GetSelectedEntityId().ToString()));
+    }
     return FText::FromString(Status);
 }
