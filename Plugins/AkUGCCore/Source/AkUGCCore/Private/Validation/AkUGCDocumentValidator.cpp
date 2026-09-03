@@ -2,6 +2,37 @@
 
 #include "Document/AkUGCDocument.h"
 
+namespace
+{
+    bool HasParentCycle(
+        const FGuid& EntityId,
+        const TMap<FGuid, FGuid>& ParentByEntity,
+        TMap<FGuid, uint8>& VisitStates)
+    {
+        const uint8 State = VisitStates.FindRef(EntityId);
+        if (State == 1)
+        {
+            return true;
+        }
+        if (State == 2)
+        {
+            return false;
+        }
+
+        VisitStates.Add(EntityId, 1);
+        if (const FGuid* ParentId = ParentByEntity.Find(EntityId))
+        {
+            if (ParentId->IsValid() && ParentByEntity.Contains(*ParentId)
+                && HasParentCycle(*ParentId, ParentByEntity, VisitStates))
+            {
+                return true;
+            }
+        }
+        VisitStates.Add(EntityId, 2);
+        return false;
+    }
+}
+
 bool FAkUGCValidationResult::IsValid() const
 {
     return !Issues.ContainsByPredicate([](const FAkUGCValidationIssue& Issue)
@@ -70,6 +101,10 @@ FAkUGCValidationResult FAkUGCDocumentValidator::Validate(const FAkUGCProjectDocu
             SceneIds.Add(Scene.SceneId);
         }
 
+        TSet<FGuid> SceneEntityIds;
+        TMap<FGuid, FGuid> ParentByEntity;
+        TMap<FGuid, int32> EntityIndexById;
+
         for (int32 EntityIndex = 0; EntityIndex < Scene.Entities.Num(); ++EntityIndex)
         {
             const FAkUGCEntityRecord& Entity = Scene.Entities[EntityIndex];
@@ -86,6 +121,9 @@ FAkUGCValidationResult FAkUGCDocumentValidator::Validate(const FAkUGCProjectDocu
             else
             {
                 EntityIds.Add(Entity.EntityId);
+                SceneEntityIds.Add(Entity.EntityId);
+                EntityIndexById.Add(Entity.EntityId, EntityIndex);
+                ParentByEntity.Add(Entity.EntityId, Entity.ParentEntityId);
             }
 
             if (Entity.PrefabId.IsNone())
@@ -111,19 +149,28 @@ FAkUGCValidationResult FAkUGCDocumentValidator::Validate(const FAkUGCProjectDocu
                 }
             }
         }
-    }
 
-    for (int32 SceneIndex = 0; SceneIndex < Document.Scenes.Num(); ++SceneIndex)
-    {
-        const FAkUGCSceneDocument& Scene = Document.Scenes[SceneIndex];
-        for (int32 EntityIndex = 0; EntityIndex < Scene.Entities.Num(); ++EntityIndex)
+        for (const TPair<FGuid, FGuid>& Pair : ParentByEntity)
         {
-            const FAkUGCEntityRecord& Entity = Scene.Entities[EntityIndex];
-            if (Entity.ParentEntityId.IsValid() && !EntityIds.Contains(Entity.ParentEntityId))
+            if (Pair.Value.IsValid() && !SceneEntityIds.Contains(Pair.Value))
             {
+                const int32 EntityIndex = EntityIndexById.FindRef(Pair.Key);
                 Result.AddError(
-                    FString::Printf(TEXT("scenes[%d].entities[%d].parentEntityId"), SceneIndex, EntityIndex),
-                    TEXT("Parent entity does not exist in the project."));
+                    FString::Printf(TEXT("%s.entities[%d].parentEntityId"), *ScenePath, EntityIndex),
+                    TEXT("Parent entity must exist in the same scene."));
+            }
+        }
+
+        TMap<FGuid, uint8> ParentVisitStates;
+        for (const TPair<FGuid, FGuid>& Pair : ParentByEntity)
+        {
+            if (HasParentCycle(Pair.Key, ParentByEntity, ParentVisitStates))
+            {
+                const int32 EntityIndex = EntityIndexById.FindRef(Pair.Key);
+                Result.AddError(
+                    FString::Printf(TEXT("%s.entities[%d].parentEntityId"), *ScenePath, EntityIndex),
+                    TEXT("Parent hierarchy contains a cycle."));
+                break;
             }
         }
     }

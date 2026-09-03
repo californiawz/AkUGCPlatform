@@ -153,14 +153,7 @@ bool FAkUGCSceneRuntime::ApplyTransaction(
         }
     }
 
-    for (const FGuid& EntityId : AttachmentUpdates)
-    {
-        if (!RefreshAttachment(EntityId, OutError))
-        {
-            return false;
-        }
-    }
-    return true;
+    return RefreshAttachments(AttachmentUpdates, OutError);
 }
 
 bool FAkUGCSceneRuntime::ApplyEntity(
@@ -272,6 +265,7 @@ bool FAkUGCSceneRuntime::ValidateScene(
     }
 
     TSet<FGuid> EntityIds;
+    TMap<FGuid, FGuid> ParentByEntity;
     for (const FAkUGCEntityRecord& Entity : Scene.Entities)
     {
         if (!Entity.EntityId.IsValid())
@@ -287,6 +281,7 @@ bool FAkUGCSceneRuntime::ValidateScene(
             return Fail(OutError, FString::Printf(TEXT("Prefab '%s' is not registered."), *Entity.PrefabId.ToString()));
         }
         EntityIds.Add(Entity.EntityId);
+        ParentByEntity.Add(Entity.EntityId, Entity.ParentEntityId);
     }
 
     for (const FAkUGCEntityRecord& Entity : Scene.Entities)
@@ -301,6 +296,37 @@ bool FAkUGCSceneRuntime::ValidateScene(
         if (Entity.ParentEntityId == Entity.EntityId)
         {
             return Fail(OutError, TEXT("Entity cannot be parented to itself."));
+        }
+    }
+
+    TMap<FGuid, uint8> VisitStates;
+    TFunction<bool(const FGuid&)> VisitParent = [&](const FGuid& EntityId)
+    {
+        const uint8 State = VisitStates.FindRef(EntityId);
+        if (State == 1)
+        {
+            return false;
+        }
+        if (State == 2)
+        {
+            return true;
+        }
+
+        VisitStates.Add(EntityId, 1);
+        const FGuid ParentId = ParentByEntity.FindRef(EntityId);
+        if (ParentId.IsValid() && !VisitParent(ParentId))
+        {
+            return false;
+        }
+        VisitStates.Add(EntityId, 2);
+        return true;
+    };
+
+    for (const TPair<FGuid, FGuid>& Pair : ParentByEntity)
+    {
+        if (!VisitParent(Pair.Key))
+        {
+            return Fail(OutError, TEXT("Parent hierarchy contains a cycle."));
         }
     }
     return true;
@@ -323,11 +349,30 @@ bool FAkUGCSceneRuntime::ApplyCommand(
         return true;
 
     case EAkUGCCommandType::DeleteEntity:
-        if (!RemoveEntity(Command.EntityId))
+    {
+        AActor* Actor = FindActor(Command.EntityId);
+        if (!Actor)
         {
             return Fail(OutError, TEXT("Cannot delete a runtime entity that does not exist."));
         }
+
+        TArray<AActor*> AttachedActors;
+        Actor->GetAttachedActors(AttachedActors);
+        for (AActor* AttachedActor : AttachedActors)
+        {
+            if (const UAkUGCEntityBindingComponent* ChildBinding = FindBinding(AttachedActor))
+            {
+                OutAttachmentUpdates.Add(ChildBinding->EntityId);
+            }
+        }
+
+        if (!RemoveEntity(Command.EntityId))
+        {
+            return Fail(OutError, TEXT("Failed to delete runtime entity."));
+        }
+        OutAttachmentUpdates.Remove(Command.EntityId);
         return true;
+    }
 
     case EAkUGCCommandType::SetTransform:
     case EAkUGCCommandType::SetProperty:
@@ -479,12 +524,74 @@ bool FAkUGCSceneRuntime::SpawnEntity(
     return true;
 }
 
+bool FAkUGCSceneRuntime::RefreshAttachments(const TSet<FGuid>& EntityIds, FString* OutError)
+{
+    TMap<FGuid, uint8> VisitStates;
+    TArray<FGuid> OrderedEntityIds;
+    TFunction<bool(const FGuid&)> Visit = [&](const FGuid& EntityId)
+    {
+        const uint8 State = VisitStates.FindRef(EntityId);
+        if (State == 1)
+        {
+            return Fail(OutError, TEXT("Runtime parent hierarchy contains a cycle."));
+        }
+        if (State == 2)
+        {
+            return true;
+        }
+
+        AActor* Actor = FindActor(EntityId);
+        const UAkUGCEntityBindingComponent* Binding = FindBinding(Actor);
+        if (!Binding)
+        {
+            return Fail(OutError, TEXT("Expected runtime entity is missing while ordering attachments."));
+        }
+
+        VisitStates.Add(EntityId, 1);
+        const FGuid ParentId = Binding->SourceRecord.ParentEntityId;
+        if (ParentId.IsValid() && !Visit(ParentId))
+        {
+            return false;
+        }
+        VisitStates.Add(EntityId, 2);
+
+        if (EntityIds.Contains(EntityId))
+        {
+            OrderedEntityIds.Add(EntityId);
+        }
+        return true;
+    };
+
+    TArray<FGuid> StableEntityIds = EntityIds.Array();
+    StableEntityIds.Sort([](const FGuid& Left, const FGuid& Right)
+    {
+        return Left.ToString(EGuidFormats::Digits) < Right.ToString(EGuidFormats::Digits);
+    });
+
+    for (const FGuid& EntityId : StableEntityIds)
+    {
+        if (!Visit(EntityId))
+        {
+            return false;
+        }
+    }
+
+    for (const FGuid& EntityId : OrderedEntityIds)
+    {
+        if (!RefreshAttachment(EntityId, OutError))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool FAkUGCSceneRuntime::RefreshAttachment(const FGuid& EntityId, FString* OutError)
 {
     AActor* Actor = FindActor(EntityId);
     if (!Actor)
     {
-        return true;
+        return Fail(OutError, TEXT("Expected runtime entity is missing while refreshing attachment."));
     }
 
     const UAkUGCEntityBindingComponent* Binding = FindBinding(Actor);
@@ -509,30 +616,19 @@ bool FAkUGCSceneRuntime::RefreshAttachment(const FGuid& EntityId, FString* OutEr
         return Fail(OutError, TEXT("Runtime entity cannot be parented to itself."));
     }
 
-    Actor->AttachToActor(Parent, FAttachmentTransformRules::KeepWorldTransform);
+    if (!Actor->AttachToActor(Parent, FAttachmentTransformRules::KeepWorldTransform))
+    {
+        return Fail(OutError, TEXT("Unreal rejected the runtime entity attachment."));
+    }
     return true;
 }
 
 bool FAkUGCSceneRuntime::AttachParents(const FAkUGCSceneDocument& Scene, FString* OutError)
 {
+    TSet<FGuid> EntityIds;
     for (const FAkUGCEntityRecord& Entity : Scene.Entities)
     {
-        if (!Entity.ParentEntityId.IsValid())
-        {
-            continue;
-        }
-
-        AActor* Child = FindActor(Entity.EntityId);
-        AActor* Parent = FindActor(Entity.ParentEntityId);
-        if (!Child || !Parent)
-        {
-            return Fail(OutError, TEXT("Failed to resolve runtime parent attachment."));
-        }
-        if (Child == Parent)
-        {
-            return Fail(OutError, TEXT("Entity cannot be parented to itself."));
-        }
-        Child->AttachToActor(Parent, FAttachmentTransformRules::KeepWorldTransform);
+        EntityIds.Add(Entity.EntityId);
     }
-    return true;
+    return RefreshAttachments(EntityIds, OutError);
 }

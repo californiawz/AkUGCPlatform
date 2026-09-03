@@ -8,6 +8,7 @@ struct FAkUGCEntityRecord;
 struct FAkUGCPrefabDefinition;
 struct FAkUGCSceneDocument;
 class AActor;
+class FAkUGCDocumentRuntimeSession;
 class FAkUGCPrefabRegistry;
 class UWorld;
 
@@ -27,11 +28,6 @@ public:
         const FAkUGCPrefabRegistry& Registry,
         FString* OutError = nullptr);
 
-    bool ApplyTransaction(
-        const FAkUGCCommandTransaction& Transaction,
-        const FAkUGCPrefabRegistry& Registry,
-        FString* OutError = nullptr);
-
     bool ApplyEntity(
         const FAkUGCEntityRecord& Entity,
         const FAkUGCPrefabRegistry& Registry,
@@ -47,6 +43,13 @@ public:
     static FName GetCurrentPlatformVariant();
 
 private:
+    friend class FAkUGCDocumentRuntimeSession;
+
+    bool ApplyTransaction(
+        const FAkUGCCommandTransaction& Transaction,
+        const FAkUGCPrefabRegistry& Registry,
+        FString* OutError = nullptr);
+
     bool ValidateScene(
         const FAkUGCSceneDocument& Scene,
         const FAkUGCPrefabRegistry& Registry,
@@ -63,6 +66,7 @@ private:
         const FAkUGCPrefabRegistry& Registry,
         FString* OutError);
 
+    bool RefreshAttachments(const TSet<FGuid>& EntityIds, FString* OutError);
     bool RefreshAttachment(const FGuid& EntityId, FString* OutError);
     bool AttachParents(const FAkUGCSceneDocument& Scene, FString* OutError);
 

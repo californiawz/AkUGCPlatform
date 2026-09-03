@@ -58,7 +58,7 @@ bool FAkUGCSceneRuntimeLifecycleTest::RunTest(const FString& Parameters)
     FAkUGCEntityRecord Parent = MakeEntity(TEXT("official.gameplay.base"), FVector(100.0, 0.0, 0.0));
     FAkUGCEntityRecord Child = MakeEntity(TEXT("official.gameplay.tower"), FVector(150.0, 0.0, 0.0));
     Child.ParentEntityId = Parent.EntityId;
-    Scene.Entities = {Parent, Child};
+    Scene.Entities = {Child, Parent};
 
     {
         FAkUGCSceneRuntime Runtime(World);
@@ -119,6 +119,44 @@ bool FAkUGCSceneRuntimeValidationTest::RunTest(const FString& Parameters)
     TestFalse(TEXT("Unknown prefab is rejected"), Runtime.LoadScene(Scene, Registry, &Error));
     TestEqual(TEXT("Rejected scene spawns no actors"), Runtime.Num(), 0);
     TestFalse(TEXT("Validation returns an error"), Error.IsEmpty());
+
+    GEngine->DestroyWorldContext(World);
+    World->DestroyWorld(false);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FAkUGCSceneRuntimeParentCycleTest,
+    "AkUGC.Runtime.Scene.RejectsParentCycles",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCSceneRuntimeParentCycleTest::RunTest(const FString& Parameters)
+{
+    UWorld* World = UWorld::CreateWorld(EWorldType::Game, false, TEXT("AkUGCSceneParentCycleTest"));
+    if (!World)
+    {
+        AddError(TEXT("Failed to create test world."));
+        return false;
+    }
+    FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Game);
+    WorldContext.SetCurrentWorld(World);
+
+    FAkUGCPrefabRegistry Registry;
+    FString Error;
+    Registry.Register(MakePrefab(TEXT("official.gameplay.base")), &Error);
+
+    FAkUGCSceneDocument Scene;
+    Scene.SceneId = FGuid::NewGuid();
+    FAkUGCEntityRecord First = MakeEntity(TEXT("official.gameplay.base"), FVector::ZeroVector);
+    FAkUGCEntityRecord Second = MakeEntity(TEXT("official.gameplay.base"), FVector(100.0, 0.0, 0.0));
+    First.ParentEntityId = Second.EntityId;
+    Second.ParentEntityId = First.EntityId;
+    Scene.Entities = {First, Second};
+
+    FAkUGCSceneRuntime Runtime(World);
+    TestFalse(TEXT("Runtime rejects parent cycle before spawning"), Runtime.LoadScene(Scene, Registry, &Error));
+    TestEqual(TEXT("Rejected cycle spawns no actors"), Runtime.Num(), 0);
+    TestFalse(TEXT("Cycle rejection returns an error"), Error.IsEmpty());
 
     GEngine->DestroyWorldContext(World);
     World->DestroyWorld(false);

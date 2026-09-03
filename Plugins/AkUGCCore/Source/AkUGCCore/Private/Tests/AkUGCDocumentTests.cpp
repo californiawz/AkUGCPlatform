@@ -83,4 +83,68 @@ bool FAkUGCDocumentDuplicateEntityTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FAkUGCDocumentParentCycleTest,
+    "AkUGC.Core.Document.RejectsParentCycles",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCDocumentParentCycleTest::RunTest(const FString& Parameters)
+{
+    FAkUGCProjectDocument Document;
+    Document.Manifest.ProjectId = FGuid::NewGuid();
+    Document.Manifest.DisplayName = TEXT("Parent Cycle Test");
+    Document.Manifest.TemplateId = TEXT("official.tower_defense");
+
+    FAkUGCSceneDocument& Scene = Document.Scenes.AddDefaulted_GetRef();
+    Scene.SceneId = FGuid::NewGuid();
+
+    FAkUGCEntityRecord First;
+    First.EntityId = FGuid::NewGuid();
+    First.PrefabId = TEXT("official.gameplay.base");
+
+    FAkUGCEntityRecord Second;
+    Second.EntityId = FGuid::NewGuid();
+    Second.PrefabId = TEXT("official.gameplay.tower");
+
+    First.ParentEntityId = Second.EntityId;
+    Second.ParentEntityId = First.EntityId;
+    Scene.Entities = {First, Second};
+
+    const FAkUGCValidationResult Validation = FAkUGCDocumentValidator::Validate(Document);
+    TestFalse(TEXT("Parent cycles are rejected"), Validation.IsValid());
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FAkUGCDocumentCrossSceneParentTest,
+    "AkUGC.Core.Document.RejectsCrossSceneParents",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCDocumentCrossSceneParentTest::RunTest(const FString& Parameters)
+{
+    FAkUGCProjectDocument Document;
+    Document.Manifest.ProjectId = FGuid::NewGuid();
+    Document.Manifest.DisplayName = TEXT("Cross Scene Parent Test");
+    Document.Manifest.TemplateId = TEXT("official.tower_defense");
+
+    FAkUGCSceneDocument& FirstScene = Document.Scenes.AddDefaulted_GetRef();
+    FirstScene.SceneId = FGuid::NewGuid();
+    FAkUGCEntityRecord Parent;
+    Parent.EntityId = FGuid::NewGuid();
+    Parent.PrefabId = TEXT("official.gameplay.base");
+    FirstScene.Entities.Add(Parent);
+
+    FAkUGCSceneDocument& SecondScene = Document.Scenes.AddDefaulted_GetRef();
+    SecondScene.SceneId = FGuid::NewGuid();
+    FAkUGCEntityRecord Child;
+    Child.EntityId = FGuid::NewGuid();
+    Child.PrefabId = TEXT("official.gameplay.tower");
+    Child.ParentEntityId = Parent.EntityId;
+    SecondScene.Entities.Add(Child);
+
+    const FAkUGCValidationResult Validation = FAkUGCDocumentValidator::Validate(Document);
+    TestFalse(TEXT("Cross-scene parent references are rejected"), Validation.IsValid());
+    return true;
+}
+
 #endif

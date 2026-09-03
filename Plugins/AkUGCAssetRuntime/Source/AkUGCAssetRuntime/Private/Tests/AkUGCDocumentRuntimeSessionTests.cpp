@@ -231,4 +231,116 @@ bool FAkUGCDocumentRuntimeDeltaProjectionTest::RunTest(const FString& Parameters
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FAkUGCDocumentRuntimeAddDeleteTransactionTest,
+    "AkUGC.Runtime.Session.AddThenDeleteSkipsAttachment",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCDocumentRuntimeAddDeleteTransactionTest::RunTest(const FString& Parameters)
+{
+    UWorld* World = UWorld::CreateWorld(EWorldType::Game, false, TEXT("AkUGCAddDeleteTransactionTest"));
+    if (!World)
+    {
+        AddError(TEXT("Failed to create test world."));
+        return false;
+    }
+    FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Game);
+    WorldContext.SetCurrentWorld(World);
+
+    FGuid SceneId;
+    FAkUGCProjectDocument Document = MakeSessionDocument(SceneId);
+    FAkUGCPrefabRegistry Registry;
+    FString RegistryError;
+    Registry.Register(MakeSessionPrefab(TEXT("official.gameplay.base")), &RegistryError);
+
+    {
+        FAkUGCSceneRuntime Runtime(World);
+        FAkUGCDocumentRuntimeSession Session(Runtime, Registry, SceneId);
+        TestTrue(TEXT("Add-delete session initializes"), Session.Initialize(Document).bSucceeded);
+
+        const FGuid EntityId = FGuid::NewGuid();
+        FAkUGCCommand Add = MakeSessionCommand(EAkUGCCommandType::AddEntity, SceneId, EntityId);
+        Add.Entity.EntityId = EntityId;
+        Add.Entity.PrefabId = TEXT("official.gameplay.base");
+        FAkUGCCommand Delete = MakeSessionCommand(EAkUGCCommandType::DeleteEntity, SceneId, EntityId);
+
+        TestTrue(
+            TEXT("Add then delete transaction succeeds"),
+            Session.Execute(Document, MakeSessionTransaction(TEXT("Transient entity"), {Add, Delete})).bSucceeded);
+        TestEqual(TEXT("Document final state has no entity"), Document.Scenes[0].Entities.Num(), 0);
+        TestEqual(TEXT("Runtime final state has no actor"), Runtime.Num(), 0);
+        Runtime.Unload();
+    }
+
+    GEngine->DestroyWorldContext(World);
+    World->DestroyWorld(false);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FAkUGCDocumentRuntimeReplaceParentTest,
+    "AkUGC.Runtime.Session.ReplaceParentReattachesChildren",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCDocumentRuntimeReplaceParentTest::RunTest(const FString& Parameters)
+{
+    UWorld* World = UWorld::CreateWorld(EWorldType::Game, false, TEXT("AkUGCReplaceParentTest"));
+    if (!World)
+    {
+        AddError(TEXT("Failed to create test world."));
+        return false;
+    }
+    FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Game);
+    WorldContext.SetCurrentWorld(World);
+
+    FGuid SceneId;
+    FAkUGCProjectDocument Document = MakeSessionDocument(SceneId);
+    FAkUGCPrefabRegistry Registry;
+    FString RegistryError;
+    Registry.Register(MakeSessionPrefab(TEXT("official.gameplay.base")), &RegistryError);
+
+    const FGuid ParentId = FGuid::NewGuid();
+    FAkUGCEntityRecord Parent;
+    Parent.EntityId = ParentId;
+    Parent.PrefabId = TEXT("official.gameplay.base");
+
+    const FGuid ChildId = FGuid::NewGuid();
+    FAkUGCEntityRecord Child;
+    Child.EntityId = ChildId;
+    Child.PrefabId = TEXT("official.gameplay.base");
+    Child.ParentEntityId = ParentId;
+    Document.Scenes[0].Entities = {Child, Parent};
+
+    {
+        FAkUGCSceneRuntime Runtime(World);
+        FAkUGCDocumentRuntimeSession Session(Runtime, Registry, SceneId);
+        TestTrue(TEXT("Replace-parent session initializes"), Session.Initialize(Document).bSucceeded);
+
+        FAkUGCCommand DeleteParent = MakeSessionCommand(EAkUGCCommandType::DeleteEntity, SceneId, ParentId);
+        FAkUGCCommand AddParent = MakeSessionCommand(EAkUGCCommandType::AddEntity, SceneId, ParentId);
+        AddParent.Entity = Parent;
+        AddParent.Entity.Transform.SetLocation(FVector(500.0, 0.0, 0.0));
+
+        TestTrue(
+            TEXT("Parent replacement transaction succeeds"),
+            Session.Execute(
+                Document,
+                MakeSessionTransaction(TEXT("Replace parent"), {DeleteParent, AddParent})).bSucceeded);
+
+        AActor* ChildActor = Runtime.FindActor(ChildId);
+        AActor* ReplacementParentActor = Runtime.FindActor(ParentId);
+        TestNotNull(TEXT("Child actor survives parent replacement"), ChildActor);
+        TestNotNull(TEXT("Replacement parent actor exists"), ReplacementParentActor);
+        if (ChildActor && ReplacementParentActor)
+        {
+            TestEqual(TEXT("Child is reattached to replacement parent"), ChildActor->GetAttachParentActor(), ReplacementParentActor);
+        }
+        Runtime.Unload();
+    }
+
+    GEngine->DestroyWorldContext(World);
+    World->DestroyWorld(false);
+    return true;
+}
+
 #endif
