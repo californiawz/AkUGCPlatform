@@ -164,4 +164,71 @@ bool FAkUGCDocumentRuntimeProjectionRollbackTest::RunTest(const FString& Paramet
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FAkUGCDocumentRuntimeDeltaProjectionTest,
+    "AkUGC.Runtime.Session.OnlyTouchesCommandEntities",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCDocumentRuntimeDeltaProjectionTest::RunTest(const FString& Parameters)
+{
+    UWorld* World = UWorld::CreateWorld(EWorldType::Game, false, TEXT("AkUGCDeltaProjectionTest"));
+    if (!World)
+    {
+        AddError(TEXT("Failed to create test world."));
+        return false;
+    }
+    FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Game);
+    WorldContext.SetCurrentWorld(World);
+
+    FGuid SceneId;
+    FAkUGCProjectDocument Document = MakeSessionDocument(SceneId);
+    FAkUGCPrefabRegistry Registry;
+    FString RegistryError;
+    Registry.Register(MakeSessionPrefab(TEXT("official.gameplay.base")), &RegistryError);
+
+    const FGuid ChangedEntityId = FGuid::NewGuid();
+    FAkUGCEntityRecord ChangedEntity;
+    ChangedEntity.EntityId = ChangedEntityId;
+    ChangedEntity.PrefabId = TEXT("official.gameplay.base");
+    ChangedEntity.Transform.SetLocation(FVector(10.0, 0.0, 0.0));
+
+    const FGuid UntouchedEntityId = FGuid::NewGuid();
+    FAkUGCEntityRecord UntouchedEntity;
+    UntouchedEntity.EntityId = UntouchedEntityId;
+    UntouchedEntity.PrefabId = TEXT("official.gameplay.base");
+    UntouchedEntity.Transform.SetLocation(FVector(50.0, 0.0, 0.0));
+
+    Document.Scenes[0].Entities = {ChangedEntity, UntouchedEntity};
+
+    {
+        FAkUGCSceneRuntime Runtime(World);
+        FAkUGCDocumentRuntimeSession Session(Runtime, Registry, SceneId);
+        TestTrue(TEXT("Delta session initializes"), Session.Initialize(Document).bSucceeded);
+
+        AActor* UntouchedActor = Runtime.FindActor(UntouchedEntityId);
+        TestNotNull(TEXT("Untouched actor exists"), UntouchedActor);
+        UntouchedActor->SetActorLocation(FVector(999.0, 0.0, 0.0));
+
+        FAkUGCCommand Move = MakeSessionCommand(EAkUGCCommandType::SetTransform, SceneId, ChangedEntityId);
+        Move.Transform.SetLocation(FVector(200.0, 0.0, 0.0));
+        TestTrue(
+            TEXT("Delta command succeeds"),
+            Session.Execute(Document, MakeSessionTransaction(TEXT("Move one entity"), {Move})).bSucceeded);
+
+        TestEqual(
+            TEXT("Changed actor is updated"),
+            Runtime.FindActor(ChangedEntityId)->GetActorLocation(),
+            FVector(200.0, 0.0, 0.0));
+        TestEqual(
+            TEXT("Untouched actor is not refreshed"),
+            UntouchedActor->GetActorLocation(),
+            FVector(999.0, 0.0, 0.0));
+        Runtime.Unload();
+    }
+
+    GEngine->DestroyWorldContext(World);
+    World->DestroyWorld(false);
+    return true;
+}
+
 #endif

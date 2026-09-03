@@ -93,7 +93,7 @@ FAkUGCCommandExecutionResult FAkUGCDocumentRuntimeSession::Project(
     }
 
     FString ProjectionError;
-    if (Runtime.SynchronizeScene(*AfterScene, Registry, &ProjectionError))
+    if (Runtime.ApplyTransaction(AppliedTransaction, Registry, &ProjectionError))
     {
         return FAkUGCCommandExecutionResult::Success();
     }

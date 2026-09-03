@@ -2,6 +2,8 @@
 
 #include "CoreMinimal.h"
 
+struct FAkUGCCommand;
+struct FAkUGCCommandTransaction;
 struct FAkUGCEntityRecord;
 struct FAkUGCPrefabDefinition;
 struct FAkUGCSceneDocument;
@@ -25,6 +27,11 @@ public:
         const FAkUGCPrefabRegistry& Registry,
         FString* OutError = nullptr);
 
+    bool ApplyTransaction(
+        const FAkUGCCommandTransaction& Transaction,
+        const FAkUGCPrefabRegistry& Registry,
+        FString* OutError = nullptr);
+
     bool ApplyEntity(
         const FAkUGCEntityRecord& Entity,
         const FAkUGCPrefabRegistry& Registry,
@@ -45,11 +52,18 @@ private:
         const FAkUGCPrefabRegistry& Registry,
         FString* OutError) const;
 
+    bool ApplyCommand(
+        const FAkUGCCommand& Command,
+        const FAkUGCPrefabRegistry& Registry,
+        TSet<FGuid>& OutAttachmentUpdates,
+        FString* OutError);
+
     bool SpawnEntity(
         const FAkUGCEntityRecord& Entity,
         const FAkUGCPrefabRegistry& Registry,
         FString* OutError);
 
+    bool RefreshAttachment(const FGuid& EntityId, FString* OutError);
     bool AttachParents(const FAkUGCSceneDocument& Scene, FString* OutError);
 
     TWeakObjectPtr<UWorld> World;

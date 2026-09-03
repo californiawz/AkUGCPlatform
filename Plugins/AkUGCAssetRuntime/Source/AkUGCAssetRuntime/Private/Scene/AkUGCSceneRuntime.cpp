@@ -1,5 +1,6 @@
 #include "Scene/AkUGCSceneRuntime.h"
 
+#include "Command/AkUGCCommand.h"
 #include "Components/StaticMeshComponent.h"
 #include "Document/AkUGCDocument.h"
 #include "Engine/StaticMesh.h"
@@ -127,6 +128,39 @@ bool FAkUGCSceneRuntime::SynchronizeScene(
         }
     }
     return AttachParents(Scene, OutError);
+}
+
+bool FAkUGCSceneRuntime::ApplyTransaction(
+    const FAkUGCCommandTransaction& Transaction,
+    const FAkUGCPrefabRegistry& Registry,
+    FString* OutError)
+{
+    if (!ActiveSceneId.IsValid())
+    {
+        return Fail(OutError, TEXT("Runtime scene is not initialized."));
+    }
+
+    TSet<FGuid> AttachmentUpdates;
+    for (const FAkUGCCommand& Command : Transaction.Commands)
+    {
+        if (Command.SceneId != ActiveSceneId)
+        {
+            return Fail(OutError, TEXT("Command targets a different scene than the active runtime scene."));
+        }
+        if (!ApplyCommand(Command, Registry, AttachmentUpdates, OutError))
+        {
+            return false;
+        }
+    }
+
+    for (const FGuid& EntityId : AttachmentUpdates)
+    {
+        if (!RefreshAttachment(EntityId, OutError))
+        {
+            return false;
+        }
+    }
+    return true;
 }
 
 bool FAkUGCSceneRuntime::ApplyEntity(
@@ -272,6 +306,94 @@ bool FAkUGCSceneRuntime::ValidateScene(
     return true;
 }
 
+bool FAkUGCSceneRuntime::ApplyCommand(
+    const FAkUGCCommand& Command,
+    const FAkUGCPrefabRegistry& Registry,
+    TSet<FGuid>& OutAttachmentUpdates,
+    FString* OutError)
+{
+    switch (Command.Type)
+    {
+    case EAkUGCCommandType::AddEntity:
+        if (!SpawnEntity(Command.Entity, Registry, OutError))
+        {
+            return false;
+        }
+        OutAttachmentUpdates.Add(Command.Entity.EntityId);
+        return true;
+
+    case EAkUGCCommandType::DeleteEntity:
+        if (!RemoveEntity(Command.EntityId))
+        {
+            return Fail(OutError, TEXT("Cannot delete a runtime entity that does not exist."));
+        }
+        return true;
+
+    case EAkUGCCommandType::SetTransform:
+    case EAkUGCCommandType::SetProperty:
+    case EAkUGCCommandType::RemoveProperty:
+    {
+        AActor* Actor = FindActor(Command.EntityId);
+        UAkUGCEntityBindingComponent* Binding = FindBinding(Actor);
+        if (!Binding)
+        {
+            return Fail(OutError, TEXT("Runtime entity binding does not exist."));
+        }
+
+        FAkUGCEntityRecord UpdatedRecord = Binding->SourceRecord;
+        if (Command.Type == EAkUGCCommandType::SetTransform)
+        {
+            UpdatedRecord.Transform = Command.Transform;
+        }
+        else
+        {
+            FAkUGCComponentRecord* Component = UpdatedRecord.Components.FindByPredicate([&Command](const FAkUGCComponentRecord& Candidate)
+            {
+                return Candidate.TypeId == Command.ComponentTypeId;
+            });
+            if (!Component)
+            {
+                return Fail(OutError, TEXT("Runtime entity component does not exist."));
+            }
+
+            if (Command.Type == EAkUGCCommandType::SetProperty)
+            {
+                Component->Properties.Add(Command.PropertyId, Command.PropertyValue);
+            }
+            else if (Component->Properties.Remove(Command.PropertyId) == 0)
+            {
+                return Fail(OutError, TEXT("Runtime entity property does not exist."));
+            }
+        }
+
+        Binding->ApplyRecord(UpdatedRecord);
+        return true;
+    }
+
+    case EAkUGCCommandType::DuplicateEntity:
+    {
+        AActor* SourceActor = FindActor(Command.SourceEntityId);
+        const UAkUGCEntityBindingComponent* SourceBinding = FindBinding(SourceActor);
+        if (!SourceBinding)
+        {
+            return Fail(OutError, TEXT("Runtime duplicate source entity does not exist."));
+        }
+
+        FAkUGCEntityRecord Duplicate = SourceBinding->SourceRecord;
+        Duplicate.EntityId = Command.EntityId;
+        Duplicate.Transform = Command.Transform;
+        if (!SpawnEntity(Duplicate, Registry, OutError))
+        {
+            return false;
+        }
+        OutAttachmentUpdates.Add(Duplicate.EntityId);
+        return true;
+    }
+    }
+
+    return Fail(OutError, TEXT("Unsupported runtime command type."));
+}
+
 bool FAkUGCSceneRuntime::SpawnEntity(
     const FAkUGCEntityRecord& Entity,
     const FAkUGCPrefabRegistry& Registry,
@@ -354,6 +476,40 @@ bool FAkUGCSceneRuntime::SpawnEntity(
     }
 
     Actors.Add(Entity.EntityId, Actor);
+    return true;
+}
+
+bool FAkUGCSceneRuntime::RefreshAttachment(const FGuid& EntityId, FString* OutError)
+{
+    AActor* Actor = FindActor(EntityId);
+    if (!Actor)
+    {
+        return true;
+    }
+
+    const UAkUGCEntityBindingComponent* Binding = FindBinding(Actor);
+    if (!Binding)
+    {
+        return Fail(OutError, TEXT("Runtime entity binding does not exist while refreshing attachment."));
+    }
+
+    Actor->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+    if (!Binding->SourceRecord.ParentEntityId.IsValid())
+    {
+        return true;
+    }
+
+    AActor* Parent = FindActor(Binding->SourceRecord.ParentEntityId);
+    if (!Parent)
+    {
+        return Fail(OutError, TEXT("Runtime parent entity does not exist."));
+    }
+    if (Parent == Actor)
+    {
+        return Fail(OutError, TEXT("Runtime entity cannot be parented to itself."));
+    }
+
+    Actor->AttachToActor(Parent, FAttachmentTransformRules::KeepWorldTransform);
     return true;
 }
 
