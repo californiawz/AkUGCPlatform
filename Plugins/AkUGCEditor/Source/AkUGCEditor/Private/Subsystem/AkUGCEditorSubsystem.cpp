@@ -191,6 +191,7 @@ void UAkUGCEditorSubsystem::CloseProject()
     PendingDeletedEntityIds.Reset();
     bCapturingEditorActorDeletion = false;
 
+    CommandService.Reset();
     Session.Reset();
     if (Runtime)
     {
@@ -207,34 +208,14 @@ FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::PlacePrefab(
     const FTransform& Transform,
     FGuid& OutEntityId)
 {
-    if (!Session || !PrefabRegistry)
+    OutEntityId.Invalidate();
+    if (!CommandService)
     {
         return NoSessionResult();
     }
 
-    FAkUGCEntityRecord Entity;
-    OutEntityId = FGuid::NewGuid();
-    FString Error;
-    if (!PrefabRegistry->CreateEntityRecord(PrefabId, OutEntityId, Transform, Entity, &Error))
-    {
-        OutEntityId.Invalidate();
-        return FAkUGCCommandExecutionResult::Failure(TEXT("editor.prefabId"), MoveTemp(Error));
-    }
-
-    FAkUGCCommand Command;
-    Command.CommandId = FGuid::NewGuid();
-    Command.Type = EAkUGCCommandType::AddEntity;
-    Command.SceneId = ActiveSceneId;
-    Command.EntityId = OutEntityId;
-    Command.Entity = MoveTemp(Entity);
-
-    FAkUGCCommandTransaction Transaction;
-    Transaction.TransactionId = FGuid::NewGuid();
-    Transaction.Label = FString::Printf(TEXT("Place %s"), *PrefabId.ToString());
-    Transaction.Commands.Add(MoveTemp(Command));
-
     TGuardValue<bool> ApplyingGuard(bApplyingUGCTransaction, true);
-    FAkUGCCommandExecutionResult Result = Session->Execute(Document, Transaction);
+    FAkUGCCommandExecutionResult Result = CommandService->PlacePrefab(PrefabId, Transform, OutEntityId);
     if (Result.bSucceeded)
     {
         ++DocumentRevision;
@@ -255,103 +236,28 @@ FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::ExecuteDeleteEntities(
     const TSet<FGuid>& EntityIds,
     const FString& Label)
 {
-    if (!Session)
+    if (!CommandService)
     {
         return NoSessionResult();
     }
-    if (EntityIds.IsEmpty())
-    {
-        return FAkUGCCommandExecutionResult::Failure(TEXT("editor.entityIds"), TEXT("At least one entity is required."));
-    }
 
-    const FAkUGCSceneDocument* Scene = Document.Scenes.FindByPredicate([this](const FAkUGCSceneDocument& Candidate)
+    for (const FAkUGCSceneDocument& Scene : Document.Scenes)
     {
-        return Candidate.SceneId == ActiveSceneId;
-    });
-    if (!Scene)
-    {
-        return FAkUGCCommandExecutionResult::Failure(TEXT("editor.sceneId"), TEXT("Active scene does not exist."));
-    }
-
-    TSet<FGuid> ExistingEntityIds;
-    for (const FGuid& EntityId : EntityIds)
-    {
-        if (Scene->Entities.ContainsByPredicate([&EntityId](const FAkUGCEntityRecord& Entity)
+        for (const FAkUGCEntityRecord& Entity : Scene.Entities)
         {
-            return Entity.EntityId == EntityId;
-        }))
-        {
-            ExistingEntityIds.Add(EntityId);
-        }
-    }
-    if (ExistingEntityIds.IsEmpty())
-    {
-        return FAkUGCCommandExecutionResult::Failure(TEXT("editor.entityIds"), TEXT("No target entity exists."));
-    }
-
-    FAkUGCCommandTransaction Transaction;
-    Transaction.TransactionId = FGuid::NewGuid();
-    Transaction.Label = Label;
-
-    for (const FAkUGCEntityRecord& Entity : Scene->Entities)
-    {
-        if (Entity.ParentEntityId.IsValid()
-            && ExistingEntityIds.Contains(Entity.ParentEntityId)
-            && !ExistingEntityIds.Contains(Entity.EntityId))
-        {
-            FAkUGCCommand& DetachCommand = Transaction.Commands.AddDefaulted_GetRef();
-            DetachCommand.CommandId = FGuid::NewGuid();
-            DetachCommand.Type = EAkUGCCommandType::SetParent;
-            DetachCommand.SceneId = ActiveSceneId;
-            DetachCommand.EntityId = Entity.EntityId;
-            PendingDetachedEntityIds.Remove(Entity.EntityId);
-        }
-    }
-
-    TArray<FGuid> OrderedEntityIds = ExistingEntityIds.Array();
-    const auto GetDepth = [Scene](const FGuid& EntityId)
-    {
-        int32 Depth = 0;
-        const FAkUGCEntityRecord* Entity = Scene->Entities.FindByPredicate([&EntityId](const FAkUGCEntityRecord& Candidate)
-        {
-            return Candidate.EntityId == EntityId;
-        });
-        FGuid ParentId = Entity ? Entity->ParentEntityId : FGuid{};
-        while (ParentId.IsValid())
-        {
-            ++Depth;
-            const FAkUGCEntityRecord* Parent = Scene->Entities.FindByPredicate([&ParentId](const FAkUGCEntityRecord& Candidate)
+            if (EntityIds.Contains(Entity.ParentEntityId) && !EntityIds.Contains(Entity.EntityId))
             {
-                return Candidate.EntityId == ParentId;
-            });
-            ParentId = Parent ? Parent->ParentEntityId : FGuid{};
+                PendingDetachedEntityIds.Remove(Entity.EntityId);
+            }
         }
-        return Depth;
-    };
-    OrderedEntityIds.Sort([&GetDepth](const FGuid& Left, const FGuid& Right)
-    {
-        const int32 LeftDepth = GetDepth(Left);
-        const int32 RightDepth = GetDepth(Right);
-        return LeftDepth == RightDepth
-            ? Left.ToString(EGuidFormats::Digits) < Right.ToString(EGuidFormats::Digits)
-            : LeftDepth > RightDepth;
-    });
-
-    for (const FGuid& EntityId : OrderedEntityIds)
-    {
-        FAkUGCCommand& DeleteCommand = Transaction.Commands.AddDefaulted_GetRef();
-        DeleteCommand.CommandId = FGuid::NewGuid();
-        DeleteCommand.Type = EAkUGCCommandType::DeleteEntity;
-        DeleteCommand.SceneId = ActiveSceneId;
-        DeleteCommand.EntityId = EntityId;
     }
 
     TGuardValue<bool> ApplyingGuard(bApplyingUGCTransaction, true);
-    FAkUGCCommandExecutionResult Result = Session->Execute(Document, Transaction);
+    FAkUGCCommandExecutionResult Result = CommandService->DeleteEntities(EntityIds, Label);
     if (Result.bSucceeded)
     {
         ++DocumentRevision;
-        if (ExistingEntityIds.Contains(SelectedEntityId))
+        if (EntityIds.Contains(SelectedEntityId))
         {
             SelectedEntityId.Invalidate();
         }
@@ -363,36 +269,17 @@ FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::DuplicateEntity(
     const FGuid& SourceEntityId,
     FGuid& OutEntityId)
 {
-    if (!Session || !Runtime)
+    OutEntityId.Invalidate();
+    if (!CommandService)
     {
         return NoSessionResult();
     }
 
-    AActor* SourceActor = Runtime->FindActor(SourceEntityId);
-    if (!SourceActor)
-    {
-        return FAkUGCCommandExecutionResult::Failure(
-            TEXT("editor.sourceEntityId"),
-            TEXT("Selected UGC entity does not exist in the runtime scene."));
-    }
-
-    OutEntityId = FGuid::NewGuid();
-    FAkUGCCommand Command;
-    Command.CommandId = FGuid::NewGuid();
-    Command.Type = EAkUGCCommandType::DuplicateEntity;
-    Command.SceneId = ActiveSceneId;
-    Command.EntityId = OutEntityId;
-    Command.SourceEntityId = SourceEntityId;
-    Command.Transform = SourceActor->GetActorTransform();
-    Command.Transform.AddToTranslation(FVector(100.0, 100.0, 0.0));
-
-    FAkUGCCommandTransaction Transaction;
-    Transaction.TransactionId = FGuid::NewGuid();
-    Transaction.Label = TEXT("Duplicate entity");
-    Transaction.Commands.Add(MoveTemp(Command));
-
     TGuardValue<bool> ApplyingGuard(bApplyingUGCTransaction, true);
-    FAkUGCCommandExecutionResult Result = Session->Execute(Document, Transaction);
+    FAkUGCCommandExecutionResult Result = CommandService->DuplicateEntity(
+        SourceEntityId,
+        FVector(100.0, 100.0, 0.0),
+        OutEntityId);
     if (Result.bSucceeded)
     {
         ++DocumentRevision;
@@ -415,39 +302,13 @@ FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::SetEntityTransforms(
     const TMap<FGuid, FTransform>& Transforms,
     const FString& Label)
 {
-    if (!Session)
+    if (!CommandService)
     {
         return NoSessionResult();
     }
-    if (Transforms.IsEmpty())
-    {
-        return FAkUGCCommandExecutionResult::Failure(
-            TEXT("editor.transforms"),
-            TEXT("At least one entity transform is required."));
-    }
-
-    TArray<FGuid> EntityIds;
-    Transforms.GetKeys(EntityIds);
-    EntityIds.Sort([](const FGuid& Left, const FGuid& Right)
-    {
-        return Left.ToString(EGuidFormats::Digits) < Right.ToString(EGuidFormats::Digits);
-    });
-
-    FAkUGCCommandTransaction Transaction;
-    Transaction.TransactionId = FGuid::NewGuid();
-    Transaction.Label = Label;
-    for (const FGuid& EntityId : EntityIds)
-    {
-        FAkUGCCommand& Command = Transaction.Commands.AddDefaulted_GetRef();
-        Command.CommandId = FGuid::NewGuid();
-        Command.Type = EAkUGCCommandType::SetTransform;
-        Command.SceneId = ActiveSceneId;
-        Command.EntityId = EntityId;
-        Command.Transform = Transforms.FindChecked(EntityId);
-    }
 
     TGuardValue<bool> ApplyingGuard(bApplyingUGCTransaction, true);
-    FAkUGCCommandExecutionResult Result = Session->Execute(Document, Transaction);
+    FAkUGCCommandExecutionResult Result = CommandService->SetEntityTransforms(Transforms, Label);
     if (Result.bSucceeded)
     {
         ++DocumentRevision;
@@ -459,37 +320,13 @@ FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::SetEntityParent(
     const FGuid& EntityId,
     const FGuid& ParentEntityId)
 {
-    if (!Session)
+    if (!CommandService)
     {
         return NoSessionResult();
     }
 
-    const FAkUGCEntityRecord* Entity = FindEntity(EntityId);
-    if (!Entity)
-    {
-        return FAkUGCCommandExecutionResult::Failure(TEXT("editor.entityId"), TEXT("Entity does not exist."));
-    }
-    if (Entity->ParentEntityId == ParentEntityId)
-    {
-        return FAkUGCCommandExecutionResult::Failure(
-            TEXT("editor.parentEntityId"),
-            TEXT("Entity already has the requested parent."));
-    }
-
-    FAkUGCCommand Command;
-    Command.CommandId = FGuid::NewGuid();
-    Command.Type = EAkUGCCommandType::SetParent;
-    Command.SceneId = ActiveSceneId;
-    Command.EntityId = EntityId;
-    Command.ParentEntityId = ParentEntityId;
-
-    FAkUGCCommandTransaction Transaction;
-    Transaction.TransactionId = FGuid::NewGuid();
-    Transaction.Label = ParentEntityId.IsValid() ? TEXT("Set entity parent") : TEXT("Detach entity from parent");
-    Transaction.Commands.Add(MoveTemp(Command));
-
     TGuardValue<bool> ApplyingGuard(bApplyingUGCTransaction, true);
-    FAkUGCCommandExecutionResult Result = Session->Execute(Document, Transaction);
+    FAkUGCCommandExecutionResult Result = CommandService->SetEntityParent(EntityId, ParentEntityId);
     if (Result.bSucceeded)
     {
         ++DocumentRevision;
@@ -503,76 +340,17 @@ FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::SetEntityProperty(
     FName PropertyId,
     const FAkUGCValue& Value)
 {
-    if (!Session || !PrefabRegistry)
+    if (!CommandService)
     {
         return NoSessionResult();
     }
 
-    const FAkUGCPrefabDefinition* Prefab = FindPrefabForEntity(EntityId);
-    if (!Prefab)
-    {
-        return FAkUGCCommandExecutionResult::Failure(TEXT("editor.entityId"), TEXT("Entity or prefab definition does not exist."));
-    }
-
-    const FAkUGCPropertyDefinition* Property = Prefab->EditableProperties.FindByPredicate(
-        [ComponentTypeId, PropertyId](const FAkUGCPropertyDefinition& Candidate)
-        {
-            return Candidate.ComponentTypeId == ComponentTypeId && Candidate.PropertyId == PropertyId;
-        });
-    if (!Property)
-    {
-        return FAkUGCCommandExecutionResult::Failure(TEXT("editor.propertyId"), TEXT("Property is not exposed by the prefab schema."));
-    }
-    if (Property->ValueType != Value.Type)
-    {
-        return FAkUGCCommandExecutionResult::Failure(TEXT("editor.propertyValue"), TEXT("Property value type does not match the prefab schema."));
-    }
-
-    if (Value.Type == EAkUGCValueType::Number && !FMath::IsFinite(Value.NumberValue))
-    {
-        return FAkUGCCommandExecutionResult::Failure(
-            TEXT("editor.propertyValue"),
-            TEXT("Numeric property value must be finite."));
-    }
-    if (Value.Type == EAkUGCValueType::Vector && Value.VectorValue.ContainsNaN())
-    {
-        return FAkUGCCommandExecutionResult::Failure(
-            TEXT("editor.propertyValue"),
-            TEXT("Vector property value must be finite."));
-    }
-    if (Value.Type == EAkUGCValueType::Rotator && Value.RotatorValue.ContainsNaN())
-    {
-        return FAkUGCCommandExecutionResult::Failure(
-            TEXT("editor.propertyValue"),
-            TEXT("Rotator property value must be finite."));
-    }
-
-    const double NumericValue = Value.Type == EAkUGCValueType::Integer
-        ? static_cast<double>(Value.IntegerValue)
-        : Value.NumberValue;
-    if ((Value.Type == EAkUGCValueType::Integer || Value.Type == EAkUGCValueType::Number)
-        && ((Property->bHasMinimum && NumericValue < Property->Minimum)
-            || (Property->bHasMaximum && NumericValue > Property->Maximum)))
-    {
-        return FAkUGCCommandExecutionResult::Failure(TEXT("editor.propertyValue"), TEXT("Property value is outside the allowed range."));
-    }
-
-    FAkUGCCommand Command;
-    Command.CommandId = FGuid::NewGuid();
-    Command.Type = EAkUGCCommandType::SetProperty;
-    Command.SceneId = ActiveSceneId;
-    Command.EntityId = EntityId;
-    Command.ComponentTypeId = ComponentTypeId;
-    Command.PropertyId = PropertyId;
-    Command.PropertyValue = Value;
-
-    FAkUGCCommandTransaction Transaction;
-    Transaction.TransactionId = FGuid::NewGuid();
-    Transaction.Label = FString::Printf(TEXT("Set %s.%s"), *ComponentTypeId.ToString(), *PropertyId.ToString());
-    Transaction.Commands.Add(MoveTemp(Command));
-
     TGuardValue<bool> ApplyingGuard(bApplyingUGCTransaction, true);
-    FAkUGCCommandExecutionResult Result = Session->Execute(Document, Transaction);
+    FAkUGCCommandExecutionResult Result = CommandService->SetEntityProperty(
+        EntityId,
+        ComponentTypeId,
+        PropertyId,
+        Value);
     if (Result.bSucceeded)
     {
         ++DocumentRevision;
@@ -596,12 +374,12 @@ FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::DuplicateSelectedEntity(FGui
 
 FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::Undo()
 {
-    if (!Session)
+    if (!CommandService)
     {
         return NoSessionResult();
     }
     TGuardValue<bool> ApplyingGuard(bApplyingUGCTransaction, true);
-    FAkUGCCommandExecutionResult Result = Session->Undo(Document);
+    FAkUGCCommandExecutionResult Result = CommandService->Undo();
     if (Result.bSucceeded)
     {
         if (SelectedEntityId.IsValid() && !FindEntity(SelectedEntityId))
@@ -615,12 +393,12 @@ FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::Undo()
 
 FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::Redo()
 {
-    if (!Session)
+    if (!CommandService)
     {
         return NoSessionResult();
     }
     TGuardValue<bool> ApplyingGuard(bApplyingUGCTransaction, true);
-    FAkUGCCommandExecutionResult Result = Session->Redo(Document);
+    FAkUGCCommandExecutionResult Result = CommandService->Redo();
     if (Result.bSucceeded)
     {
         if (SelectedEntityId.IsValid() && !FindEntity(SelectedEntityId))
@@ -690,12 +468,12 @@ bool UAkUGCEditorSubsystem::HasOpenProject() const
 
 bool UAkUGCEditorSubsystem::CanUndo() const
 {
-    return Session && Session->CanUndo();
+    return CommandService && CommandService->CanUndo();
 }
 
 bool UAkUGCEditorSubsystem::CanRedo() const
 {
-    return Session && Session->CanRedo();
+    return CommandService && CommandService->CanRedo();
 }
 
 const FAkUGCProjectDocument& UAkUGCEditorSubsystem::GetDocument() const
@@ -770,6 +548,7 @@ bool UAkUGCEditorSubsystem::OpenDocument(FAkUGCProjectDocument&& NewDocument, FS
         *PrefabRegistry,
         NewSceneId);
 
+    TGuardValue<bool> ApplyingGuard(bApplyingUGCTransaction, true);
     const FAkUGCCommandExecutionResult Result = NewSession->Initialize(NewDocument);
     if (!Result.bSucceeded)
     {
@@ -785,6 +564,11 @@ bool UAkUGCEditorSubsystem::OpenDocument(FAkUGCProjectDocument&& NewDocument, FS
     ActiveSceneId = NewSceneId;
     Runtime = MoveTemp(NewRuntime);
     Session = MoveTemp(NewSession);
+    CommandService = MakeUnique<FAkUGCRuntimeCommandService>(
+        Document,
+        *Session,
+        *PrefabRegistry,
+        ActiveSceneId);
     ++DocumentRevision;
     return true;
 }
@@ -1099,40 +883,24 @@ bool UAkUGCEditorSubsystem::CommitActorHierarchyChange(AActor* Actor, const AAct
         return false;
     }
 
-    FAkUGCCommandTransaction Transaction;
-    Transaction.TransactionId = FGuid::NewGuid();
-    Transaction.Label = ParentEntityId.IsValid()
-        ? TEXT("Change entity parent")
-        : TEXT("Detach entity from parent");
-
-    if (Entity->ParentEntityId != ParentEntityId)
-    {
-        FAkUGCCommand& ParentCommand = Transaction.Commands.AddDefaulted_GetRef();
-        ParentCommand.CommandId = FGuid::NewGuid();
-        ParentCommand.Type = EAkUGCCommandType::SetParent;
-        ParentCommand.SceneId = ActiveSceneId;
-        ParentCommand.EntityId = Binding->EntityId;
-        ParentCommand.ParentEntityId = ParentEntityId;
-    }
-
     const FTransform CurrentTransform = Actor->GetActorTransform();
-    if (!Entity->Transform.Equals(CurrentTransform, 0.01))
-    {
-        FAkUGCCommand& TransformCommand = Transaction.Commands.AddDefaulted_GetRef();
-        TransformCommand.CommandId = FGuid::NewGuid();
-        TransformCommand.Type = EAkUGCCommandType::SetTransform;
-        TransformCommand.SceneId = ActiveSceneId;
-        TransformCommand.EntityId = Binding->EntityId;
-        TransformCommand.Transform = CurrentTransform;
-    }
-
-    if (Transaction.Commands.IsEmpty())
+    const bool bTransformChanged = !Entity->Transform.Equals(CurrentTransform, 0.01);
+    if (Entity->ParentEntityId == ParentEntityId && !bTransformChanged)
     {
         return true;
     }
+    if (!CommandService)
+    {
+        RestoreActorHierarchyFromDocument();
+        return false;
+    }
 
     TGuardValue<bool> ApplyingGuard(bApplyingUGCTransaction, true);
-    const FAkUGCCommandExecutionResult Result = Session->Execute(Document, Transaction);
+    const FAkUGCCommandExecutionResult Result = CommandService->SetEntityParentAndTransform(
+        Binding->EntityId,
+        ParentEntityId,
+        bTransformChanged ? TOptional<FTransform>(CurrentTransform) : TOptional<FTransform>{},
+        ParentEntityId.IsValid() ? TEXT("Change entity parent") : TEXT("Detach entity from parent"));
     if (!Result.bSucceeded)
     {
         UE_LOG(LogTemp, Error, TEXT("Failed to commit UGC hierarchy change: %s"), *Result.ErrorMessage);

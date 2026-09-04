@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Command/AkUGCCommandExecutor.h"
+#include "Command/AkUGCRuntimeCommandService.h"
 #include "Containers/Ticker.h"
 #include "Document/AkUGCDocument.h"
 #include "EditorSubsystem.h"
@@ -83,6 +84,7 @@ private:
     TUniquePtr<FAkUGCPrefabRegistry> PrefabRegistry;
     TUniquePtr<FAkUGCSceneRuntime> Runtime;
     TUniquePtr<FAkUGCDocumentRuntimeSession> Session;
+    TUniquePtr<FAkUGCRuntimeCommandService> CommandService;
     FGuid ActiveSceneId;
     FGuid SelectedEntityId;
     FDelegateHandle SelectionChangedHandle;

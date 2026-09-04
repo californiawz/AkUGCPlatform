@@ -221,9 +221,51 @@ bool FAkUGCPrefabRegistry::ValidateDefinition(const FAkUGCPrefabDefinition& Defi
         {
             return Fail(OutError, FString::Printf(TEXT("Editable property '%s' default value type does not match its schema."), *PropertyKey));
         }
+        if ((Property.bHasMinimum && !FMath::IsFinite(Property.Minimum))
+            || (Property.bHasMaximum && !FMath::IsFinite(Property.Maximum)))
+        {
+            return Fail(OutError, FString::Printf(TEXT("Editable property '%s' range must be finite."), *PropertyKey));
+        }
         if (Property.bHasMinimum && Property.bHasMaximum && Property.Minimum > Property.Maximum)
         {
             return Fail(OutError, FString::Printf(TEXT("Editable property '%s' has an invalid numeric range."), *PropertyKey));
+        }
+
+        const double DefaultNumericValue = Property.DefaultValue.NumberValue;
+        if (Property.ValueType == EAkUGCValueType::Number
+            && ((!FMath::IsFinite(DefaultNumericValue))
+                || (Property.bHasMinimum && DefaultNumericValue < Property.Minimum)
+                || (Property.bHasMaximum && DefaultNumericValue > Property.Maximum)))
+        {
+            return Fail(OutError, FString::Printf(TEXT("Editable property '%s' default value is outside its range."), *PropertyKey));
+        }
+        if (Property.ValueType == EAkUGCValueType::Integer)
+        {
+            constexpr double Int64ExclusiveUpper = 9223372036854775808.0;
+            constexpr double Int64Lower = -9223372036854775808.0;
+            if ((Property.bHasMinimum && Property.Minimum >= Int64ExclusiveUpper)
+                || (Property.bHasMaximum && Property.Maximum < Int64Lower))
+            {
+                return Fail(OutError, FString::Printf(TEXT("Editable property '%s' integer range excludes all int64 values."), *PropertyKey));
+            }
+            if (Property.bHasMinimum && Property.Minimum > Int64Lower
+                && Property.DefaultValue.IntegerValue < static_cast<int64>(FMath::CeilToDouble(Property.Minimum)))
+            {
+                return Fail(OutError, FString::Printf(TEXT("Editable property '%s' default value is below its range."), *PropertyKey));
+            }
+            if (Property.bHasMaximum && Property.Maximum < Int64ExclusiveUpper
+                && Property.DefaultValue.IntegerValue > static_cast<int64>(FMath::FloorToDouble(Property.Maximum)))
+            {
+                return Fail(OutError, FString::Printf(TEXT("Editable property '%s' default value is above its range."), *PropertyKey));
+            }
+        }
+        if (Property.ValueType == EAkUGCValueType::Vector && Property.DefaultValue.VectorValue.ContainsNaN())
+        {
+            return Fail(OutError, FString::Printf(TEXT("Editable property '%s' vector default must be finite."), *PropertyKey));
+        }
+        if (Property.ValueType == EAkUGCValueType::Rotator && Property.DefaultValue.RotatorValue.ContainsNaN())
+        {
+            return Fail(OutError, FString::Printf(TEXT("Editable property '%s' rotator default must be finite."), *PropertyKey));
         }
         PropertyKeys.Add(PropertyKey);
     }
