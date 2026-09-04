@@ -52,6 +52,7 @@ public:
     bool CanRedo() const;
     const FAkUGCProjectDocument& GetDocument() const;
     const FAkUGCPrefabRegistry& GetPrefabRegistry() const;
+    uint64 GetDocumentRevision() const;
     FString GetDefaultProjectPath() const;
 
 private:
@@ -72,6 +73,7 @@ private:
     FGuid SelectedEntityId;
     FDelegateHandle SelectionChangedHandle;
     FDelegateHandle ActorsMovedHandle;
+    uint64 DocumentRevision = 0;
     bool bUpdatingEditorSelection = false;
     bool bApplyingUGCTransaction = false;
 };

@@ -18,6 +18,7 @@ public class AkUGCEditor : ModuleRules
         PrivateDependencyModuleNames.AddRange(new[]
         {
             "EditorSubsystem",
+            "InputCore",
             "LevelEditor",
             "Slate",
             "SlateCore",

@@ -124,6 +124,7 @@ void UAkUGCEditorSubsystem::CloseProject()
     Runtime.Reset();
     Document = FAkUGCProjectDocument{};
     ActiveSceneId.Invalidate();
+    ++DocumentRevision;
 }
 
 FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::PlacePrefab(
@@ -159,9 +160,13 @@ FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::PlacePrefab(
 
     TGuardValue<bool> ApplyingGuard(bApplyingUGCTransaction, true);
     FAkUGCCommandExecutionResult Result = Session->Execute(Document, Transaction);
-    if (Result.bSucceeded && !IsRunningCommandlet() && !FApp::IsUnattended())
+    if (Result.bSucceeded)
     {
-        SelectEntity(OutEntityId);
+        ++DocumentRevision;
+        if (!IsRunningCommandlet() && !FApp::IsUnattended())
+        {
+            SelectEntity(OutEntityId);
+        }
     }
     return Result;
 }
@@ -186,9 +191,13 @@ FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::DeleteEntity(const FGuid& En
 
     TGuardValue<bool> ApplyingGuard(bApplyingUGCTransaction, true);
     FAkUGCCommandExecutionResult Result = Session->Execute(Document, Transaction);
-    if (Result.bSucceeded && SelectedEntityId == EntityId)
+    if (Result.bSucceeded)
     {
-        SelectedEntityId.Invalidate();
+        ++DocumentRevision;
+        if (SelectedEntityId == EntityId)
+        {
+            SelectedEntityId.Invalidate();
+        }
     }
     return Result;
 }
@@ -227,9 +236,13 @@ FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::DuplicateEntity(
 
     TGuardValue<bool> ApplyingGuard(bApplyingUGCTransaction, true);
     FAkUGCCommandExecutionResult Result = Session->Execute(Document, Transaction);
-    if (Result.bSucceeded && !IsRunningCommandlet() && !FApp::IsUnattended())
+    if (Result.bSucceeded)
     {
-        SelectEntity(OutEntityId);
+        ++DocumentRevision;
+        if (!IsRunningCommandlet() && !FApp::IsUnattended())
+        {
+            SelectEntity(OutEntityId);
+        }
     }
     return Result;
 }
@@ -277,7 +290,12 @@ FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::SetEntityTransforms(
     }
 
     TGuardValue<bool> ApplyingGuard(bApplyingUGCTransaction, true);
-    return Session->Execute(Document, Transaction);
+    FAkUGCCommandExecutionResult Result = Session->Execute(Document, Transaction);
+    if (Result.bSucceeded)
+    {
+        ++DocumentRevision;
+    }
+    return Result;
 }
 
 FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::SetEntityProperty(
@@ -311,6 +329,25 @@ FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::SetEntityProperty(
         return FAkUGCCommandExecutionResult::Failure(TEXT("editor.propertyValue"), TEXT("Property value type does not match the prefab schema."));
     }
 
+    if (Value.Type == EAkUGCValueType::Number && !FMath::IsFinite(Value.NumberValue))
+    {
+        return FAkUGCCommandExecutionResult::Failure(
+            TEXT("editor.propertyValue"),
+            TEXT("Numeric property value must be finite."));
+    }
+    if (Value.Type == EAkUGCValueType::Vector && Value.VectorValue.ContainsNaN())
+    {
+        return FAkUGCCommandExecutionResult::Failure(
+            TEXT("editor.propertyValue"),
+            TEXT("Vector property value must be finite."));
+    }
+    if (Value.Type == EAkUGCValueType::Rotator && Value.RotatorValue.ContainsNaN())
+    {
+        return FAkUGCCommandExecutionResult::Failure(
+            TEXT("editor.propertyValue"),
+            TEXT("Rotator property value must be finite."));
+    }
+
     const double NumericValue = Value.Type == EAkUGCValueType::Integer
         ? static_cast<double>(Value.IntegerValue)
         : Value.NumberValue;
@@ -336,7 +373,12 @@ FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::SetEntityProperty(
     Transaction.Commands.Add(MoveTemp(Command));
 
     TGuardValue<bool> ApplyingGuard(bApplyingUGCTransaction, true);
-    return Session->Execute(Document, Transaction);
+    FAkUGCCommandExecutionResult Result = Session->Execute(Document, Transaction);
+    if (Result.bSucceeded)
+    {
+        ++DocumentRevision;
+    }
+    return Result;
 }
 
 FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::DeleteSelectedEntity()
@@ -360,7 +402,16 @@ FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::Undo()
         return NoSessionResult();
     }
     TGuardValue<bool> ApplyingGuard(bApplyingUGCTransaction, true);
-    return Session->Undo(Document);
+    FAkUGCCommandExecutionResult Result = Session->Undo(Document);
+    if (Result.bSucceeded)
+    {
+        if (SelectedEntityId.IsValid() && !FindEntity(SelectedEntityId))
+        {
+            SelectedEntityId.Invalidate();
+        }
+        ++DocumentRevision;
+    }
+    return Result;
 }
 
 FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::Redo()
@@ -370,7 +421,16 @@ FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::Redo()
         return NoSessionResult();
     }
     TGuardValue<bool> ApplyingGuard(bApplyingUGCTransaction, true);
-    return Session->Redo(Document);
+    FAkUGCCommandExecutionResult Result = Session->Redo(Document);
+    if (Result.bSucceeded)
+    {
+        if (SelectedEntityId.IsValid() && !FindEntity(SelectedEntityId))
+        {
+            SelectedEntityId.Invalidate();
+        }
+        ++DocumentRevision;
+    }
+    return Result;
 }
 
 bool UAkUGCEditorSubsystem::SelectEntity(const FGuid& EntityId)
@@ -445,6 +505,11 @@ const FAkUGCPrefabRegistry& UAkUGCEditorSubsystem::GetPrefabRegistry() const
     return *PrefabRegistry;
 }
 
+uint64 UAkUGCEditorSubsystem::GetDocumentRevision() const
+{
+    return DocumentRevision;
+}
+
 FString UAkUGCEditorSubsystem::GetDefaultProjectPath() const
 {
     return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("UGCProjects/Phase0.json"));
@@ -516,6 +581,7 @@ bool UAkUGCEditorSubsystem::OpenDocument(FAkUGCProjectDocument&& NewDocument, FS
     ActiveSceneId = NewSceneId;
     Runtime = MoveTemp(NewRuntime);
     Session = MoveTemp(NewSession);
+    ++DocumentRevision;
     return true;
 }
 
