@@ -2,7 +2,9 @@
 
 #include "Prefab/AkUGCOfficialPrefabCatalog.h"
 #include "Subsystem/AkUGCEditorSubsystem.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SComboButton.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Input/SNumericEntryBox.h"
@@ -308,6 +310,30 @@ void SAkUGCCreatorPanel::RebuildDetails()
     [SNew(STextBlock).Text(FText::FromString(Entity->EntityId.ToString()))];
     DetailsBox->AddSlot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 4.0f)
     [SNew(SSeparator)];
+    DetailsBox->AddSlot().AutoHeight().Padding(0.0f, 3.0f)
+    [
+        SNew(SHorizontalBox)
+        + SHorizontalBox::Slot().FillWidth(0.42f).VAlign(VAlign_Center).Padding(0.0f, 0.0f, 6.0f, 0.0f)
+        [SNew(STextBlock).Text(FText::FromString(TEXT("Parent")))]
+        + SHorizontalBox::Slot().FillWidth(0.58f)
+        [
+            SNew(SComboButton)
+            .OnGetMenuContent_Lambda([this, EntityId = Entity->EntityId]()
+            {
+                return BuildParentMenu(EntityId);
+            })
+            .ButtonContent()
+            [
+                SNew(STextBlock)
+                .Text_Lambda([this, EntityId = Entity->EntityId]()
+                {
+                    return GetParentLabel(EntityId);
+                })
+            ]
+        ]
+    ];
+    DetailsBox->AddSlot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 4.0f)
+    [SNew(SSeparator)];
 
     if (Prefab->EditableProperties.IsEmpty())
     {
@@ -336,6 +362,139 @@ void SAkUGCCreatorPanel::RebuildDetails()
             [BuildPropertyEditor(Entity->EntityId, Property, Value)]
         ];
     }
+}
+
+FText SAkUGCCreatorPanel::GetParentLabel(const FGuid& EntityId) const
+{
+    if (!Subsystem.IsValid())
+    {
+        return FText::FromString(TEXT("Scene Root"));
+    }
+
+    const FAkUGCEntityRecord* Entity = Subsystem->FindEntity(EntityId);
+    if (!Entity || !Entity->ParentEntityId.IsValid())
+    {
+        return FText::FromString(TEXT("Scene Root"));
+    }
+
+    const FAkUGCEntityRecord* Parent = Subsystem->FindEntity(Entity->ParentEntityId);
+    const FAkUGCPrefabDefinition* ParentPrefab = Parent
+        ? Subsystem->FindPrefabForEntity(Parent->EntityId)
+        : nullptr;
+    const FString ParentName = ParentPrefab
+        ? ParentPrefab->DisplayName
+        : (Parent ? Parent->PrefabId.ToString() : TEXT("Missing Parent"));
+    return FText::FromString(FString::Printf(
+        TEXT("%s  [%s]"),
+        *ParentName,
+        *Entity->ParentEntityId.ToString(EGuidFormats::Short)));
+}
+
+TSharedRef<SWidget> SAkUGCCreatorPanel::BuildParentMenu(const FGuid& EntityId)
+{
+    FMenuBuilder MenuBuilder(true, nullptr);
+    const TWeakPtr<SAkUGCCreatorPanel> WeakThis = SharedThis(this);
+    const FAkUGCEntityRecord* Entity = Subsystem.IsValid() ? Subsystem->FindEntity(EntityId) : nullptr;
+    if (Entity && Entity->ParentEntityId.IsValid())
+    {
+        MenuBuilder.AddMenuEntry(
+            FText::FromString(TEXT("Scene Root")),
+            FText::FromString(TEXT("Detach this entity from its current parent.")),
+            FSlateIcon(),
+            FUIAction(FExecuteAction::CreateLambda([WeakThis, EntityId]()
+            {
+                if (const TSharedPtr<SAkUGCCreatorPanel> Panel = WeakThis.Pin())
+                {
+                    Panel->CommitParent(EntityId, FGuid{});
+                }
+            })));
+    }
+
+    if (!Subsystem.IsValid() || Subsystem->GetDocument().Scenes.IsEmpty())
+    {
+        return MenuBuilder.MakeWidget();
+    }
+
+    TArray<FGuid> CandidateIds;
+    for (const FAkUGCEntityRecord& Candidate : Subsystem->GetDocument().Scenes[0].Entities)
+    {
+        if (IsValidParentCandidate(EntityId, Candidate.EntityId)
+            && (!Entity || Candidate.EntityId != Entity->ParentEntityId))
+        {
+            CandidateIds.Add(Candidate.EntityId);
+        }
+    }
+    CandidateIds.Sort([this](const FGuid& Left, const FGuid& Right)
+    {
+        const TSharedPtr<FAkUGCEntityTreeItem>* LeftItem = EntityItemsById.Find(Left);
+        const TSharedPtr<FAkUGCEntityTreeItem>* RightItem = EntityItemsById.Find(Right);
+        const FString LeftLabel = LeftItem ? GetEntityLabel(*LeftItem).ToString() : Left.ToString();
+        const FString RightLabel = RightItem ? GetEntityLabel(*RightItem).ToString() : Right.ToString();
+        return LeftLabel < RightLabel;
+    });
+
+    MenuBuilder.BeginSection(TEXT("EntityParents"), FText::FromString(TEXT("Entities")));
+    for (const FGuid& CandidateId : CandidateIds)
+    {
+        const TSharedPtr<FAkUGCEntityTreeItem>* Item = EntityItemsById.Find(CandidateId);
+        const FText Label = Item ? GetEntityLabel(*Item) : FText::FromString(CandidateId.ToString());
+        MenuBuilder.AddMenuEntry(
+            Label,
+            FText::FromString(TEXT("Attach this entity while preserving its world transform.")),
+            FSlateIcon(),
+            FUIAction(FExecuteAction::CreateLambda([WeakThis, EntityId, CandidateId]()
+            {
+                if (const TSharedPtr<SAkUGCCreatorPanel> Panel = WeakThis.Pin())
+                {
+                    Panel->CommitParent(EntityId, CandidateId);
+                }
+            })));
+    }
+    MenuBuilder.EndSection();
+    return MenuBuilder.MakeWidget();
+}
+
+void SAkUGCCreatorPanel::CommitParent(const FGuid& EntityId, const FGuid& ParentEntityId)
+{
+    if (!Subsystem.IsValid())
+    {
+        return;
+    }
+
+    const FAkUGCCommandExecutionResult Result = Subsystem->SetEntityParent(EntityId, ParentEntityId);
+    Status = Result.bSucceeded
+        ? (ParentEntityId.IsValid() ? TEXT("Updated entity parent.") : TEXT("Moved entity to scene root."))
+        : Result.ErrorMessage;
+    if (Result.bSucceeded)
+    {
+        RefreshFromSubsystem();
+    }
+}
+
+bool SAkUGCCreatorPanel::IsValidParentCandidate(
+    const FGuid& EntityId,
+    const FGuid& CandidateParentId) const
+{
+    if (!Subsystem.IsValid() || !CandidateParentId.IsValid() || CandidateParentId == EntityId)
+    {
+        return false;
+    }
+
+    FGuid AncestorId = CandidateParentId;
+    while (AncestorId.IsValid())
+    {
+        if (AncestorId == EntityId)
+        {
+            return false;
+        }
+        const FAkUGCEntityRecord* Ancestor = Subsystem->FindEntity(AncestorId);
+        if (!Ancestor)
+        {
+            return false;
+        }
+        AncestorId = Ancestor->ParentEntityId;
+    }
+    return true;
 }
 
 TSharedRef<SWidget> SAkUGCCreatorPanel::BuildPropertyEditor(

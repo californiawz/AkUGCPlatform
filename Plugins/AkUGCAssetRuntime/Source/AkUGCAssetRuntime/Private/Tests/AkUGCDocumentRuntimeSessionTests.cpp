@@ -410,4 +410,106 @@ bool FAkUGCDocumentRuntimeHierarchyTransformTest::RunTest(const FString& Paramet
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FAkUGCDocumentRuntimeReparentTest,
+    "AkUGC.Runtime.Session.ReparentUndoRedo",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCDocumentRuntimeReparentTest::RunTest(const FString& Parameters)
+{
+    UWorld* World = UWorld::CreateWorld(EWorldType::Game, false, TEXT("AkUGCReparentTest"));
+    if (!World)
+    {
+        AddError(TEXT("Failed to create test world."));
+        return false;
+    }
+    FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Game);
+    WorldContext.SetCurrentWorld(World);
+
+    FGuid SceneId;
+    FAkUGCProjectDocument Document = MakeSessionDocument(SceneId);
+    FAkUGCPrefabRegistry Registry;
+    FString RegistryError;
+    Registry.Register(MakeSessionPrefab(TEXT("official.gameplay.base")), &RegistryError);
+
+    FAkUGCEntityRecord ParentA;
+    ParentA.EntityId = FGuid::NewGuid();
+    ParentA.PrefabId = TEXT("official.gameplay.base");
+    ParentA.Transform.SetLocation(FVector(100.0, 0.0, 0.0));
+
+    FAkUGCEntityRecord ParentB;
+    ParentB.EntityId = FGuid::NewGuid();
+    ParentB.PrefabId = TEXT("official.gameplay.base");
+    ParentB.Transform.SetLocation(FVector(500.0, 0.0, 0.0));
+
+    FAkUGCEntityRecord Child;
+    Child.EntityId = FGuid::NewGuid();
+    Child.PrefabId = TEXT("official.gameplay.base");
+    Child.ParentEntityId = ParentA.EntityId;
+    Child.Transform.SetLocation(FVector(250.0, 0.0, 0.0));
+    Document.Scenes[0].Entities = {ParentA, ParentB, Child};
+
+    {
+        FAkUGCSceneRuntime Runtime(World);
+        FAkUGCDocumentRuntimeSession Session(Runtime, Registry, SceneId);
+        TestTrue(TEXT("Reparent session initializes"), Session.Initialize(Document).bSucceeded);
+
+        AActor* ChildActor = Runtime.FindActor(Child.EntityId);
+        TestNotNull(TEXT("Child runtime actor exists"), ChildActor);
+        TestEqual(TEXT("Child initially attaches to first parent"), ChildActor->GetAttachParentActor(), Runtime.FindActor(ParentA.EntityId));
+
+        FAkUGCCommand Reparent = MakeSessionCommand(EAkUGCCommandType::SetParent, SceneId, Child.EntityId);
+        Reparent.ParentEntityId = ParentB.EntityId;
+        TestTrue(
+            TEXT("Runtime reparent transaction succeeds"),
+            Session.Execute(Document, MakeSessionTransaction(TEXT("Reparent child"), {Reparent})).bSucceeded);
+        TestEqual(TEXT("Document stores second parent"), Document.Scenes[0].Entities[2].ParentEntityId, ParentB.EntityId);
+        TestEqual(TEXT("Runtime child attaches to second parent"), ChildActor->GetAttachParentActor(), Runtime.FindActor(ParentB.EntityId));
+        TestEqual(TEXT("Reparent preserves child world transform"), ChildActor->GetActorLocation(), FVector(250.0, 0.0, 0.0));
+
+        TestTrue(TEXT("Undo reparent succeeds"), Session.Undo(Document).bSucceeded);
+        TestEqual(TEXT("Undo restores first runtime parent"), ChildActor->GetAttachParentActor(), Runtime.FindActor(ParentA.EntityId));
+        TestEqual(TEXT("Undo preserves child world transform"), ChildActor->GetActorLocation(), FVector(250.0, 0.0, 0.0));
+
+        TestTrue(TEXT("Redo reparent succeeds"), Session.Redo(Document).bSucceeded);
+        TestEqual(TEXT("Redo restores second runtime parent"), ChildActor->GetAttachParentActor(), Runtime.FindActor(ParentB.EntityId));
+
+        FAkUGCCommand MoveParent = MakeSessionCommand(EAkUGCCommandType::SetTransform, SceneId, ParentB.EntityId);
+        MoveParent.Transform = ParentB.Transform;
+        MoveParent.Transform.SetLocation(FVector(700.0, 0.0, 0.0));
+        TestTrue(
+            TEXT("Single parent transform succeeds"),
+            Session.Execute(Document, MakeSessionTransaction(TEXT("Move parent only"), {MoveParent})).bSucceeded);
+        TestEqual(TEXT("Single parent transform preserves child world position"), ChildActor->GetActorLocation(), FVector(250.0, 0.0, 0.0));
+
+        FAkUGCCommand Detach = MakeSessionCommand(EAkUGCCommandType::SetParent, SceneId, Child.EntityId);
+        TestTrue(
+            TEXT("Detach-to-root transaction succeeds"),
+            Session.Execute(Document, MakeSessionTransaction(TEXT("Detach child"), {Detach})).bSucceeded);
+        TestNull(TEXT("Detached child has no runtime parent"), ChildActor->GetAttachParentActor());
+        TestEqual(TEXT("Detach preserves child world transform"), ChildActor->GetActorLocation(), FVector(250.0, 0.0, 0.0));
+
+        FAkUGCProjectDocument SynchronizedDocument = Document;
+        FAkUGCEntityRecord SyncParent = SynchronizedDocument.Scenes[0].Entities[1];
+        FAkUGCEntityRecord SyncChild = SynchronizedDocument.Scenes[0].Entities[2];
+        SyncChild.ParentEntityId = SyncParent.EntityId;
+        SyncChild.Transform.SetLocation(FVector(300.0, 0.0, 0.0));
+        SyncParent.Transform.SetLocation(FVector(900.0, 0.0, 0.0));
+        SynchronizedDocument.Scenes[0].Entities = {
+            SyncChild,
+            SynchronizedDocument.Scenes[0].Entities[0],
+            SyncParent};
+        TestTrue(
+            TEXT("Full scene synchronization succeeds with child before parent"),
+            Runtime.SynchronizeScene(SynchronizedDocument.Scenes[0], Registry));
+        TestEqual(TEXT("Full synchronization applies child world transform"), ChildActor->GetActorLocation(), FVector(300.0, 0.0, 0.0));
+        TestEqual(TEXT("Full synchronization restores child attachment"), ChildActor->GetAttachParentActor(), Runtime.FindActor(SyncParent.EntityId));
+        Runtime.Unload();
+    }
+
+    GEngine->DestroyWorldContext(World);
+    World->DestroyWorld(false);
+    return true;
+}
+
 #endif

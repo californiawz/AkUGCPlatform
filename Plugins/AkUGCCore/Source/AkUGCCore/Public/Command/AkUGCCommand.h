@@ -12,7 +12,8 @@ enum class EAkUGCCommandType : uint8
     SetTransform,
     SetProperty,
     RemoveProperty,
-    DuplicateEntity
+    DuplicateEntity,
+    SetParent
 };
 
 USTRUCT(BlueprintType)
@@ -40,6 +41,9 @@ struct AKUGCCORE_API FAkUGCCommand
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC")
     FGuid SourceEntityId;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC")
+    FGuid ParentEntityId;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC")
     FAkUGCEntityRecord Entity;

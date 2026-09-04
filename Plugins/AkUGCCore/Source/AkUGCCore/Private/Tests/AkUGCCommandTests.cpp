@@ -145,4 +145,55 @@ bool FAkUGCCommandJsonTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FAkUGCCommandSetParentTest,
+    "AkUGC.Core.Command.SetParentUndoRedo",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCCommandSetParentTest::RunTest(const FString& Parameters)
+{
+    FGuid SceneId;
+    FAkUGCProjectDocument Document = MakeDocument(SceneId);
+    const FGuid ParentId = FGuid::NewGuid();
+    const FGuid ChildId = FGuid::NewGuid();
+    Document.Scenes[0].Entities = {MakeEntity(ParentId), MakeEntity(ChildId)};
+
+    FAkUGCCommand SetParent = MakeCommand(EAkUGCCommandType::SetParent, SceneId, ChildId);
+    SetParent.ParentEntityId = ParentId;
+    FAkUGCCommandHistory History;
+    TestTrue(
+        TEXT("SetParent transaction succeeds"),
+        History.Execute(Document, MakeTransaction(TEXT("Parent child"), {SetParent})).bSucceeded);
+    TestEqual(TEXT("Child references parent"), Document.Scenes[0].Entities[1].ParentEntityId, ParentId);
+
+    TestTrue(TEXT("Undo SetParent succeeds"), History.Undo(Document).bSucceeded);
+    TestFalse(TEXT("Undo restores child to scene root"), Document.Scenes[0].Entities[1].ParentEntityId.IsValid());
+    TestTrue(TEXT("Redo SetParent succeeds"), History.Redo(Document).bSucceeded);
+    TestEqual(TEXT("Redo restores parent"), Document.Scenes[0].Entities[1].ParentEntityId, ParentId);
+
+    FAkUGCCommand CreateCycle = MakeCommand(EAkUGCCommandType::SetParent, SceneId, ParentId);
+    CreateCycle.ParentEntityId = ChildId;
+    TestFalse(
+        TEXT("SetParent rejects hierarchy cycle"),
+        History.Execute(Document, MakeTransaction(TEXT("Create cycle"), {CreateCycle})).bSucceeded);
+    TestFalse(TEXT("Rejected cycle leaves parent at scene root"), Document.Scenes[0].Entities[0].ParentEntityId.IsValid());
+
+    FAkUGCCommand MissingParent = MakeCommand(EAkUGCCommandType::SetParent, SceneId, ChildId);
+    MissingParent.ParentEntityId = FGuid::NewGuid();
+    TestFalse(
+        TEXT("SetParent rejects missing parent"),
+        History.Execute(Document, MakeTransaction(TEXT("Missing parent"), {MissingParent})).bSucceeded);
+    TestEqual(TEXT("Rejected parent keeps document unchanged"), Document.Scenes[0].Entities[1].ParentEntityId, ParentId);
+
+    FString Json;
+    FString Error;
+    const FAkUGCCommandTransaction Source = MakeTransaction(TEXT("Serialize parent"), {SetParent});
+    TestTrue(TEXT("SetParent transaction serializes"), FAkUGCCommandJson::Serialize(Source, Json, &Error));
+    FAkUGCCommandTransaction Restored;
+    TestTrue(TEXT("SetParent transaction deserializes"), FAkUGCCommandJson::Deserialize(Json, Restored, &Error));
+    TestEqual(TEXT("SetParent type round-trips"), Restored.Commands[0].Type, EAkUGCCommandType::SetParent);
+    TestEqual(TEXT("Parent entity ID round-trips"), Restored.Commands[0].ParentEntityId, ParentId);
+    return true;
+}
+
 #endif

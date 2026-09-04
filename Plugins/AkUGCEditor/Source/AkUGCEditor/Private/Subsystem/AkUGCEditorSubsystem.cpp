@@ -1,9 +1,11 @@
 #include "Subsystem/AkUGCEditorSubsystem.h"
 
 #include "Command/AkUGCCommand.h"
+#include "Containers/Ticker.h"
 #include "Document/AkUGCDocumentJson.h"
 #include "Editor.h"
 #include "Editor/EditorEngine.h"
+#include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "Entity/AkUGCEntityBindingComponent.h"
 #include "GameFramework/Actor.h"
@@ -115,6 +117,7 @@ void UAkUGCEditorSubsystem::CloseProject()
     }
     bUpdatingEditorSelection = false;
     SelectedEntityId.Invalidate();
+    PendingDetachedEntityIds.Reset();
 
     Session.Reset();
     if (Runtime)
@@ -298,6 +301,48 @@ FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::SetEntityTransforms(
     return Result;
 }
 
+FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::SetEntityParent(
+    const FGuid& EntityId,
+    const FGuid& ParentEntityId)
+{
+    if (!Session)
+    {
+        return NoSessionResult();
+    }
+
+    const FAkUGCEntityRecord* Entity = FindEntity(EntityId);
+    if (!Entity)
+    {
+        return FAkUGCCommandExecutionResult::Failure(TEXT("editor.entityId"), TEXT("Entity does not exist."));
+    }
+    if (Entity->ParentEntityId == ParentEntityId)
+    {
+        return FAkUGCCommandExecutionResult::Failure(
+            TEXT("editor.parentEntityId"),
+            TEXT("Entity already has the requested parent."));
+    }
+
+    FAkUGCCommand Command;
+    Command.CommandId = FGuid::NewGuid();
+    Command.Type = EAkUGCCommandType::SetParent;
+    Command.SceneId = ActiveSceneId;
+    Command.EntityId = EntityId;
+    Command.ParentEntityId = ParentEntityId;
+
+    FAkUGCCommandTransaction Transaction;
+    Transaction.TransactionId = FGuid::NewGuid();
+    Transaction.Label = ParentEntityId.IsValid() ? TEXT("Set entity parent") : TEXT("Detach entity from parent");
+    Transaction.Commands.Add(MoveTemp(Command));
+
+    TGuardValue<bool> ApplyingGuard(bApplyingUGCTransaction, true);
+    FAkUGCCommandExecutionResult Result = Session->Execute(Document, Transaction);
+    if (Result.bSucceeded)
+    {
+        ++DocumentRevision;
+    }
+    return Result;
+}
+
 FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::SetEntityProperty(
     const FGuid& EntityId,
     FName ComponentTypeId,
@@ -451,6 +496,11 @@ bool UAkUGCEditorSubsystem::SelectEntity(const FGuid& EntityId)
     GEditor->SelectActor(Actor, true, true, true, true);
     SelectedEntityId = EntityId;
     return true;
+}
+
+AActor* UAkUGCEditorSubsystem::FindRuntimeActor(const FGuid& EntityId) const
+{
+    return Runtime ? Runtime->FindActor(EntityId) : nullptr;
 }
 
 FGuid UAkUGCEditorSubsystem::GetSelectedEntityId() const
@@ -616,6 +666,17 @@ void UAkUGCEditorSubsystem::RegisterEditorDelegates()
             this,
             &UAkUGCEditorSubsystem::OnActorsMoved);
     }
+    if (GEngine)
+    {
+        LevelActorAttachedHandle = GEngine->OnLevelActorAttached().AddUObject(
+            this,
+            &UAkUGCEditorSubsystem::OnLevelActorAttached);
+        LevelActorDetachedHandle = GEngine->OnLevelActorDetached().AddUObject(
+            this,
+            &UAkUGCEditorSubsystem::OnLevelActorDetached);
+    }
+    HierarchyTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
+        FTickerDelegate::CreateUObject(this, &UAkUGCEditorSubsystem::TickPendingHierarchyChanges));
 }
 
 void UAkUGCEditorSubsystem::UnregisterEditorDelegates()
@@ -633,6 +694,25 @@ void UAkUGCEditorSubsystem::UnregisterEditorDelegates()
         GEditor->OnActorsMoved().Remove(ActorsMovedHandle);
         ActorsMovedHandle.Reset();
     }
+    if (GEngine)
+    {
+        if (LevelActorAttachedHandle.IsValid())
+        {
+            GEngine->OnLevelActorAttached().Remove(LevelActorAttachedHandle);
+            LevelActorAttachedHandle.Reset();
+        }
+        if (LevelActorDetachedHandle.IsValid())
+        {
+            GEngine->OnLevelActorDetached().Remove(LevelActorDetachedHandle);
+            LevelActorDetachedHandle.Reset();
+        }
+    }
+    if (HierarchyTickerHandle.IsValid())
+    {
+        FTSTicker::GetCoreTicker().RemoveTicker(HierarchyTickerHandle);
+        HierarchyTickerHandle.Reset();
+    }
+    PendingDetachedEntityIds.Reset();
 }
 
 void UAkUGCEditorSubsystem::OnActorSelectionChanged(
@@ -661,6 +741,159 @@ void UAkUGCEditorSubsystem::OnActorSelectionChanged(
             SelectedEntityId = Binding->EntityId;
             return;
         }
+    }
+}
+
+void UAkUGCEditorSubsystem::OnLevelActorAttached(AActor* Actor, const AActor* ParentActor)
+{
+    if (bApplyingUGCTransaction || !Session || !Runtime || !Actor)
+    {
+        return;
+    }
+
+    const UAkUGCEntityBindingComponent* Binding = Actor->FindComponentByClass<UAkUGCEntityBindingComponent>();
+    if (!Binding || Runtime->FindActor(Binding->EntityId) != Actor)
+    {
+        return;
+    }
+
+    PendingDetachedEntityIds.Remove(Binding->EntityId);
+    CommitActorHierarchyChange(Actor, ParentActor);
+}
+
+void UAkUGCEditorSubsystem::OnLevelActorDetached(AActor* Actor, const AActor* ParentActor)
+{
+    if (bApplyingUGCTransaction || !Session || !Runtime || !Actor)
+    {
+        return;
+    }
+
+    const UAkUGCEntityBindingComponent* Binding = Actor->FindComponentByClass<UAkUGCEntityBindingComponent>();
+    if (Binding && Runtime->FindActor(Binding->EntityId) == Actor)
+    {
+        PendingDetachedEntityIds.Add(Binding->EntityId);
+    }
+}
+
+bool UAkUGCEditorSubsystem::TickPendingHierarchyChanges(float DeltaTime)
+{
+    if (bApplyingUGCTransaction || !Session || !Runtime || PendingDetachedEntityIds.IsEmpty())
+    {
+        return true;
+    }
+
+    TArray<FGuid> EntityIds = PendingDetachedEntityIds.Array();
+    PendingDetachedEntityIds.Reset();
+    for (const FGuid& EntityId : EntityIds)
+    {
+        if (AActor* Actor = Runtime->FindActor(EntityId))
+        {
+            CommitActorHierarchyChange(Actor, Actor->GetAttachParentActor());
+        }
+    }
+    return true;
+}
+
+bool UAkUGCEditorSubsystem::CommitActorHierarchyChange(AActor* Actor, const AActor* ParentActor)
+{
+    if (!Actor || !Session || !Runtime)
+    {
+        return false;
+    }
+
+    const UAkUGCEntityBindingComponent* Binding = Actor->FindComponentByClass<UAkUGCEntityBindingComponent>();
+    if (!Binding || Runtime->FindActor(Binding->EntityId) != Actor)
+    {
+        return false;
+    }
+
+    FGuid ParentEntityId;
+    if (ParentActor)
+    {
+        const UAkUGCEntityBindingComponent* ParentBinding =
+            ParentActor->FindComponentByClass<UAkUGCEntityBindingComponent>();
+        if (!ParentBinding || Runtime->FindActor(ParentBinding->EntityId) != ParentActor)
+        {
+            UE_LOG(LogTemp, Warning, TEXT("UGC entities can only be attached to another UGC entity."));
+            RestoreActorHierarchyFromDocument();
+            return false;
+        }
+        ParentEntityId = ParentBinding->EntityId;
+    }
+
+    const FAkUGCEntityRecord* Entity = FindEntity(Binding->EntityId);
+    if (!Entity)
+    {
+        RestoreActorHierarchyFromDocument();
+        return false;
+    }
+
+    FAkUGCCommandTransaction Transaction;
+    Transaction.TransactionId = FGuid::NewGuid();
+    Transaction.Label = ParentEntityId.IsValid()
+        ? TEXT("Change entity parent")
+        : TEXT("Detach entity from parent");
+
+    if (Entity->ParentEntityId != ParentEntityId)
+    {
+        FAkUGCCommand& ParentCommand = Transaction.Commands.AddDefaulted_GetRef();
+        ParentCommand.CommandId = FGuid::NewGuid();
+        ParentCommand.Type = EAkUGCCommandType::SetParent;
+        ParentCommand.SceneId = ActiveSceneId;
+        ParentCommand.EntityId = Binding->EntityId;
+        ParentCommand.ParentEntityId = ParentEntityId;
+    }
+
+    const FTransform CurrentTransform = Actor->GetActorTransform();
+    if (!Entity->Transform.Equals(CurrentTransform, 0.01))
+    {
+        FAkUGCCommand& TransformCommand = Transaction.Commands.AddDefaulted_GetRef();
+        TransformCommand.CommandId = FGuid::NewGuid();
+        TransformCommand.Type = EAkUGCCommandType::SetTransform;
+        TransformCommand.SceneId = ActiveSceneId;
+        TransformCommand.EntityId = Binding->EntityId;
+        TransformCommand.Transform = CurrentTransform;
+    }
+
+    if (Transaction.Commands.IsEmpty())
+    {
+        return true;
+    }
+
+    TGuardValue<bool> ApplyingGuard(bApplyingUGCTransaction, true);
+    const FAkUGCCommandExecutionResult Result = Session->Execute(Document, Transaction);
+    if (!Result.bSucceeded)
+    {
+        UE_LOG(LogTemp, Error, TEXT("Failed to commit UGC hierarchy change: %s"), *Result.ErrorMessage);
+        RestoreActorHierarchyFromDocument();
+        return false;
+    }
+
+    ++DocumentRevision;
+    return true;
+}
+
+void UAkUGCEditorSubsystem::RestoreActorHierarchyFromDocument()
+{
+    if (!Runtime || !PrefabRegistry)
+    {
+        return;
+    }
+
+    const FAkUGCSceneDocument* Scene = Document.Scenes.FindByPredicate([this](const FAkUGCSceneDocument& Candidate)
+    {
+        return Candidate.SceneId == ActiveSceneId;
+    });
+    if (!Scene)
+    {
+        return;
+    }
+
+    TGuardValue<bool> ApplyingGuard(bApplyingUGCTransaction, true);
+    FString Error;
+    if (!Runtime->SynchronizeScene(*Scene, *PrefabRegistry, &Error))
+    {
+        UE_LOG(LogTemp, Error, TEXT("Failed to restore UGC hierarchy from document: %s"), *Error);
     }
 }
 

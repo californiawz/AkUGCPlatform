@@ -97,6 +97,14 @@ bool FAkUGCSceneRuntime::SynchronizeScene(
         }
     }
 
+    for (const TPair<FGuid, TWeakObjectPtr<AActor>>& Pair : Actors)
+    {
+        if (AActor* Actor = Pair.Value.Get())
+        {
+            Actor->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+        }
+    }
+
     for (const FAkUGCEntityRecord& Entity : Scene.Entities)
     {
         AActor* ExistingActor = FindActor(Entity.EntityId);
@@ -120,13 +128,6 @@ bool FAkUGCSceneRuntime::SynchronizeScene(
         }
     }
 
-    for (const TPair<FGuid, TWeakObjectPtr<AActor>>& Pair : Actors)
-    {
-        if (AActor* Actor = Pair.Value.Get())
-        {
-            Actor->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
-        }
-    }
     return AttachParents(Scene, OutError);
 }
 
@@ -147,10 +148,24 @@ bool FAkUGCSceneRuntime::ApplyTransaction(
         {
             return Fail(OutError, TEXT("Command targets a different scene than the active runtime scene."));
         }
-        if (Command.Type == EAkUGCCommandType::SetTransform)
+        if (Command.Type == EAkUGCCommandType::SetTransform
+            || Command.Type == EAkUGCCommandType::SetParent)
         {
             if (AActor* Actor = FindActor(Command.EntityId))
             {
+                if (Command.Type == EAkUGCCommandType::SetTransform)
+                {
+                    TArray<AActor*> Descendants;
+                    Actor->GetAttachedActors(Descendants, false, true);
+                    for (AActor* Descendant : Descendants)
+                    {
+                        if (const UAkUGCEntityBindingComponent* Binding = FindBinding(Descendant))
+                        {
+                            Descendant->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+                            AttachmentUpdates.Add(Binding->EntityId);
+                        }
+                    }
+                }
                 Actor->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
                 AttachmentUpdates.Add(Command.EntityId);
             }
@@ -389,6 +404,7 @@ bool FAkUGCSceneRuntime::ApplyCommand(
     case EAkUGCCommandType::SetTransform:
     case EAkUGCCommandType::SetProperty:
     case EAkUGCCommandType::RemoveProperty:
+    case EAkUGCCommandType::SetParent:
     {
         AActor* Actor = FindActor(Command.EntityId);
         UAkUGCEntityBindingComponent* Binding = FindBinding(Actor);
@@ -401,6 +417,11 @@ bool FAkUGCSceneRuntime::ApplyCommand(
         if (Command.Type == EAkUGCCommandType::SetTransform)
         {
             UpdatedRecord.Transform = Command.Transform;
+        }
+        else if (Command.Type == EAkUGCCommandType::SetParent)
+        {
+            UpdatedRecord.ParentEntityId = Command.ParentEntityId;
+            OutAttachmentUpdates.Add(Command.EntityId);
         }
         else
         {

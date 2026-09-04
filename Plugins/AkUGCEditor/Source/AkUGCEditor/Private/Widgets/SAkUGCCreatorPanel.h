@@ -47,6 +47,10 @@ private:
         TArray<TSharedPtr<FAkUGCEntityTreeItem>>& OutChildren) const;
     void OnEntitySelectionChanged(TSharedPtr<FAkUGCEntityTreeItem> Item, ESelectInfo::Type SelectInfo);
     FText GetEntityLabel(TSharedPtr<FAkUGCEntityTreeItem> Item) const;
+    FText GetParentLabel(const FGuid& EntityId) const;
+    TSharedRef<SWidget> BuildParentMenu(const FGuid& EntityId);
+    void CommitParent(const FGuid& EntityId, const FGuid& ParentEntityId);
+    bool IsValidParentCandidate(const FGuid& EntityId, const FGuid& CandidateParentId) const;
     TSharedRef<SWidget> BuildPropertyEditor(
         const FGuid& EntityId,
         const FAkUGCPropertyDefinition& Property,

@@ -275,6 +275,43 @@ FAkUGCCommandExecutionResult FAkUGCCommandExecutor::ApplySingle(
         return FAkUGCCommandExecutionResult::Success();
     }
 
+    case EAkUGCCommandType::SetParent:
+    {
+        FAkUGCEntityRecord* Entity = FindEntityInScene(*Scene, Command.EntityId);
+        if (!Entity)
+        {
+            return FAkUGCCommandExecutionResult::Failure(TEXT("entityId"), TEXT("Entity does not exist in the target scene."));
+        }
+        if (Command.ParentEntityId == Command.EntityId)
+        {
+            return FAkUGCCommandExecutionResult::Failure(TEXT("parentEntityId"), TEXT("Entity cannot be parented to itself."));
+        }
+        if (Command.ParentEntityId.IsValid() && !FindEntityInScene(*Scene, Command.ParentEntityId))
+        {
+            return FAkUGCCommandExecutionResult::Failure(
+                TEXT("parentEntityId"),
+                TEXT("Parent entity does not exist in the target scene."));
+        }
+
+        FGuid AncestorId = Command.ParentEntityId;
+        while (AncestorId.IsValid())
+        {
+            if (AncestorId == Command.EntityId)
+            {
+                return FAkUGCCommandExecutionResult::Failure(
+                    TEXT("parentEntityId"),
+                    TEXT("Parent change would create a hierarchy cycle."));
+            }
+            const FAkUGCEntityRecord* Ancestor = FindEntityInScene(*Scene, AncestorId);
+            AncestorId = Ancestor ? Ancestor->ParentEntityId : FGuid{};
+        }
+
+        OutInverse = MakeInverse(Command, EAkUGCCommandType::SetParent);
+        OutInverse.ParentEntityId = Entity->ParentEntityId;
+        Entity->ParentEntityId = Command.ParentEntityId;
+        return FAkUGCCommandExecutionResult::Success();
+    }
+
     case EAkUGCCommandType::DuplicateEntity:
     {
         const FAkUGCEntityRecord* Source = FindEntityInScene(*Scene, Command.SourceEntityId);

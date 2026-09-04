@@ -1,6 +1,8 @@
 #include "Misc/AutomationTest.h"
 
+#include "Containers/Ticker.h"
 #include "Editor.h"
+#include "GameFramework/Actor.h"
 #include "Misc/App.h"
 #include "HAL/FileManager.h"
 #include "Misc/Paths.h"
@@ -162,6 +164,90 @@ bool FAkUGCEditorSchemaPropertyTest::RunTest(const FString& Parameters)
     {
         TestEqual(TEXT("Redo restores edited maxHealth"), StoredMaxHealth->NumberValue, 2500.0);
     }
+
+    Subsystem->CloseProject();
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FAkUGCEditorViewportHierarchySyncTest,
+    "AkUGC.Editor.CreatorStudio.ViewportHierarchySync",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCEditorViewportHierarchySyncTest::RunTest(const FString& Parameters)
+{
+    UAkUGCEditorSubsystem* Subsystem = GEditor
+        ? GEditor->GetEditorSubsystem<UAkUGCEditorSubsystem>()
+        : nullptr;
+    TestNotNull(TEXT("Creator Studio subsystem exists"), Subsystem);
+    if (!Subsystem)
+    {
+        return false;
+    }
+
+    FString Error;
+    if (!Subsystem->NewTowerDefenseProject(&Error))
+    {
+        AddError(FString::Printf(TEXT("Failed to create project: %s"), *Error));
+        return false;
+    }
+
+    FGuid ParentAId;
+    FGuid ParentBId;
+    FGuid ChildId;
+    TestTrue(TEXT("First parent is placed"), Subsystem->PlacePrefab(
+        TEXT("official.gameplay.base"), FTransform(FVector(100.0, 0.0, 0.0)), ParentAId).bSucceeded);
+    TestTrue(TEXT("Second parent is placed"), Subsystem->PlacePrefab(
+        TEXT("official.gameplay.base"), FTransform(FVector(500.0, 0.0, 0.0)), ParentBId).bSucceeded);
+    TestTrue(TEXT("Child is placed"), Subsystem->PlacePrefab(
+        TEXT("official.gameplay.tower_slot"), FTransform(FVector(250.0, 0.0, 0.0)), ChildId).bSucceeded);
+
+    AActor* ParentA = Subsystem->FindRuntimeActor(ParentAId);
+    AActor* ParentB = Subsystem->FindRuntimeActor(ParentBId);
+    AActor* Child = Subsystem->FindRuntimeActor(ChildId);
+    TestNotNull(TEXT("First parent actor exists"), ParentA);
+    TestNotNull(TEXT("Second parent actor exists"), ParentB);
+    TestNotNull(TEXT("Child actor exists"), Child);
+    if (!ParentA || !ParentB || !Child)
+    {
+        Subsystem->CloseProject();
+        return false;
+    }
+
+    const FVector OriginalChildLocation = Child->GetActorLocation();
+    TestTrue(TEXT("Native editor attachment succeeds"), Child->AttachToActor(
+        ParentA,
+        FAttachmentTransformRules::KeepWorldTransform));
+    const FAkUGCEntityRecord* ChildEntity = Subsystem->FindEntity(ChildId);
+    TestNotNull(TEXT("Attached child remains in document"), ChildEntity);
+    if (ChildEntity)
+    {
+        TestEqual(TEXT("Native attachment updates document parent"), ChildEntity->ParentEntityId, ParentAId);
+        TestEqual(TEXT("Native attachment preserves document world transform"), ChildEntity->Transform.GetLocation(), OriginalChildLocation);
+    }
+
+    TestTrue(TEXT("Native editor reparent succeeds"), Child->AttachToActor(
+        ParentB,
+        FAttachmentTransformRules::KeepWorldTransform));
+    ChildEntity = Subsystem->FindEntity(ChildId);
+    if (ChildEntity)
+    {
+        TestEqual(TEXT("Native reparent updates document parent"), ChildEntity->ParentEntityId, ParentBId);
+    }
+    TestTrue(TEXT("Undo native reparent succeeds"), Subsystem->Undo().bSucceeded);
+    TestEqual(TEXT("Undo restores first runtime parent"), Child->GetAttachParentActor(), ParentA);
+    TestTrue(TEXT("Redo native reparent succeeds"), Subsystem->Redo().bSucceeded);
+    TestEqual(TEXT("Redo restores second runtime parent"), Child->GetAttachParentActor(), ParentB);
+
+    Child->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+    FTSTicker::GetCoreTicker().Tick(0.0f);
+    ChildEntity = Subsystem->FindEntity(ChildId);
+    if (ChildEntity)
+    {
+        TestFalse(TEXT("Native detach moves document entity to root"), ChildEntity->ParentEntityId.IsValid());
+    }
+    TestNull(TEXT("Native detach leaves runtime actor at root"), Child->GetAttachParentActor());
+    TestEqual(TEXT("Native hierarchy edits preserve world transform"), Child->GetActorLocation(), OriginalChildLocation);
 
     Subsystem->CloseProject();
     return true;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Command/AkUGCCommandExecutor.h"
+#include "Containers/Ticker.h"
 #include "Document/AkUGCDocument.h"
 #include "EditorSubsystem.h"
 #include "Prefab/AkUGCPrefabRegistry.h"
@@ -33,6 +34,7 @@ public:
     FAkUGCCommandExecutionResult DuplicateEntity(const FGuid& SourceEntityId, FGuid& OutEntityId);
     FAkUGCCommandExecutionResult SetEntityTransform(const FGuid& EntityId, const FTransform& Transform);
     FAkUGCCommandExecutionResult SetEntityTransforms(const TMap<FGuid, FTransform>& Transforms, const FString& Label);
+    FAkUGCCommandExecutionResult SetEntityParent(const FGuid& EntityId, const FGuid& ParentEntityId);
     FAkUGCCommandExecutionResult SetEntityProperty(
         const FGuid& EntityId,
         FName ComponentTypeId,
@@ -44,6 +46,7 @@ public:
     FAkUGCCommandExecutionResult Redo();
 
     bool SelectEntity(const FGuid& EntityId);
+    AActor* FindRuntimeActor(const FGuid& EntityId) const;
     FGuid GetSelectedEntityId() const;
     const FAkUGCEntityRecord* FindEntity(const FGuid& EntityId) const;
     const FAkUGCPrefabDefinition* FindPrefabForEntity(const FGuid& EntityId) const;
@@ -63,6 +66,11 @@ private:
     void UnregisterEditorDelegates();
     void OnActorSelectionChanged(const TArray<UObject*>& NewSelection, bool bForceRefresh);
     void OnActorsMoved(TArray<AActor*>& Actors);
+    void OnLevelActorAttached(AActor* Actor, const AActor* ParentActor);
+    void OnLevelActorDetached(AActor* Actor, const AActor* ParentActor);
+    bool TickPendingHierarchyChanges(float DeltaTime);
+    bool CommitActorHierarchyChange(AActor* Actor, const AActor* ParentActor);
+    void RestoreActorHierarchyFromDocument();
     void AddActorAndUGCDescendants(AActor* Actor, TMap<FGuid, FTransform>& OutTransforms) const;
 
     FAkUGCProjectDocument Document;
@@ -73,6 +81,10 @@ private:
     FGuid SelectedEntityId;
     FDelegateHandle SelectionChangedHandle;
     FDelegateHandle ActorsMovedHandle;
+    FDelegateHandle LevelActorAttachedHandle;
+    FDelegateHandle LevelActorDetachedHandle;
+    FTSTicker::FDelegateHandle HierarchyTickerHandle;
+    TSet<FGuid> PendingDetachedEntityIds;
     uint64 DocumentRevision = 0;
     bool bUpdatingEditorSelection = false;
     bool bApplyingUGCTransaction = false;
