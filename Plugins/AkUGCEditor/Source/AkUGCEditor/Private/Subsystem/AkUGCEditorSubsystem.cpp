@@ -21,6 +21,45 @@
 #include "Session/AkUGCDocumentRuntimeSession.h"
 #include "Validation/AkUGCDocumentValidator.h"
 
+#if PLATFORM_WINDOWS
+#include "Windows/WindowsHWrapper.h"
+#endif
+
+namespace
+{
+    bool ReplaceProjectFileAtomically(const FString& TemporaryPath, const FString& DestinationPath)
+    {
+#if PLATFORM_WINDOWS
+        return MoveFileExW(
+            *TemporaryPath,
+            *DestinationPath,
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+#else
+        IFileManager& FileManager = IFileManager::Get();
+        const FString BackupPath = DestinationPath + TEXT(".backup");
+        const bool bHadDestination = FileManager.FileExists(*DestinationPath);
+        if (bHadDestination)
+        {
+            FileManager.Delete(*BackupPath, false, true, true);
+            if (!FileManager.Move(*BackupPath, *DestinationPath, false, true, false, true))
+            {
+                return false;
+            }
+        }
+        if (FileManager.Move(*DestinationPath, *TemporaryPath, false, true, false, true))
+        {
+            FileManager.Delete(*BackupPath, false, true, true);
+            return true;
+        }
+        if (bHadDestination)
+        {
+            FileManager.Move(*DestinationPath, *BackupPath, false, true, false, true);
+        }
+        return false;
+#endif
+    }
+}
+
 void UAkUGCEditorSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
     Super::Initialize(Collection);
@@ -76,12 +115,43 @@ bool UAkUGCEditorSubsystem::SaveProject(const FString& FilePath, FString* OutErr
         return false;
     }
 
-    IFileManager::Get().MakeDirectory(*FPaths::GetPath(FilePath), true);
-    if (!FFileHelper::SaveStringToFile(Json, *FilePath, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
+    IFileManager& FileManager = IFileManager::Get();
+    FileManager.MakeDirectory(*FPaths::GetPath(FilePath), true);
+    const FString TemporaryPath = FString::Printf(
+        TEXT("%s.tmp-%s"),
+        *FilePath,
+        *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+    if (!FFileHelper::SaveStringToFile(Json, *TemporaryPath, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
     {
         if (OutError)
         {
-            *OutError = FString::Printf(TEXT("Failed to save UGC project to '%s'."), *FilePath);
+            *OutError = FString::Printf(TEXT("Failed to write temporary UGC project file '%s'."), *TemporaryPath);
+        }
+        return false;
+    }
+
+    FString WrittenJson;
+    FAkUGCProjectDocument VerifiedDocument;
+    FString VerificationError;
+    if (!FFileHelper::LoadFileToString(WrittenJson, *TemporaryPath)
+        || !FAkUGCDocumentJson::Deserialize(WrittenJson, VerifiedDocument, &VerificationError))
+    {
+        FileManager.Delete(*TemporaryPath, false, true, true);
+        if (OutError)
+        {
+            *OutError = FString::Printf(
+                TEXT("Temporary UGC project verification failed: %s"),
+                VerificationError.IsEmpty() ? TEXT("file could not be read") : *VerificationError);
+        }
+        return false;
+    }
+
+    if (!ReplaceProjectFileAtomically(TemporaryPath, FilePath))
+    {
+        FileManager.Delete(*TemporaryPath, false, true, true);
+        if (OutError)
+        {
+            *OutError = FString::Printf(TEXT("Failed to atomically replace UGC project file '%s'."), *FilePath);
         }
         return false;
     }

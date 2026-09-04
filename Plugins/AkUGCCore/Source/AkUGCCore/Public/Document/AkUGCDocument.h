@@ -5,6 +5,7 @@
 
 namespace AkUGCSchema
 {
+    inline constexpr int32 OldestSupportedProjectDocumentVersion = 0;
     inline constexpr int32 CurrentProjectDocumentVersion = 1;
 }
 

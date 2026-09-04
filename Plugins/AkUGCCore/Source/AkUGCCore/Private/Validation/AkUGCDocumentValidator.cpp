@@ -130,6 +130,10 @@ FAkUGCValidationResult FAkUGCDocumentValidator::Validate(const FAkUGCProjectDocu
             {
                 Result.AddError(EntityPath + TEXT(".prefabId"), TEXT("Prefab ID is required."));
             }
+            if (Entity.Transform.ContainsNaN())
+            {
+                Result.AddError(EntityPath + TEXT(".transform"), TEXT("Entity transform must be finite."));
+            }
 
             for (int32 ComponentIndex = 0; ComponentIndex < Entity.Components.Num(); ++ComponentIndex)
             {
@@ -146,6 +150,23 @@ FAkUGCValidationResult FAkUGCDocumentValidator::Validate(const FAkUGCProjectDocu
                 if (Component.SchemaVersion < 1)
                 {
                     Result.AddError(ComponentPath + TEXT(".schemaVersion"), TEXT("Component schema version must be positive."));
+                }
+
+                for (const TPair<FName, FAkUGCValue>& Property : Component.Properties)
+                {
+                    const FString PropertyPath = ComponentPath + TEXT(".properties.") + Property.Key.ToString();
+                    if (!FMath::IsFinite(Property.Value.NumberValue))
+                    {
+                        Result.AddError(PropertyPath + TEXT(".numberValue"), TEXT("Number field must be finite."));
+                    }
+                    if (Property.Value.VectorValue.ContainsNaN())
+                    {
+                        Result.AddError(PropertyPath + TEXT(".vectorValue"), TEXT("Vector field must be finite."));
+                    }
+                    if (Property.Value.RotatorValue.ContainsNaN())
+                    {
+                        Result.AddError(PropertyPath + TEXT(".rotatorValue"), TEXT("Rotator field must be finite."));
+                    }
                 }
             }
         }
