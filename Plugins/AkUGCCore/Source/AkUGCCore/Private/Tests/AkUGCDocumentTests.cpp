@@ -166,7 +166,7 @@ bool FAkUGCDocumentCrossSceneParentTest::RunTest(const FString& Parameters)
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FAkUGCDocumentLegacyMigrationTest,
-    "AkUGC.Core.Document.Migration.LegacyV0ToV1",
+    "AkUGC.Core.Document.Migration.LegacyV0ToCurrent",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FAkUGCDocumentLegacyMigrationTest::RunTest(const FString& Parameters)
@@ -214,6 +214,7 @@ bool FAkUGCDocumentLegacyMigrationTest::RunTest(const FString& Parameters)
         AddError(TEXT("Legacy fixture scenes are invalid."));
         return false;
     }
+    (*Scenes)[0]->AsObject()->RemoveField(TEXT("logicGraph"));
     const TArray<TSharedPtr<FJsonValue>>& Entities = (*Scenes)[0]->AsObject()->GetArrayField(TEXT("entities"));
     if (Entities.IsEmpty() || Entities[0]->Type != EJson::Object)
     {
@@ -243,7 +244,7 @@ bool FAkUGCDocumentLegacyMigrationTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Migration succeeds"), Migration.bSucceeded);
     TestEqual(TEXT("Missing version is recognized as V0"), Migration.SourceVersion, 0);
     TestEqual(TEXT("Migration targets current version"), Migration.TargetVersion, AkUGCSchema::CurrentProjectDocumentVersion);
-    TestEqual(TEXT("One migration step is applied"), Migration.AppliedSteps.Num(), 1);
+    TestEqual(TEXT("V0 to current applies two migration steps"), Migration.AppliedSteps.Num(), 2);
     if (Migrated.Scenes.IsEmpty()
         || Migrated.Scenes[0].Entities.IsEmpty()
         || Migrated.Scenes[0].Entities[0].Components.IsEmpty())
@@ -251,8 +252,9 @@ bool FAkUGCDocumentLegacyMigrationTest::RunTest(const FString& Parameters)
         AddError(TEXT("Migrated document does not contain the expected component."));
         return false;
     }
-    TestEqual(TEXT("Migrated manifest uses V1"), Migrated.Manifest.SchemaVersion, 1);
+    TestEqual(TEXT("Migrated manifest uses current version"), Migrated.Manifest.SchemaVersion, AkUGCSchema::CurrentProjectDocumentVersion);
     TestEqual(TEXT("Missing component version normalizes to V1"), Migrated.Scenes[0].Entities[0].Components[0].SchemaVersion, 1);
+    TestTrue(TEXT("V2 migration initializes an empty Logic Graph"), Migrated.Scenes[0].LogicGraph.Nodes.IsEmpty());
     TestEqual(TEXT("Project ID is preserved"), Migrated.Manifest.ProjectId, Source.Manifest.ProjectId);
     TestEqual(TEXT("Entity ID is preserved"), Migrated.Scenes[0].Entities[0].EntityId, Entity.EntityId);
     TestEqual(TEXT("Entity transform is preserved"), Migrated.Scenes[0].Entities[0].Transform.GetLocation(), Entity.Transform.GetLocation());
@@ -273,7 +275,10 @@ bool FAkUGCDocumentLegacyMigrationTest::RunTest(const FString& Parameters)
         AddError(TEXT("Saved migrated JSON manifest is invalid."));
         return false;
     }
-    TestEqual(TEXT("Saved migrated JSON uses current version"), (*SavedManifest)->GetIntegerField(TEXT("schemaVersion")), 1);
+    TestEqual(
+        TEXT("Saved migrated JSON uses current version"),
+        (*SavedManifest)->GetIntegerField(TEXT("schemaVersion")),
+        AkUGCSchema::CurrentProjectDocumentVersion);
     return true;
 }
 
@@ -289,9 +294,9 @@ bool FAkUGCDocumentMigrationRejectionTest::RunTest(const FString& Parameters)
     FString Error;
     FAkUGCDocumentMigrationResult Migration;
 
-    const FString FutureJson = TEXT("{\"manifest\":{\"schemaVersion\":2},\"scenes\":[]}");
+    const FString FutureJson = TEXT("{\"manifest\":{\"schemaVersion\":3},\"scenes\":[]}");
     TestFalse(TEXT("Future project version is rejected"), FAkUGCDocumentJson::Deserialize(FutureJson, Output, &Error, &Migration));
-    TestEqual(TEXT("Future version is reported"), Migration.SourceVersion, 2);
+    TestEqual(TEXT("Future version is reported"), Migration.SourceVersion, 3);
     TestEqual(TEXT("Future version error path is precise"), Migration.ErrorPath, FString(TEXT("manifest.schemaVersion")));
     TestFalse(TEXT("Rejected output is reset instead of partially populated"), Output.Manifest.ProjectId.IsValid());
 

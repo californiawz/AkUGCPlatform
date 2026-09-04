@@ -6,7 +6,15 @@
 namespace AkUGCSchema
 {
     inline constexpr int32 OldestSupportedProjectDocumentVersion = 0;
-    inline constexpr int32 CurrentProjectDocumentVersion = 1;
+    inline constexpr int32 CurrentProjectDocumentVersion = 2;
+}
+
+namespace AkUGCLogicLimits
+{
+    inline constexpr int32 MaxNodes = 512;
+    inline constexpr int32 MaxConnections = 1024;
+    inline constexpr int32 MaxMessageLength = 1024;
+    inline constexpr int32 MaxExecutedInstructions = 1024;
 }
 
 UENUM(BlueprintType)

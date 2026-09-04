@@ -85,6 +85,27 @@ FAkUGCLogicCompileResult FAkUGCLogicCompiler::Compile(const FAkUGCLogicGraph& Lo
         return Result;
     }
 
+    TMap<FGuid, int32> InstructionIndexByNodeId;
+    for (int32 InstructionIndex = 0; InstructionIndex < Result.Program.Instructions.Num(); ++InstructionIndex)
+    {
+        const FAkUGCLogicInstruction& Instruction = Result.Program.Instructions[InstructionIndex];
+        InstructionIndexByNodeId.Add(Instruction.SourceNodeId, InstructionIndex);
+        if (Instruction.Opcode == EAkUGCLogicOpcode::GameStart)
+        {
+            Result.Program.GameStartEntryIndex = InstructionIndex;
+        }
+    }
+    for (const FAkUGCLogicConnection& Connection : LogicGraph.Connections)
+    {
+        const int32 SourceIndex = InstructionIndexByNodeId.FindChecked(Connection.SourceNodeId);
+        const int32 TargetIndex = InstructionIndexByNodeId.FindChecked(Connection.TargetNodeId);
+        Result.Program.Instructions[SourceIndex].SuccessorIndices.Add(TargetIndex);
+    }
+    for (FAkUGCLogicInstruction& Instruction : Result.Program.Instructions)
+    {
+        Instruction.SuccessorIndices.Sort();
+    }
+
     Result.bSucceeded = true;
     return Result;
 }

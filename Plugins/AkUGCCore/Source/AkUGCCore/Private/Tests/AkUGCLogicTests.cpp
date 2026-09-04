@@ -5,6 +5,7 @@
 #include "Command/AkUGCCommandJson.h"
 #include "Document/AkUGCDocumentJson.h"
 #include "Logic/AkUGCLogicCompiler.h"
+#include "Logic/AkUGCLogicRunner.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -122,6 +123,63 @@ bool FAkUGCLogicGraphWorkflowTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FAkUGCLogicRunnerTest,
+    "AkUGC.Core.Logic.GameStartRunner",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCLogicRunnerTest::RunTest(const FString& Parameters)
+{
+    FAkUGCLogicNode IsolatedMessage;
+    IsolatedMessage.NodeId = FGuid(1, 0, 0, 0);
+    IsolatedMessage.Type = EAkUGCLogicNodeType::Message;
+    IsolatedMessage.Message = TEXT("Do not emit");
+    FAkUGCLogicNode Start;
+    Start.NodeId = FGuid(2, 0, 0, 0);
+    Start.Type = EAkUGCLogicNodeType::GameStart;
+    FAkUGCLogicNode ConnectedMessage;
+    ConnectedMessage.NodeId = FGuid(3, 0, 0, 0);
+    ConnectedMessage.Type = EAkUGCLogicNodeType::Message;
+    ConnectedMessage.Message = TEXT("Game started");
+
+    FAkUGCLogicGraph Graph;
+    Graph.Nodes = {ConnectedMessage, Start, IsolatedMessage};
+    FAkUGCLogicConnection Connection;
+    Connection.SourceNodeId = Start.NodeId;
+    Connection.TargetNodeId = ConnectedMessage.NodeId;
+    Graph.Connections.Add(Connection);
+
+    const FAkUGCLogicCompileResult CompileResult = FAkUGCLogicCompiler::Compile(Graph);
+    TestTrue(TEXT("Runtime graph compiles"), CompileResult.bSucceeded);
+    TestTrue(TEXT("Game Start entry is recorded"), CompileResult.Program.GameStartEntryIndex != INDEX_NONE);
+    const FAkUGCLogicRunResult RunResult = FAkUGCLogicRunner::RunGameStart(CompileResult.Program);
+    TestTrue(TEXT("Game Start execution succeeds"), RunResult.bSucceeded);
+    TestEqual(TEXT("Only reachable instructions execute"), RunResult.ExecutedInstructionCount, 2);
+    TestEqual(TEXT("Only reachable message is emitted"), RunResult.Messages.Num(), 1);
+    if (RunResult.Messages.Num() == 1)
+    {
+        TestEqual(TEXT("Connected message text is emitted"), RunResult.Messages[0].Message, FString(TEXT("Game started")));
+        TestEqual(TEXT("Connected message source is preserved"), RunResult.Messages[0].SourceNodeId, ConnectedMessage.NodeId);
+    }
+
+    TestFalse(TEXT("Execution budget is enforced"),
+        FAkUGCLogicRunner::RunGameStart(CompileResult.Program, 1).bSucceeded);
+    FAkUGCLogicProgram MalformedProgram = CompileResult.Program;
+    MalformedProgram.Instructions[MalformedProgram.GameStartEntryIndex].SuccessorIndices = {INDEX_NONE};
+    TestFalse(TEXT("Invalid successor index is rejected"),
+        FAkUGCLogicRunner::RunGameStart(MalformedProgram).bSucceeded);
+    MalformedProgram = CompileResult.Program;
+    MalformedProgram.Instructions[MalformedProgram.GameStartEntryIndex].SuccessorIndices = {1, 1};
+    TestFalse(TEXT("Duplicate successor index is rejected"),
+        FAkUGCLogicRunner::RunGameStart(MalformedProgram).bSucceeded);
+    MalformedProgram = CompileResult.Program;
+    MalformedProgram.GameStartEntryIndex = INDEX_NONE;
+    MalformedProgram.Instructions[0].Opcode = static_cast<EAkUGCLogicOpcode>(255);
+    TestFalse(TEXT("Malformed program without an entry is still rejected"),
+        FAkUGCLogicRunner::RunGameStart(MalformedProgram).bSucceeded);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FAkUGCLogicGraphValidationTest,
     "AkUGC.Core.Logic.RejectsInvalidGraphs",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -154,6 +212,22 @@ bool FAkUGCLogicGraphValidationTest::RunTest(const FString& Parameters)
     Document.Scenes[0].LogicGraph.Connections.Reset();
     Document.Scenes[0].LogicGraph.Nodes[1].Message.Reset();
     TestFalse(TEXT("Empty message is rejected"),
+        FAkUGCLogicCompiler::Compile(Document.Scenes[0].LogicGraph).bSucceeded);
+
+    Document.Scenes[0].LogicGraph.Nodes[1].Message = TEXT("Valid");
+    Document.Scenes[0].LogicGraph.Nodes[1].Type = static_cast<EAkUGCLogicNodeType>(255);
+    TestFalse(TEXT("Unknown node type is rejected"),
+        FAkUGCLogicCompiler::Compile(Document.Scenes[0].LogicGraph).bSucceeded);
+
+    Document.Scenes[0].LogicGraph.Nodes.Reset();
+    for (int32 NodeIndex = 0; NodeIndex <= AkUGCLogicLimits::MaxNodes; ++NodeIndex)
+    {
+        FAkUGCLogicNode& Node = Document.Scenes[0].LogicGraph.Nodes.AddDefaulted_GetRef();
+        Node.NodeId = FGuid::NewGuid();
+        Node.Type = EAkUGCLogicNodeType::Message;
+        Node.Message = TEXT("Budget");
+    }
+    TestFalse(TEXT("Node budget is enforced before compilation"),
         FAkUGCLogicCompiler::Compile(Document.Scenes[0].LogicGraph).bSucceeded);
     return true;
 }

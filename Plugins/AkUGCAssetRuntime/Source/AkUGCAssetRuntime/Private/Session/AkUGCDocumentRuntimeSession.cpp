@@ -28,6 +28,11 @@ FAkUGCCommandExecutionResult FAkUGCDocumentRuntimeSession::Initialize(FAkUGCProj
     {
         return FAkUGCCommandExecutionResult::Failure(TEXT("runtime.initialize"), MoveTemp(Error));
     }
+    if (!Runtime.RunGameStartLogic(*Scene, &Error))
+    {
+        Runtime.Unload();
+        return FAkUGCCommandExecutionResult::Failure(TEXT("runtime.logic.gameStart"), MoveTemp(Error));
+    }
 
     History.Reset();
     return FAkUGCCommandExecutionResult::Success();

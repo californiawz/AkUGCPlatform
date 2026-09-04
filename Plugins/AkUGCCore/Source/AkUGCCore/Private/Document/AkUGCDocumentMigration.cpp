@@ -33,7 +33,7 @@ namespace
             {
                 continue;
             }
-            if (Pair.Key != FieldName)
+            if (!Pair.Key.Equals(FieldName, ESearchCase::CaseSensitive))
             {
                 OutError = FString::Printf(
                     TEXT("Field '%s' must use canonical casing '%s'."),
@@ -260,6 +260,38 @@ FAkUGCDocumentMigrationResult FAkUGCDocumentMigrator::Migrate(
         return Failure(SourceVersion, MoveTemp(ErrorPath), MoveTemp(ErrorMessage));
     }
 
+    TArray<TSharedPtr<FJsonObject>> ScenesToInitializeLogicGraph;
+    if (SourceVersion <= 1)
+    {
+        TArray<TSharedPtr<FJsonObject>> Scenes;
+        if (!ReadObjectArray(RootObject, TEXT("scenes"), TEXT("scenes"), Scenes, ErrorPath, ErrorMessage))
+        {
+            return Failure(SourceVersion, MoveTemp(ErrorPath), MoveTemp(ErrorMessage));
+        }
+        for (int32 SceneIndex = 0; SceneIndex < Scenes.Num(); ++SceneIndex)
+        {
+            TSharedPtr<FJsonValue> LogicGraphValue;
+            if (!FindCanonicalField(Scenes[SceneIndex].ToSharedRef(), TEXT("logicGraph"), false, LogicGraphValue, ErrorMessage))
+            {
+                return Failure(
+                    SourceVersion,
+                    FString::Printf(TEXT("scenes[%d].logicGraph"), SceneIndex),
+                    MoveTemp(ErrorMessage));
+            }
+            if (!LogicGraphValue.IsValid())
+            {
+                ScenesToInitializeLogicGraph.Add(Scenes[SceneIndex]);
+            }
+            else if (LogicGraphValue->Type != EJson::Object || !LogicGraphValue->AsObject().IsValid())
+            {
+                return Failure(
+                    SourceVersion,
+                    FString::Printf(TEXT("scenes[%d].logicGraph"), SceneIndex),
+                    TEXT("Logic graph must be an object."));
+            }
+        }
+    }
+
     int32 WorkingVersion = SourceVersion;
     if (WorkingVersion == 0)
     {
@@ -270,6 +302,19 @@ FAkUGCDocumentMigrationResult FAkUGCDocumentMigrator::Migrate(
         Manifest->SetNumberField(TEXT("schemaVersion"), 1);
         Result.AppliedSteps.Add(TEXT("ProjectDocumentV0ToV1"));
         WorkingVersion = 1;
+    }
+    if (WorkingVersion == 1)
+    {
+        for (const TSharedPtr<FJsonObject>& Scene : ScenesToInitializeLogicGraph)
+        {
+            TSharedRef<FJsonObject> LogicGraph = MakeShared<FJsonObject>();
+            LogicGraph->SetArrayField(TEXT("nodes"), TArray<TSharedPtr<FJsonValue>>{});
+            LogicGraph->SetArrayField(TEXT("connections"), TArray<TSharedPtr<FJsonValue>>{});
+            Scene->SetObjectField(TEXT("logicGraph"), LogicGraph);
+        }
+        Manifest->SetNumberField(TEXT("schemaVersion"), 2);
+        Result.AppliedSteps.Add(TEXT("ProjectDocumentV1ToV2"));
+        WorkingVersion = 2;
     }
 
     if (WorkingVersion != AkUGCSchema::CurrentProjectDocumentVersion)

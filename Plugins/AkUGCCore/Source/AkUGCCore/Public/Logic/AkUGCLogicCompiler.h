@@ -24,6 +24,9 @@ struct AKUGCCORE_API FAkUGCLogicInstruction
 
     UPROPERTY(BlueprintReadOnly, Category = "UGC|Logic")
     FString Operand;
+
+    UPROPERTY(BlueprintReadOnly, Category = "UGC|Logic")
+    TArray<int32> SuccessorIndices;
 };
 
 USTRUCT(BlueprintType)
@@ -33,6 +36,9 @@ struct AKUGCCORE_API FAkUGCLogicProgram
 
     UPROPERTY(BlueprintReadOnly, Category = "UGC|Logic")
     TArray<FAkUGCLogicInstruction> Instructions;
+
+    UPROPERTY(BlueprintReadOnly, Category = "UGC|Logic")
+    int32 GameStartEntryIndex = INDEX_NONE;
 };
 
 struct AKUGCCORE_API FAkUGCLogicCompileResult

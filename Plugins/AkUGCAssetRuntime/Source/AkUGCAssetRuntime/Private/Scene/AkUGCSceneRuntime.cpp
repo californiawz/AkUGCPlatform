@@ -8,6 +8,7 @@
 #include "Entity/AkUGCEntityBindingComponent.h"
 #include "Entity/AkUGCRuntimeEntityActor.h"
 #include "Prefab/AkUGCPrefabRegistry.h"
+#include "Subsystem/AkUGCLogicRuntimeSubsystem.h"
 
 namespace
 {
@@ -65,6 +66,32 @@ bool FAkUGCSceneRuntime::LoadScene(
     }
 
     return true;
+}
+
+bool FAkUGCSceneRuntime::RunGameStartLogic(
+    const FAkUGCSceneDocument& Scene,
+    FString* OutError)
+{
+    UWorld* RuntimeWorld = World.Get();
+    if (RuntimeWorld
+        && RuntimeWorld->WorldType != EWorldType::Game
+        && RuntimeWorld->WorldType != EWorldType::PIE
+        && RuntimeWorld->WorldType != EWorldType::GamePreview)
+    {
+        return true;
+    }
+    UAkUGCLogicRuntimeSubsystem* LogicRuntime = RuntimeWorld
+        ? RuntimeWorld->GetSubsystem<UAkUGCLogicRuntimeSubsystem>()
+        : nullptr;
+    if (!LogicRuntime)
+    {
+        return Fail(OutError, TEXT("Logic Runtime subsystem is not available for the scene world."));
+    }
+
+    const FAkUGCLogicRuntimeResult Result = LogicRuntime->RunGameStart(Scene.LogicGraph);
+    return Result.bSucceeded
+        ? true
+        : Fail(OutError, FString::Printf(TEXT("%s: %s"), *Result.ErrorPath, *Result.ErrorMessage));
 }
 
 bool FAkUGCSceneRuntime::SynchronizeScene(
@@ -249,6 +276,14 @@ bool FAkUGCSceneRuntime::NotifyActorDeletedExternally(const FGuid& EntityId, con
 
 void FAkUGCSceneRuntime::Unload()
 {
+    if (UWorld* RuntimeWorld = World.Get())
+    {
+        if (UAkUGCLogicRuntimeSubsystem* LogicRuntime = RuntimeWorld->GetSubsystem<UAkUGCLogicRuntimeSubsystem>())
+        {
+            LogicRuntime->ResetLogicRuntime();
+        }
+    }
+
     for (TPair<FGuid, TWeakObjectPtr<AActor>>& Pair : Actors)
     {
         if (AActor* Actor = Pair.Value.Get())

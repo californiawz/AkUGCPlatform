@@ -67,8 +67,26 @@ FAkUGCValidationResult FAkUGCDocumentValidator::ValidateLogicGraph(
     const FString& Path)
 {
     FAkUGCValidationResult Result;
+    if (LogicGraph.Nodes.Num() > AkUGCLogicLimits::MaxNodes)
+    {
+        Result.AddError(
+            Path + TEXT(".nodes"),
+            FString::Printf(TEXT("Logic graph exceeds the node budget of %d."), AkUGCLogicLimits::MaxNodes));
+    }
+    if (LogicGraph.Connections.Num() > AkUGCLogicLimits::MaxConnections)
+    {
+        Result.AddError(
+            Path + TEXT(".connections"),
+            FString::Printf(TEXT("Logic graph exceeds the connection budget of %d."), AkUGCLogicLimits::MaxConnections));
+    }
+    if (!Result.IsValid())
+    {
+        return Result;
+    }
+
     TSet<FGuid> NodeIds;
     TMap<FGuid, EAkUGCLogicNodeType> NodeTypes;
+    FGuid GameStartId;
     int32 GameStartCount = 0;
 
     for (int32 NodeIndex = 0; NodeIndex < LogicGraph.Nodes.Num(); ++NodeIndex)
@@ -89,18 +107,33 @@ FAkUGCValidationResult FAkUGCDocumentValidator::ValidateLogicGraph(
             NodeTypes.Add(Node.NodeId, Node.Type);
         }
 
-        if (Node.Type == EAkUGCLogicNodeType::GameStart)
+        switch (Node.Type)
         {
+        case EAkUGCLogicNodeType::GameStart:
             ++GameStartCount;
+            GameStartId = Node.NodeId;
             if (!Node.Message.IsEmpty())
             {
                 Result.AddError(NodePath + TEXT(".message"), TEXT("Game Start node cannot contain a message."));
             }
-        }
-        else if (Node.Type == EAkUGCLogicNodeType::Message
-            && Node.Message.TrimStartAndEnd().IsEmpty())
-        {
-            Result.AddError(NodePath + TEXT(".message"), TEXT("Message node text is required."));
+            break;
+
+        case EAkUGCLogicNodeType::Message:
+            if (Node.Message.TrimStartAndEnd().IsEmpty())
+            {
+                Result.AddError(NodePath + TEXT(".message"), TEXT("Message node text is required."));
+            }
+            if (Node.Message.Len() > AkUGCLogicLimits::MaxMessageLength)
+            {
+                Result.AddError(
+                    NodePath + TEXT(".message"),
+                    FString::Printf(TEXT("Message exceeds the length budget of %d characters."), AkUGCLogicLimits::MaxMessageLength));
+            }
+            break;
+
+        default:
+            Result.AddError(NodePath + TEXT(".type"), TEXT("Logic node type is not supported."));
+            break;
         }
     }
 
@@ -168,6 +201,28 @@ FAkUGCValidationResult FAkUGCDocumentValidator::ValidateLogicGraph(
         {
             Result.AddError(Path + TEXT(".connections"), TEXT("Logic graph contains a cycle."));
             break;
+        }
+    }
+
+    if (Result.IsValid() && GameStartCount == 1)
+    {
+        TArray<FGuid> PendingNodes = {GameStartId};
+        int32 ReadIndex = 0;
+        while (ReadIndex < PendingNodes.Num()
+            && ReadIndex <= AkUGCLogicLimits::MaxExecutedInstructions)
+        {
+            TArray<FGuid> Targets;
+            TargetsBySource.MultiFind(PendingNodes[ReadIndex++], Targets);
+            PendingNodes.Append(Targets);
+        }
+        if (ReadIndex > AkUGCLogicLimits::MaxExecutedInstructions
+            || PendingNodes.Num() > AkUGCLogicLimits::MaxExecutedInstructions)
+        {
+            Result.AddError(
+                Path + TEXT(".connections"),
+                FString::Printf(
+                    TEXT("Game Start execution exceeds the instruction budget of %d."),
+                    AkUGCLogicLimits::MaxExecutedInstructions));
         }
     }
     return Result;

@@ -19,7 +19,8 @@ Document 至少描述 Project Manifest、Scene、Entity、PrefabId、Transform�
 ## 版本与迁移策略
 
 - 缺少 `manifest.schemaVersion` 或显式版本为 `0` 的历史文档按 V0 处理。
-- 当前支持从 V0 迁移到 V1；迁移会补齐项目版本，并将缺失或为零的 Component SchemaVersion 规范化为 1。
+- 当前支持按 V0 → V1 → V2 连续迁移：V1 补齐项目版本并将缺失或为零的 Component SchemaVersion 规范化为 1；V2 为旧场景补齐空 Logic Graph。
+- Logic Graph 进入持久化契约后必须使用 V2；旧 V1 文档加载时自动迁移，避免旧客户端把逻辑字段当作未知数据丢弃。
 - 迁移不得生成缺失的 ProjectId、SceneId 或 EntityId；此类数据问题仍由 Validator 拒绝。
 - 高于当前版本的文档必须在转换为 USTRUCT 前拒绝，避免未知字段被忽略后覆盖原文件。
 - 迁移必须先完整验证，再统一修改；失败不得留下部分迁移结果。

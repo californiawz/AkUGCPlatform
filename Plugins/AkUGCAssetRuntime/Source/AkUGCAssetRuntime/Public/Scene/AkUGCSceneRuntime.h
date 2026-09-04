@@ -50,6 +50,7 @@ private:
         const FAkUGCCommandTransaction& Transaction,
         const FAkUGCPrefabRegistry& Registry,
         FString* OutError = nullptr);
+    bool RunGameStartLogic(const FAkUGCSceneDocument& Scene, FString* OutError = nullptr);
 
     bool ValidateScene(
         const FAkUGCSceneDocument& Scene,
