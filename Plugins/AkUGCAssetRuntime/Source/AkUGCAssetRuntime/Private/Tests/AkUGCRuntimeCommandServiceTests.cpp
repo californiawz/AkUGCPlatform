@@ -19,6 +19,14 @@ namespace
         return Result;
     }
 
+    FAkUGCValue IntegerValue(int64 Value)
+    {
+        FAkUGCValue Result;
+        Result.Type = EAkUGCValueType::Integer;
+        Result.IntegerValue = Value;
+        return Result;
+    }
+
     FAkUGCPrefabDefinition MakeEditablePrefab()
     {
         FAkUGCPrefabDefinition Prefab;
@@ -45,6 +53,14 @@ namespace
         DesktopProperty.ValueType = EAkUGCValueType::Number;
         DesktopProperty.DefaultValue = NumberValue(5.0);
         DesktopProperty.bMobileEditable = false;
+
+        FAkUGCPropertyDefinition& LargeIntegerProperty = Prefab.EditableProperties.AddDefaulted_GetRef();
+        LargeIntegerProperty.ComponentTypeId = Component.TypeId;
+        LargeIntegerProperty.PropertyId = TEXT("largeInteger");
+        LargeIntegerProperty.ValueType = EAkUGCValueType::Integer;
+        LargeIntegerProperty.DefaultValue = IntegerValue(0);
+        LargeIntegerProperty.bHasMaximum = true;
+        LargeIntegerProperty.Maximum = 9007199254740992.0;
         return Prefab;
     }
 
@@ -151,6 +167,11 @@ bool FAkUGCRuntimeCommandServiceWorkflowTest::RunTest(const FString& Parameters)
             EAkUGCEditingClient::Mobile);
         TestFalse(TEXT("Mobile service rejects desktop-only property"), MobileService.SetEntityProperty(
             ParentId, TEXT("test.stats"), TEXT("desktopOnly"), NumberValue(6.0)).bSucceeded);
+        TestFalse(TEXT("Integer range rejects value above exact 2^53 boundary"), Service.SetEntityProperty(
+            ParentId,
+            TEXT("test.stats"),
+            TEXT("largeInteger"),
+            IntegerValue(9007199254740993LL)).bSucceeded);
 
         ParentActor->SetActorLocation(FVector(999.0, 0.0, 0.0));
         FGuid DuplicateId;

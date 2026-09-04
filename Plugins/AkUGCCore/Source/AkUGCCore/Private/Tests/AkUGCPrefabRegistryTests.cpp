@@ -73,6 +73,14 @@ bool FAkUGCPrefabValidationTest::RunTest(const FString& Parameters)
     FString Error;
     TestFalse(TEXT("Non-namespaced prefab ID is rejected"), FAkUGCPrefabRegistry::ValidateDefinition(Definition, &Error));
     TestFalse(TEXT("Validation returns an error message"), Error.IsEmpty());
+
+    Definition = MakeBasePrefab();
+    Definition.EditableProperties[0].Maximum = TNumericLimits<double>::Max() * 2.0;
+    TestFalse(TEXT("Non-finite property range is rejected"), FAkUGCPrefabRegistry::ValidateDefinition(Definition, &Error));
+
+    Definition = MakeBasePrefab();
+    Definition.EditableProperties[0].DefaultValue.NumberValue = 200000.0;
+    TestFalse(TEXT("Out-of-range property default is rejected"), FAkUGCPrefabRegistry::ValidateDefinition(Definition, &Error));
     return true;
 }
 
