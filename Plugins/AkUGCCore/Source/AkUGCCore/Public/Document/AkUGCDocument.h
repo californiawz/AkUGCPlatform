@@ -90,6 +90,52 @@ struct AKUGCCORE_API FAkUGCEntityRecord
     TArray<FAkUGCComponentRecord> Components;
 };
 
+UENUM(BlueprintType)
+enum class EAkUGCLogicNodeType : uint8
+{
+    GameStart,
+    Message
+};
+
+USTRUCT(BlueprintType)
+struct AKUGCCORE_API FAkUGCLogicNode
+{
+    GENERATED_BODY()
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Logic")
+    FGuid NodeId;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Logic")
+    EAkUGCLogicNodeType Type = EAkUGCLogicNodeType::GameStart;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Logic")
+    FString Message;
+};
+
+USTRUCT(BlueprintType)
+struct AKUGCCORE_API FAkUGCLogicConnection
+{
+    GENERATED_BODY()
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Logic")
+    FGuid SourceNodeId;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Logic")
+    FGuid TargetNodeId;
+};
+
+USTRUCT(BlueprintType)
+struct AKUGCCORE_API FAkUGCLogicGraph
+{
+    GENERATED_BODY()
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Logic")
+    TArray<FAkUGCLogicNode> Nodes;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Logic")
+    TArray<FAkUGCLogicConnection> Connections;
+};
+
 USTRUCT(BlueprintType)
 struct AKUGCCORE_API FAkUGCSceneDocument
 {
@@ -103,6 +149,9 @@ struct AKUGCCORE_API FAkUGCSceneDocument
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC")
     TArray<FAkUGCEntityRecord> Entities;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Logic")
+    FAkUGCLogicGraph LogicGraph;
 };
 
 USTRUCT(BlueprintType)

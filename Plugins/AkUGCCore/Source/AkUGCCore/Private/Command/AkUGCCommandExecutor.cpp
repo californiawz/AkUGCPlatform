@@ -54,6 +54,22 @@ namespace
         return Inverse;
     }
 
+    int32 FindLogicNodeIndex(const FAkUGCLogicGraph& LogicGraph, const FGuid& NodeId)
+    {
+        return LogicGraph.Nodes.IndexOfByPredicate([&NodeId](const FAkUGCLogicNode& Node)
+        {
+            return Node.NodeId == NodeId;
+        });
+    }
+
+    bool LogicConnectionEquals(
+        const FAkUGCLogicConnection& Left,
+        const FAkUGCLogicConnection& Right)
+    {
+        return Left.SourceNodeId == Right.SourceNodeId
+            && Left.TargetNodeId == Right.TargetNodeId;
+    }
+
     FString CommandPath(int32 CommandIndex)
     {
         return FString::Printf(TEXT("commands[%d]"), CommandIndex);
@@ -335,6 +351,83 @@ FAkUGCCommandExecutionResult FAkUGCCommandExecutor::ApplySingle(
 
         OutInverse = MakeInverse(Command, EAkUGCCommandType::DeleteEntity);
         OutInverse.EntityId = Command.EntityId;
+        return FAkUGCCommandExecutionResult::Success();
+    }
+
+    case EAkUGCCommandType::AddLogicNode:
+    {
+        if (!Command.LogicNode.NodeId.IsValid())
+        {
+            return FAkUGCCommandExecutionResult::Failure(TEXT("logicNode.nodeId"), TEXT("Logic node ID must be a valid GUID."));
+        }
+        if (FindLogicNodeIndex(Scene->LogicGraph, Command.LogicNode.NodeId) != INDEX_NONE)
+        {
+            return FAkUGCCommandExecutionResult::Failure(TEXT("logicNode.nodeId"), TEXT("Logic node ID already exists in the graph."));
+        }
+        Scene->LogicGraph.Nodes.Add(Command.LogicNode);
+        for (const FAkUGCLogicConnection& Connection : Command.LogicConnections)
+        {
+            Scene->LogicGraph.Connections.Add(Connection);
+        }
+
+        OutInverse = MakeInverse(Command, EAkUGCCommandType::DeleteLogicNode);
+        OutInverse.LogicNode = Command.LogicNode;
+        return FAkUGCCommandExecutionResult::Success();
+    }
+
+    case EAkUGCCommandType::DeleteLogicNode:
+    {
+        const int32 NodeIndex = FindLogicNodeIndex(Scene->LogicGraph, Command.LogicNode.NodeId);
+        if (NodeIndex == INDEX_NONE)
+        {
+            return FAkUGCCommandExecutionResult::Failure(TEXT("logicNode.nodeId"), TEXT("Logic node does not exist in the graph."));
+        }
+
+        OutInverse = MakeInverse(Command, EAkUGCCommandType::AddLogicNode);
+        OutInverse.LogicNode = Scene->LogicGraph.Nodes[NodeIndex];
+        OutInverse.LogicConnections = Scene->LogicGraph.Connections.FilterByPredicate([&Command](const FAkUGCLogicConnection& Connection)
+        {
+            return Connection.SourceNodeId == Command.LogicNode.NodeId
+                || Connection.TargetNodeId == Command.LogicNode.NodeId;
+        });
+        Scene->LogicGraph.Connections.RemoveAll([&Command](const FAkUGCLogicConnection& Connection)
+        {
+            return Connection.SourceNodeId == Command.LogicNode.NodeId
+                || Connection.TargetNodeId == Command.LogicNode.NodeId;
+        });
+        Scene->LogicGraph.Nodes.RemoveAt(NodeIndex);
+        return FAkUGCCommandExecutionResult::Success();
+    }
+
+    case EAkUGCCommandType::ConnectLogicNode:
+    {
+        if (Scene->LogicGraph.Connections.ContainsByPredicate([&Command](const FAkUGCLogicConnection& Connection)
+        {
+            return LogicConnectionEquals(Connection, Command.LogicConnection);
+        }))
+        {
+            return FAkUGCCommandExecutionResult::Failure(TEXT("logicConnection"), TEXT("Logic connection already exists in the graph."));
+        }
+        Scene->LogicGraph.Connections.Add(Command.LogicConnection);
+        OutInverse = MakeInverse(Command, EAkUGCCommandType::DisconnectLogicNode);
+        OutInverse.LogicConnection = Command.LogicConnection;
+        return FAkUGCCommandExecutionResult::Success();
+    }
+
+    case EAkUGCCommandType::DisconnectLogicNode:
+    {
+        const int32 ConnectionIndex = Scene->LogicGraph.Connections.IndexOfByPredicate(
+            [&Command](const FAkUGCLogicConnection& Connection)
+            {
+                return LogicConnectionEquals(Connection, Command.LogicConnection);
+            });
+        if (ConnectionIndex == INDEX_NONE)
+        {
+            return FAkUGCCommandExecutionResult::Failure(TEXT("logicConnection"), TEXT("Logic connection does not exist in the graph."));
+        }
+        Scene->LogicGraph.Connections.RemoveAt(ConnectionIndex);
+        OutInverse = MakeInverse(Command, EAkUGCCommandType::ConnectLogicNode);
+        OutInverse.LogicConnection = Command.LogicConnection;
         return FAkUGCCommandExecutionResult::Success();
     }
     }

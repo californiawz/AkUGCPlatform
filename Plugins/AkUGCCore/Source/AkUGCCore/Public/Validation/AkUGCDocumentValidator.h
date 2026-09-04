@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 
+struct FAkUGCLogicGraph;
 struct FAkUGCProjectDocument;
 
 enum class EAkUGCValidationSeverity : uint8
@@ -30,4 +31,7 @@ class AKUGCCORE_API FAkUGCDocumentValidator
 {
 public:
     static FAkUGCValidationResult Validate(const FAkUGCProjectDocument& Document);
+    static FAkUGCValidationResult ValidateLogicGraph(
+        const FAkUGCLogicGraph& LogicGraph,
+        const FString& Path = TEXT("logicGraph"));
 };

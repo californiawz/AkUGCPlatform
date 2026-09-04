@@ -13,7 +13,11 @@ enum class EAkUGCCommandType : uint8
     SetProperty,
     RemoveProperty,
     DuplicateEntity,
-    SetParent
+    SetParent,
+    AddLogicNode,
+    DeleteLogicNode,
+    ConnectLogicNode,
+    DisconnectLogicNode
 };
 
 USTRUCT(BlueprintType)
@@ -59,6 +63,15 @@ struct AKUGCCORE_API FAkUGCCommand
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC")
     FAkUGCValue PropertyValue;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Logic")
+    FAkUGCLogicNode LogicNode;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Logic")
+    FAkUGCLogicConnection LogicConnection;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Logic")
+    TArray<FAkUGCLogicConnection> LogicConnections;
 };
 
 USTRUCT(BlueprintType)

@@ -487,6 +487,12 @@ bool FAkUGCSceneRuntime::ApplyCommand(
         OutAttachmentUpdates.Add(Duplicate.EntityId);
         return true;
     }
+
+    case EAkUGCCommandType::AddLogicNode:
+    case EAkUGCCommandType::DeleteLogicNode:
+    case EAkUGCCommandType::ConnectLogicNode:
+    case EAkUGCCommandType::DisconnectLogicNode:
+        return true;
     }
 
     return Fail(OutError, TEXT("Unsupported runtime command type."));

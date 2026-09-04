@@ -31,6 +31,146 @@ namespace
         VisitStates.Add(EntityId, 2);
         return false;
     }
+
+    bool HasLogicCycle(
+        const FGuid& NodeId,
+        const TMultiMap<FGuid, FGuid>& TargetsBySource,
+        TMap<FGuid, uint8>& VisitStates)
+    {
+        const uint8 State = VisitStates.FindRef(NodeId);
+        if (State == 1)
+        {
+            return true;
+        }
+        if (State == 2)
+        {
+            return false;
+        }
+
+        VisitStates.Add(NodeId, 1);
+        TArray<FGuid> Targets;
+        TargetsBySource.MultiFind(NodeId, Targets);
+        for (const FGuid& TargetId : Targets)
+        {
+            if (HasLogicCycle(TargetId, TargetsBySource, VisitStates))
+            {
+                return true;
+            }
+        }
+        VisitStates.Add(NodeId, 2);
+        return false;
+    }
+}
+
+FAkUGCValidationResult FAkUGCDocumentValidator::ValidateLogicGraph(
+    const FAkUGCLogicGraph& LogicGraph,
+    const FString& Path)
+{
+    FAkUGCValidationResult Result;
+    TSet<FGuid> NodeIds;
+    TMap<FGuid, EAkUGCLogicNodeType> NodeTypes;
+    int32 GameStartCount = 0;
+
+    for (int32 NodeIndex = 0; NodeIndex < LogicGraph.Nodes.Num(); ++NodeIndex)
+    {
+        const FAkUGCLogicNode& Node = LogicGraph.Nodes[NodeIndex];
+        const FString NodePath = FString::Printf(TEXT("%s.nodes[%d]"), *Path, NodeIndex);
+        if (!Node.NodeId.IsValid())
+        {
+            Result.AddError(NodePath + TEXT(".nodeId"), TEXT("Logic node ID must be a valid GUID."));
+        }
+        else if (NodeIds.Contains(Node.NodeId))
+        {
+            Result.AddError(NodePath + TEXT(".nodeId"), TEXT("Logic node ID must be unique in the graph."));
+        }
+        else
+        {
+            NodeIds.Add(Node.NodeId);
+            NodeTypes.Add(Node.NodeId, Node.Type);
+        }
+
+        if (Node.Type == EAkUGCLogicNodeType::GameStart)
+        {
+            ++GameStartCount;
+            if (!Node.Message.IsEmpty())
+            {
+                Result.AddError(NodePath + TEXT(".message"), TEXT("Game Start node cannot contain a message."));
+            }
+        }
+        else if (Node.Type == EAkUGCLogicNodeType::Message
+            && Node.Message.TrimStartAndEnd().IsEmpty())
+        {
+            Result.AddError(NodePath + TEXT(".message"), TEXT("Message node text is required."));
+        }
+    }
+
+    if (GameStartCount > 1)
+    {
+        Result.AddError(Path + TEXT(".nodes"), TEXT("Logic graph can contain at most one Game Start node."));
+    }
+
+    TSet<FString> ConnectionKeys;
+    TMultiMap<FGuid, FGuid> TargetsBySource;
+    TMap<FGuid, int32> IncomingCounts;
+    TMap<FGuid, int32> OutgoingCounts;
+    for (int32 ConnectionIndex = 0; ConnectionIndex < LogicGraph.Connections.Num(); ++ConnectionIndex)
+    {
+        const FAkUGCLogicConnection& Connection = LogicGraph.Connections[ConnectionIndex];
+        const FString ConnectionPath = FString::Printf(TEXT("%s.connections[%d]"), *Path, ConnectionIndex);
+        if (!Connection.SourceNodeId.IsValid() || !NodeIds.Contains(Connection.SourceNodeId))
+        {
+            Result.AddError(ConnectionPath + TEXT(".sourceNodeId"), TEXT("Connection source node must exist in the graph."));
+        }
+        if (!Connection.TargetNodeId.IsValid() || !NodeIds.Contains(Connection.TargetNodeId))
+        {
+            Result.AddError(ConnectionPath + TEXT(".targetNodeId"), TEXT("Connection target node must exist in the graph."));
+        }
+        if (Connection.SourceNodeId == Connection.TargetNodeId)
+        {
+            Result.AddError(ConnectionPath, TEXT("Logic node cannot connect to itself."));
+        }
+
+        const FString ConnectionKey = Connection.SourceNodeId.ToString(EGuidFormats::Digits)
+            + TEXT("->") + Connection.TargetNodeId.ToString(EGuidFormats::Digits);
+        if (ConnectionKeys.Contains(ConnectionKey))
+        {
+            Result.AddError(ConnectionPath, TEXT("Logic connection must be unique."));
+        }
+        else
+        {
+            ConnectionKeys.Add(ConnectionKey);
+        }
+
+        if (NodeIds.Contains(Connection.SourceNodeId) && NodeIds.Contains(Connection.TargetNodeId))
+        {
+            TargetsBySource.Add(Connection.SourceNodeId, Connection.TargetNodeId);
+            ++OutgoingCounts.FindOrAdd(Connection.SourceNodeId);
+            ++IncomingCounts.FindOrAdd(Connection.TargetNodeId);
+        }
+    }
+
+    for (const TPair<FGuid, EAkUGCLogicNodeType>& Pair : NodeTypes)
+    {
+        if (Pair.Value == EAkUGCLogicNodeType::GameStart && IncomingCounts.FindRef(Pair.Key) > 0)
+        {
+            Result.AddError(Path + TEXT(".connections"), TEXT("Game Start node cannot have incoming connections."));
+        }
+        if (Pair.Value == EAkUGCLogicNodeType::Message && OutgoingCounts.FindRef(Pair.Key) > 0)
+        {
+            Result.AddError(Path + TEXT(".connections"), TEXT("Message node cannot have outgoing connections."));
+        }
+    }
+
+    TMap<FGuid, uint8> VisitStates;
+    for (const FGuid& NodeId : NodeIds)
+    {
+        if (HasLogicCycle(NodeId, TargetsBySource, VisitStates))
+        {
+            Result.AddError(Path + TEXT(".connections"), TEXT("Logic graph contains a cycle."));
+            break;
+        }
+    }
+    return Result;
 }
 
 bool FAkUGCValidationResult::IsValid() const
@@ -194,6 +334,11 @@ FAkUGCValidationResult FAkUGCDocumentValidator::Validate(const FAkUGCProjectDocu
                 break;
             }
         }
+
+        const FAkUGCValidationResult LogicValidation = ValidateLogicGraph(
+            Scene.LogicGraph,
+            ScenePath + TEXT(".logicGraph"));
+        Result.Issues.Append(LogicValidation.Issues);
     }
 
     if (Document.Scenes.IsEmpty())
