@@ -68,8 +68,14 @@ private:
     void OnActorsMoved(TArray<AActor*>& Actors);
     void OnLevelActorAttached(AActor* Actor, const AActor* ParentActor);
     void OnLevelActorDetached(AActor* Actor, const AActor* ParentActor);
+    void OnLevelActorAdded(AActor* Actor);
+    void OnLevelActorDeleted(AActor* Actor);
+    void OnDeleteActorsBegin();
+    void OnDeleteActorsEnd();
     bool TickPendingHierarchyChanges(float DeltaTime);
+    bool CommitPendingActorDeletions();
     bool CommitActorHierarchyChange(AActor* Actor, const AActor* ParentActor);
+    FAkUGCCommandExecutionResult ExecuteDeleteEntities(const TSet<FGuid>& EntityIds, const FString& Label);
     void RestoreActorHierarchyFromDocument();
     void AddActorAndUGCDescendants(AActor* Actor, TMap<FGuid, FTransform>& OutTransforms) const;
 
@@ -83,9 +89,15 @@ private:
     FDelegateHandle ActorsMovedHandle;
     FDelegateHandle LevelActorAttachedHandle;
     FDelegateHandle LevelActorDetachedHandle;
+    FDelegateHandle LevelActorAddedHandle;
+    FDelegateHandle LevelActorDeletedHandle;
+    FDelegateHandle DeleteActorsBeginHandle;
+    FDelegateHandle DeleteActorsEndHandle;
     FTSTicker::FDelegateHandle HierarchyTickerHandle;
     TSet<FGuid> PendingDetachedEntityIds;
+    TSet<FGuid> PendingDeletedEntityIds;
     uint64 DocumentRevision = 0;
     bool bUpdatingEditorSelection = false;
     bool bApplyingUGCTransaction = false;
+    bool bCapturingEditorActorDeletion = false;
 };

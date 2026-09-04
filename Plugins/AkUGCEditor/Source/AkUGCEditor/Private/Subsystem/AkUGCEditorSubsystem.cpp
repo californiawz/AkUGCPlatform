@@ -118,6 +118,8 @@ void UAkUGCEditorSubsystem::CloseProject()
     bUpdatingEditorSelection = false;
     SelectedEntityId.Invalidate();
     PendingDetachedEntityIds.Reset();
+    PendingDeletedEntityIds.Reset();
+    bCapturingEditorActorDeletion = false;
 
     Session.Reset();
     if (Runtime)
@@ -176,28 +178,110 @@ FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::PlacePrefab(
 
 FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::DeleteEntity(const FGuid& EntityId)
 {
+    return ExecuteDeleteEntities({EntityId}, TEXT("Delete entity"));
+}
+
+FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::ExecuteDeleteEntities(
+    const TSet<FGuid>& EntityIds,
+    const FString& Label)
+{
     if (!Session)
     {
         return NoSessionResult();
     }
+    if (EntityIds.IsEmpty())
+    {
+        return FAkUGCCommandExecutionResult::Failure(TEXT("editor.entityIds"), TEXT("At least one entity is required."));
+    }
 
-    FAkUGCCommand Command;
-    Command.CommandId = FGuid::NewGuid();
-    Command.Type = EAkUGCCommandType::DeleteEntity;
-    Command.SceneId = ActiveSceneId;
-    Command.EntityId = EntityId;
+    const FAkUGCSceneDocument* Scene = Document.Scenes.FindByPredicate([this](const FAkUGCSceneDocument& Candidate)
+    {
+        return Candidate.SceneId == ActiveSceneId;
+    });
+    if (!Scene)
+    {
+        return FAkUGCCommandExecutionResult::Failure(TEXT("editor.sceneId"), TEXT("Active scene does not exist."));
+    }
+
+    TSet<FGuid> ExistingEntityIds;
+    for (const FGuid& EntityId : EntityIds)
+    {
+        if (Scene->Entities.ContainsByPredicate([&EntityId](const FAkUGCEntityRecord& Entity)
+        {
+            return Entity.EntityId == EntityId;
+        }))
+        {
+            ExistingEntityIds.Add(EntityId);
+        }
+    }
+    if (ExistingEntityIds.IsEmpty())
+    {
+        return FAkUGCCommandExecutionResult::Failure(TEXT("editor.entityIds"), TEXT("No target entity exists."));
+    }
 
     FAkUGCCommandTransaction Transaction;
     Transaction.TransactionId = FGuid::NewGuid();
-    Transaction.Label = TEXT("Delete entity");
-    Transaction.Commands.Add(MoveTemp(Command));
+    Transaction.Label = Label;
+
+    for (const FAkUGCEntityRecord& Entity : Scene->Entities)
+    {
+        if (Entity.ParentEntityId.IsValid()
+            && ExistingEntityIds.Contains(Entity.ParentEntityId)
+            && !ExistingEntityIds.Contains(Entity.EntityId))
+        {
+            FAkUGCCommand& DetachCommand = Transaction.Commands.AddDefaulted_GetRef();
+            DetachCommand.CommandId = FGuid::NewGuid();
+            DetachCommand.Type = EAkUGCCommandType::SetParent;
+            DetachCommand.SceneId = ActiveSceneId;
+            DetachCommand.EntityId = Entity.EntityId;
+            PendingDetachedEntityIds.Remove(Entity.EntityId);
+        }
+    }
+
+    TArray<FGuid> OrderedEntityIds = ExistingEntityIds.Array();
+    const auto GetDepth = [Scene](const FGuid& EntityId)
+    {
+        int32 Depth = 0;
+        const FAkUGCEntityRecord* Entity = Scene->Entities.FindByPredicate([&EntityId](const FAkUGCEntityRecord& Candidate)
+        {
+            return Candidate.EntityId == EntityId;
+        });
+        FGuid ParentId = Entity ? Entity->ParentEntityId : FGuid{};
+        while (ParentId.IsValid())
+        {
+            ++Depth;
+            const FAkUGCEntityRecord* Parent = Scene->Entities.FindByPredicate([&ParentId](const FAkUGCEntityRecord& Candidate)
+            {
+                return Candidate.EntityId == ParentId;
+            });
+            ParentId = Parent ? Parent->ParentEntityId : FGuid{};
+        }
+        return Depth;
+    };
+    OrderedEntityIds.Sort([&GetDepth](const FGuid& Left, const FGuid& Right)
+    {
+        const int32 LeftDepth = GetDepth(Left);
+        const int32 RightDepth = GetDepth(Right);
+        return LeftDepth == RightDepth
+            ? Left.ToString(EGuidFormats::Digits) < Right.ToString(EGuidFormats::Digits)
+            : LeftDepth > RightDepth;
+    });
+
+    for (const FGuid& EntityId : OrderedEntityIds)
+    {
+        FAkUGCCommand& DeleteCommand = Transaction.Commands.AddDefaulted_GetRef();
+        DeleteCommand.CommandId = FGuid::NewGuid();
+        DeleteCommand.Type = EAkUGCCommandType::DeleteEntity;
+        DeleteCommand.SceneId = ActiveSceneId;
+        DeleteCommand.EntityId = EntityId;
+    }
 
     TGuardValue<bool> ApplyingGuard(bApplyingUGCTransaction, true);
     FAkUGCCommandExecutionResult Result = Session->Execute(Document, Transaction);
     if (Result.bSucceeded)
     {
         ++DocumentRevision;
-        if (SelectedEntityId == EntityId)
+        if (ExistingEntityIds.Contains(SelectedEntityId))
         {
             SelectedEntityId.Invalidate();
         }
@@ -674,7 +758,19 @@ void UAkUGCEditorSubsystem::RegisterEditorDelegates()
         LevelActorDetachedHandle = GEngine->OnLevelActorDetached().AddUObject(
             this,
             &UAkUGCEditorSubsystem::OnLevelActorDetached);
+        LevelActorAddedHandle = GEngine->OnLevelActorAdded().AddUObject(
+            this,
+            &UAkUGCEditorSubsystem::OnLevelActorAdded);
+        LevelActorDeletedHandle = GEngine->OnLevelActorDeleted().AddUObject(
+            this,
+            &UAkUGCEditorSubsystem::OnLevelActorDeleted);
     }
+    DeleteActorsBeginHandle = FEditorDelegates::OnDeleteActorsBegin.AddUObject(
+        this,
+        &UAkUGCEditorSubsystem::OnDeleteActorsBegin);
+    DeleteActorsEndHandle = FEditorDelegates::OnDeleteActorsEnd.AddUObject(
+        this,
+        &UAkUGCEditorSubsystem::OnDeleteActorsEnd);
     HierarchyTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
         FTickerDelegate::CreateUObject(this, &UAkUGCEditorSubsystem::TickPendingHierarchyChanges));
 }
@@ -706,6 +802,26 @@ void UAkUGCEditorSubsystem::UnregisterEditorDelegates()
             GEngine->OnLevelActorDetached().Remove(LevelActorDetachedHandle);
             LevelActorDetachedHandle.Reset();
         }
+        if (LevelActorAddedHandle.IsValid())
+        {
+            GEngine->OnLevelActorAdded().Remove(LevelActorAddedHandle);
+            LevelActorAddedHandle.Reset();
+        }
+        if (LevelActorDeletedHandle.IsValid())
+        {
+            GEngine->OnLevelActorDeleted().Remove(LevelActorDeletedHandle);
+            LevelActorDeletedHandle.Reset();
+        }
+    }
+    if (DeleteActorsBeginHandle.IsValid())
+    {
+        FEditorDelegates::OnDeleteActorsBegin.Remove(DeleteActorsBeginHandle);
+        DeleteActorsBeginHandle.Reset();
+    }
+    if (DeleteActorsEndHandle.IsValid())
+    {
+        FEditorDelegates::OnDeleteActorsEnd.Remove(DeleteActorsEndHandle);
+        DeleteActorsEndHandle.Reset();
     }
     if (HierarchyTickerHandle.IsValid())
     {
@@ -713,6 +829,8 @@ void UAkUGCEditorSubsystem::UnregisterEditorDelegates()
         HierarchyTickerHandle.Reset();
     }
     PendingDetachedEntityIds.Reset();
+    PendingDeletedEntityIds.Reset();
+    bCapturingEditorActorDeletion = false;
 }
 
 void UAkUGCEditorSubsystem::OnActorSelectionChanged(
@@ -775,9 +893,71 @@ void UAkUGCEditorSubsystem::OnLevelActorDetached(AActor* Actor, const AActor* Pa
     }
 }
 
+void UAkUGCEditorSubsystem::OnLevelActorAdded(AActor* Actor)
+{
+    if (bApplyingUGCTransaction || !Session || !Runtime || !Actor)
+    {
+        return;
+    }
+
+    const UAkUGCEntityBindingComponent* Binding = Actor->FindComponentByClass<UAkUGCEntityBindingComponent>();
+    if (!Binding || Runtime->FindActor(Binding->EntityId) == Actor)
+    {
+        return;
+    }
+
+    // Project Document remains authoritative until native Undo is integrated with UGC history.
+    TGuardValue<bool> ApplyingGuard(bApplyingUGCTransaction, true);
+    if (UWorld* World = Actor->GetWorld())
+    {
+        World->EditorDestroyActor(Actor, false);
+    }
+}
+
+void UAkUGCEditorSubsystem::OnLevelActorDeleted(AActor* Actor)
+{
+    if (bApplyingUGCTransaction || !bCapturingEditorActorDeletion || !Session || !Runtime || !Actor)
+    {
+        return;
+    }
+
+    const UAkUGCEntityBindingComponent* Binding = Actor->FindComponentByClass<UAkUGCEntityBindingComponent>();
+    if (!Binding || !Runtime->NotifyActorDeletedExternally(Binding->EntityId, Actor))
+    {
+        return;
+    }
+
+    PendingDetachedEntityIds.Remove(Binding->EntityId);
+    PendingDeletedEntityIds.Add(Binding->EntityId);
+}
+
+void UAkUGCEditorSubsystem::OnDeleteActorsBegin()
+{
+    bCapturingEditorActorDeletion = Session.IsValid() && Runtime.IsValid() && !bApplyingUGCTransaction;
+    if (bCapturingEditorActorDeletion)
+    {
+        PendingDeletedEntityIds.Reset();
+    }
+}
+
+void UAkUGCEditorSubsystem::OnDeleteActorsEnd()
+{
+    const bool bWasCapturing = bCapturingEditorActorDeletion;
+    bCapturingEditorActorDeletion = false;
+    if (bWasCapturing && !PendingDeletedEntityIds.IsEmpty())
+    {
+        CommitPendingActorDeletions();
+    }
+}
+
 bool UAkUGCEditorSubsystem::TickPendingHierarchyChanges(float DeltaTime)
 {
-    if (bApplyingUGCTransaction || !Session || !Runtime || PendingDetachedEntityIds.IsEmpty())
+    if (bApplyingUGCTransaction || !Session || !Runtime)
+    {
+        return true;
+    }
+
+    if (PendingDetachedEntityIds.IsEmpty())
     {
         return true;
     }
@@ -790,6 +970,27 @@ bool UAkUGCEditorSubsystem::TickPendingHierarchyChanges(float DeltaTime)
         {
             CommitActorHierarchyChange(Actor, Actor->GetAttachParentActor());
         }
+    }
+    return true;
+}
+
+bool UAkUGCEditorSubsystem::CommitPendingActorDeletions()
+{
+    const TSet<FGuid> EntityIds = MoveTemp(PendingDeletedEntityIds);
+    PendingDeletedEntityIds.Reset();
+    if (EntityIds.IsEmpty())
+    {
+        return true;
+    }
+
+    const FAkUGCCommandExecutionResult Result = ExecuteDeleteEntities(
+        EntityIds,
+        EntityIds.Num() == 1 ? TEXT("Delete entity from viewport") : TEXT("Delete entities from viewport"));
+    if (!Result.bSucceeded)
+    {
+        UE_LOG(LogTemp, Error, TEXT("Failed to commit UGC actor deletion: %s"), *Result.ErrorMessage);
+        RestoreActorHierarchyFromDocument();
+        return false;
     }
     return true;
 }

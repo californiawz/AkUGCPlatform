@@ -34,6 +34,7 @@ public:
         FString* OutError = nullptr);
 
     bool RemoveEntity(const FGuid& EntityId);
+    bool NotifyActorDeletedExternally(const FGuid& EntityId, const AActor* Actor);
     void Unload();
 
     AActor* FindActor(const FGuid& EntityId) const;
@@ -73,4 +74,5 @@ private:
     TWeakObjectPtr<UWorld> World;
     FGuid ActiveSceneId;
     TMap<FGuid, TWeakObjectPtr<AActor>> Actors;
+    TSet<FGuid> ExternallyDeletedEntityIds;
 };

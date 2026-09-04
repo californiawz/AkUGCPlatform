@@ -253,4 +253,81 @@ bool FAkUGCEditorViewportHierarchySyncTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FAkUGCEditorViewportDeletionSyncTest,
+    "AkUGC.Editor.CreatorStudio.ViewportDeletionSync",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCEditorViewportDeletionSyncTest::RunTest(const FString& Parameters)
+{
+    UAkUGCEditorSubsystem* Subsystem = GEditor
+        ? GEditor->GetEditorSubsystem<UAkUGCEditorSubsystem>()
+        : nullptr;
+    TestNotNull(TEXT("Creator Studio subsystem exists"), Subsystem);
+    if (!Subsystem)
+    {
+        return false;
+    }
+
+    FString Error;
+    if (!Subsystem->NewTowerDefenseProject(&Error))
+    {
+        AddError(FString::Printf(TEXT("Failed to create project: %s"), *Error));
+        return false;
+    }
+
+    FGuid ParentId;
+    FGuid ChildId;
+    TestTrue(TEXT("Parent is placed"), Subsystem->PlacePrefab(
+        TEXT("official.gameplay.base"), FTransform(FVector(100.0, 0.0, 0.0)), ParentId).bSucceeded);
+    TestTrue(TEXT("Child is placed"), Subsystem->PlacePrefab(
+        TEXT("official.gameplay.tower_slot"), FTransform(FVector(250.0, 0.0, 0.0)), ChildId).bSucceeded);
+    TestTrue(TEXT("Child is parented"), Subsystem->SetEntityParent(ChildId, ParentId).bSucceeded);
+
+    AActor* ParentActor = Subsystem->FindRuntimeActor(ParentId);
+    AActor* ChildActor = Subsystem->FindRuntimeActor(ChildId);
+    TestNotNull(TEXT("Parent runtime actor exists"), ParentActor);
+    TestNotNull(TEXT("Child runtime actor exists"), ChildActor);
+    if (!ParentActor || !ChildActor)
+    {
+        Subsystem->CloseProject();
+        return false;
+    }
+
+    const FVector ChildWorldLocation = ChildActor->GetActorLocation();
+    UWorld* World = ParentActor->GetWorld();
+    TestNotNull(TEXT("Editor world exists"), World);
+    if (!World)
+    {
+        Subsystem->CloseProject();
+        return false;
+    }
+
+    FEditorDelegates::OnDeleteActorsBegin.Broadcast();
+    TestTrue(TEXT("Native editor deletion succeeds"), World->EditorDestroyActor(ParentActor, true));
+    FEditorDelegates::OnDeleteActorsEnd.Broadcast();
+    TestNull(TEXT("Deleted parent is removed from document"), Subsystem->FindEntity(ParentId));
+    TestNull(TEXT("Deleted parent is removed from runtime"), Subsystem->FindRuntimeActor(ParentId));
+
+    const FAkUGCEntityRecord* ChildEntity = Subsystem->FindEntity(ChildId);
+    TestNotNull(TEXT("Surviving child remains in document"), ChildEntity);
+    if (ChildEntity)
+    {
+        TestFalse(TEXT("Surviving child moves to scene root"), ChildEntity->ParentEntityId.IsValid());
+        TestEqual(TEXT("Surviving child keeps document world transform"), ChildEntity->Transform.GetLocation(), ChildWorldLocation);
+    }
+    TestNull(TEXT("Surviving runtime child moves to scene root"), ChildActor->GetAttachParentActor());
+
+    TestTrue(TEXT("Undo native deletion succeeds"), Subsystem->Undo().bSucceeded);
+    AActor* RestoredParent = Subsystem->FindRuntimeActor(ParentId);
+    TestNotNull(TEXT("Undo restores parent runtime actor"), RestoredParent);
+    TestEqual(TEXT("Undo restores child attachment"), ChildActor->GetAttachParentActor(), RestoredParent);
+    TestTrue(TEXT("Redo native deletion succeeds"), Subsystem->Redo().bSucceeded);
+    TestNull(TEXT("Redo removes parent runtime actor"), Subsystem->FindRuntimeActor(ParentId));
+    TestNull(TEXT("Redo detaches surviving child"), ChildActor->GetAttachParentActor());
+
+    Subsystem->CloseProject();
+    return true;
+}
+
 #endif

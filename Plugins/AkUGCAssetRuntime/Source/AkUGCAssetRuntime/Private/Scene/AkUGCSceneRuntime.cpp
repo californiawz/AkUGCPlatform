@@ -230,6 +230,20 @@ bool FAkUGCSceneRuntime::RemoveEntity(const FGuid& EntityId)
         Actor->Destroy();
     }
     Actors.Remove(EntityId);
+    ExternallyDeletedEntityIds.Remove(EntityId);
+    return true;
+}
+
+bool FAkUGCSceneRuntime::NotifyActorDeletedExternally(const FGuid& EntityId, const AActor* Actor)
+{
+    const TWeakObjectPtr<AActor>* ExistingActor = Actors.Find(EntityId);
+    if (!ExistingActor || ExistingActor->Get() != Actor)
+    {
+        return false;
+    }
+
+    Actors.Remove(EntityId);
+    ExternallyDeletedEntityIds.Add(EntityId);
     return true;
 }
 
@@ -243,6 +257,7 @@ void FAkUGCSceneRuntime::Unload()
         }
     }
     Actors.Reset();
+    ExternallyDeletedEntityIds.Reset();
     ActiveSceneId.Invalidate();
 }
 
@@ -380,6 +395,11 @@ bool FAkUGCSceneRuntime::ApplyCommand(
         AActor* Actor = FindActor(Command.EntityId);
         if (!Actor)
         {
+            if (ExternallyDeletedEntityIds.Remove(Command.EntityId) > 0)
+            {
+                OutAttachmentUpdates.Remove(Command.EntityId);
+                return true;
+            }
             return Fail(OutError, TEXT("Cannot delete a runtime entity that does not exist."));
         }
 
@@ -555,6 +575,7 @@ bool FAkUGCSceneRuntime::SpawnEntity(
     }
 
     Actors.Add(Entity.EntityId, Actor);
+    ExternallyDeletedEntityIds.Remove(Entity.EntityId);
     return true;
 }
 
