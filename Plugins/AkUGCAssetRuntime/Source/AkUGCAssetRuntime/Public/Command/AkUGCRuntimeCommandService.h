@@ -52,6 +52,14 @@ public:
         FName ComponentTypeId,
         FName PropertyId,
         const FAkUGCValue& Value);
+    FAkUGCCommandExecutionResult AddWave(const FAkUGCTowerDefenseWave& Wave, int32 WaveIndex = INDEX_NONE);
+    FAkUGCCommandExecutionResult UpdateWave(const FAkUGCTowerDefenseWave& Wave);
+    FAkUGCCommandExecutionResult DeleteWave(const FGuid& WaveId);
+    FAkUGCCommandExecutionResult MoveWave(const FGuid& WaveId, int32 TargetWaveIndex);
+    FAkUGCCommandExecutionResult SetRulesetSettings(
+        double WaveIntervalSeconds,
+        EAkUGCTowerDefenseDefeatCondition DefeatCondition,
+        EAkUGCTowerDefenseVictoryCondition VictoryCondition);
 
     FAkUGCCommandExecutionResult Undo();
     FAkUGCCommandExecutionResult Redo();

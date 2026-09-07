@@ -62,6 +62,14 @@ namespace
         });
     }
 
+    int32 FindWaveIndex(const FAkUGCTowerDefenseRuleset& Ruleset, const FGuid& WaveId)
+    {
+        return Ruleset.Waves.IndexOfByPredicate([&WaveId](const FAkUGCTowerDefenseWave& Wave)
+        {
+            return Wave.WaveId == WaveId;
+        });
+    }
+
     bool LogicConnectionEquals(
         const FAkUGCLogicConnection& Left,
         const FAkUGCLogicConnection& Right)
@@ -210,6 +218,16 @@ FAkUGCCommandExecutionResult FAkUGCCommandExecutor::ApplySingle(
         if (EntityIndex == INDEX_NONE)
         {
             return FAkUGCCommandExecutionResult::Failure(TEXT("entityId"), TEXT("Entity does not exist in the target scene."));
+        }
+
+        if (Scene->Ruleset.Waves.ContainsByPredicate([&Command](const FAkUGCTowerDefenseWave& Wave)
+        {
+            return Wave.SpawnPointEntityId == Command.EntityId;
+        }))
+        {
+            return FAkUGCCommandExecutionResult::Failure(
+                TEXT("entityId"),
+                TEXT("Entity is referenced by a tower defense wave; delete or update the wave first."));
         }
 
         OutInverse = MakeInverse(Command, EAkUGCCommandType::AddEntity);
@@ -428,6 +446,95 @@ FAkUGCCommandExecutionResult FAkUGCCommandExecutor::ApplySingle(
         Scene->LogicGraph.Connections.RemoveAt(ConnectionIndex);
         OutInverse = MakeInverse(Command, EAkUGCCommandType::ConnectLogicNode);
         OutInverse.LogicConnection = Command.LogicConnection;
+        return FAkUGCCommandExecutionResult::Success();
+    }
+
+    case EAkUGCCommandType::AddWave:
+    {
+        if (!Command.Wave.WaveId.IsValid())
+        {
+            return FAkUGCCommandExecutionResult::Failure(TEXT("wave.waveId"), TEXT("Wave ID must be a valid GUID."));
+        }
+        if (FindWaveIndex(Scene->Ruleset, Command.Wave.WaveId) != INDEX_NONE)
+        {
+            return FAkUGCCommandExecutionResult::Failure(TEXT("wave.waveId"), TEXT("Wave ID already exists in the Ruleset."));
+        }
+        const int32 InsertIndex = Command.WaveIndex == INDEX_NONE
+            ? Scene->Ruleset.Waves.Num()
+            : Command.WaveIndex;
+        if (InsertIndex < 0 || InsertIndex > Scene->Ruleset.Waves.Num())
+        {
+            return FAkUGCCommandExecutionResult::Failure(TEXT("waveIndex"), TEXT("Wave insertion index is out of range."));
+        }
+        Scene->Ruleset.Waves.Insert(Command.Wave, InsertIndex);
+        OutInverse = MakeInverse(Command, EAkUGCCommandType::DeleteWave);
+        OutInverse.Wave = Command.Wave;
+        return FAkUGCCommandExecutionResult::Success();
+    }
+
+    case EAkUGCCommandType::UpdateWave:
+    {
+        const int32 WaveIndex = FindWaveIndex(Scene->Ruleset, Command.Wave.WaveId);
+        if (WaveIndex == INDEX_NONE)
+        {
+            return FAkUGCCommandExecutionResult::Failure(TEXT("wave.waveId"), TEXT("Wave does not exist in the Ruleset."));
+        }
+        OutInverse = MakeInverse(Command, EAkUGCCommandType::UpdateWave);
+        OutInverse.Wave = Scene->Ruleset.Waves[WaveIndex];
+        Scene->Ruleset.Waves[WaveIndex] = Command.Wave;
+        return FAkUGCCommandExecutionResult::Success();
+    }
+
+    case EAkUGCCommandType::DeleteWave:
+    {
+        const int32 WaveIndex = FindWaveIndex(Scene->Ruleset, Command.Wave.WaveId);
+        if (WaveIndex == INDEX_NONE)
+        {
+            return FAkUGCCommandExecutionResult::Failure(TEXT("wave.waveId"), TEXT("Wave does not exist in the Ruleset."));
+        }
+        OutInverse = MakeInverse(Command, EAkUGCCommandType::AddWave);
+        OutInverse.Wave = Scene->Ruleset.Waves[WaveIndex];
+        OutInverse.WaveIndex = WaveIndex;
+        Scene->Ruleset.Waves.RemoveAt(WaveIndex);
+        return FAkUGCCommandExecutionResult::Success();
+    }
+
+    case EAkUGCCommandType::MoveWave:
+    {
+        const int32 SourceIndex = FindWaveIndex(Scene->Ruleset, Command.Wave.WaveId);
+        if (SourceIndex == INDEX_NONE)
+        {
+            return FAkUGCCommandExecutionResult::Failure(TEXT("wave.waveId"), TEXT("Wave does not exist in the Ruleset."));
+        }
+        if (!Scene->Ruleset.Waves.IsValidIndex(Command.WaveIndex))
+        {
+            return FAkUGCCommandExecutionResult::Failure(TEXT("waveIndex"), TEXT("Wave target index is out of range."));
+        }
+        OutInverse = MakeInverse(Command, EAkUGCCommandType::MoveWave);
+        OutInverse.Wave = Scene->Ruleset.Waves[SourceIndex];
+        OutInverse.WaveIndex = SourceIndex;
+        if (SourceIndex != Command.WaveIndex)
+        {
+            FAkUGCTowerDefenseWave MovingWave = Scene->Ruleset.Waves[SourceIndex];
+            Scene->Ruleset.Waves.RemoveAt(SourceIndex);
+            Scene->Ruleset.Waves.Insert(MoveTemp(MovingWave), Command.WaveIndex);
+        }
+        return FAkUGCCommandExecutionResult::Success();
+    }
+
+    case EAkUGCCommandType::SetRulesetSettings:
+    {
+        if (!FMath::IsFinite(Command.WaveIntervalSeconds))
+        {
+            return FAkUGCCommandExecutionResult::Failure(TEXT("waveIntervalSeconds"), TEXT("Wave interval must be finite."));
+        }
+        OutInverse = MakeInverse(Command, EAkUGCCommandType::SetRulesetSettings);
+        OutInverse.WaveIntervalSeconds = Scene->Ruleset.WaveIntervalSeconds;
+        OutInverse.DefeatCondition = Scene->Ruleset.DefeatCondition;
+        OutInverse.VictoryCondition = Scene->Ruleset.VictoryCondition;
+        Scene->Ruleset.WaveIntervalSeconds = Command.WaveIntervalSeconds;
+        Scene->Ruleset.DefeatCondition = Command.DefeatCondition;
+        Scene->Ruleset.VictoryCondition = Command.VictoryCondition;
         return FAkUGCCommandExecutionResult::Success();
     }
     }

@@ -3,6 +3,7 @@
 #include "Command/AkUGCRuntimeCommandService.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
+#include "Prefab/AkUGCOfficialPrefabCatalog.h"
 #include "Prefab/AkUGCPrefabRegistry.h"
 #include "Scene/AkUGCSceneRuntime.h"
 #include "Session/AkUGCDocumentRuntimeSession.h"
@@ -207,6 +208,105 @@ bool FAkUGCRuntimeCommandServiceWorkflowTest::RunTest(const FString& Parameters)
         TestTrue(TEXT("Shared service redo reapplies deletion"), Service.Redo().bSucceeded);
         TestNull(TEXT("Redo removes parent runtime actor"), Runtime.FindActor(ParentId));
         Runtime.Unload();
+    }
+
+    GEngine->DestroyWorldContext(World);
+    World->DestroyWorld(false);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FAkUGCRulesetCommandServiceWorkflowTest,
+    "AkUGC.Runtime.CommandService.RulesetWorkflow",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCRulesetCommandServiceWorkflowTest::RunTest(const FString& Parameters)
+{
+    UWorld* World = UWorld::CreateWorld(EWorldType::Game, false, TEXT("AkUGCRulesetCommandServiceTest"));
+    if (!World || !GEngine)
+    {
+        AddError(TEXT("Ruleset test world is not available."));
+        if (World)
+        {
+            World->DestroyWorld(false);
+        }
+        return false;
+    }
+    FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Game);
+    WorldContext.SetCurrentWorld(World);
+
+    FGuid SceneId;
+    FAkUGCProjectDocument Document = MakeDocument(SceneId);
+    FAkUGCPrefabRegistry Registry;
+    FString Error;
+    TestTrue(TEXT("Official tower defense prefabs register"),
+        FAkUGCOfficialPrefabCatalog::RegisterTowerDefense(Registry, &Error));
+
+    {
+        FAkUGCSceneRuntime Runtime(World);
+        FAkUGCDocumentRuntimeSession Session(Runtime, Registry, SceneId);
+        TestTrue(TEXT("Ruleset edit session initializes"), Session.Initialize(Document).bSucceeded);
+        FAkUGCRuntimeCommandService Service(Document, Session, Registry, SceneId);
+
+        TArray<FGuid> SpawnPointIds;
+        TArray<FGuid> WaveIds;
+        for (int32 WaveIndex = 0; WaveIndex < AkUGCTowerDefenseRulesetLimits::RequiredWaveCount; ++WaveIndex)
+        {
+            FGuid SpawnPointId;
+            TestTrue(TEXT("Enemy Spawn placement succeeds"), Service.PlacePrefab(
+                TEXT("official.gameplay.enemy_spawn"),
+                FTransform(FVector(WaveIndex * 100.0, 0.0, 0.0)),
+                SpawnPointId).bSucceeded);
+            SpawnPointIds.Add(SpawnPointId);
+
+            FAkUGCTowerDefenseWave Wave;
+            Wave.WaveId = FGuid::NewGuid();
+            Wave.SpawnPointEntityId = SpawnPointId;
+            Wave.StartDelaySeconds = WaveIndex;
+            WaveIds.Add(Wave.WaveId);
+            TestTrue(TEXT("Wave add command succeeds"), Service.AddWave(Wave).bSucceeded);
+        }
+        TestEqual(TEXT("Ruleset contains three waves"), Document.Scenes[0].Ruleset.Waves.Num(), 3);
+
+        FAkUGCTowerDefenseWave FourthWave = Document.Scenes[0].Ruleset.Waves[0];
+        FourthWave.WaveId = FGuid::NewGuid();
+        TestFalse(TEXT("Fourth wave is rejected atomically"), Service.AddWave(FourthWave).bSucceeded);
+        TestEqual(TEXT("Rejected fourth wave leaves Ruleset unchanged"), Document.Scenes[0].Ruleset.Waves.Num(), 3);
+
+        TestTrue(TEXT("Wave move succeeds"), Service.MoveWave(WaveIds[2], 0).bSucceeded);
+        TestEqual(TEXT("Wave move changes order"), Document.Scenes[0].Ruleset.Waves[0].WaveId, WaveIds[2]);
+        TestTrue(TEXT("Undo wave move succeeds"), Service.Undo().bSucceeded);
+        TestEqual(TEXT("Undo restores wave order"), Document.Scenes[0].Ruleset.Waves[0].WaveId, WaveIds[0]);
+        TestTrue(TEXT("Redo wave move succeeds"), Service.Redo().bSucceeded);
+        TestEqual(TEXT("Redo restores moved wave"), Document.Scenes[0].Ruleset.Waves[0].WaveId, WaveIds[2]);
+
+        FAkUGCTowerDefenseWave UpdatedWave = Document.Scenes[0].Ruleset.Waves[0];
+        UpdatedWave.StartDelaySeconds = 12.0;
+        TestTrue(TEXT("Wave update succeeds"), Service.UpdateWave(UpdatedWave).bSucceeded);
+        TestEqual(TEXT("Wave update changes delay"), Document.Scenes[0].Ruleset.Waves[0].StartDelaySeconds, 12.0);
+        TestTrue(TEXT("Undo wave update succeeds"), Service.Undo().bSucceeded);
+        TestEqual(TEXT("Undo restores wave delay"), Document.Scenes[0].Ruleset.Waves[0].StartDelaySeconds, 2.0);
+
+        TestTrue(TEXT("Ruleset settings update succeeds"), Service.SetRulesetSettings(
+            8.0,
+            EAkUGCTowerDefenseDefeatCondition::BaseHealthDepleted,
+            EAkUGCTowerDefenseVictoryCondition::AllWavesCleared).bSucceeded);
+        TestEqual(TEXT("Ruleset settings update interval"), Document.Scenes[0].Ruleset.WaveIntervalSeconds, 8.0);
+        TestTrue(TEXT("Undo Ruleset settings succeeds"), Service.Undo().bSucceeded);
+        TestEqual(TEXT("Undo restores Ruleset interval"), Document.Scenes[0].Ruleset.WaveIntervalSeconds, 5.0);
+
+        TestFalse(TEXT("Referenced Enemy Spawn cannot be deleted"),
+            Service.DeleteEntities({SpawnPointIds[0]}, TEXT("Reject referenced Spawn Point")).bSucceeded);
+        TestNotNull(TEXT("Rejected deletion preserves runtime Actor"), Runtime.FindActor(SpawnPointIds[0]));
+
+        TestTrue(TEXT("Referenced wave deletion succeeds"), Service.DeleteWave(WaveIds[0]).bSucceeded);
+        TestTrue(TEXT("Enemy Spawn deletion succeeds after wave deletion"),
+            Service.DeleteEntities({SpawnPointIds[0]}, TEXT("Delete unreferenced Spawn Point")).bSucceeded);
+        TestNull(TEXT("Deleted unreferenced Spawn Point leaves runtime"), Runtime.FindActor(SpawnPointIds[0]));
+        TestTrue(TEXT("Undo restores Enemy Spawn"), Service.Undo().bSucceeded);
+        TestNotNull(TEXT("Undo restores Enemy Spawn runtime Actor"), Runtime.FindActor(SpawnPointIds[0]));
+        TestTrue(TEXT("Undo restores deleted wave at original position"), Service.Undo().bSucceeded);
+        TestEqual(TEXT("Restored wave returns to original position"), Document.Scenes[0].Ruleset.Waves[1].WaveId, WaveIds[0]);
     }
 
     GEngine->DestroyWorldContext(World);

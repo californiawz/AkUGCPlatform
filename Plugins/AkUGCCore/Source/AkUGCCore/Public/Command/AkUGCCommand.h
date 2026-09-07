@@ -17,7 +17,12 @@ enum class EAkUGCCommandType : uint8
     AddLogicNode,
     DeleteLogicNode,
     ConnectLogicNode,
-    DisconnectLogicNode
+    DisconnectLogicNode,
+    AddWave,
+    UpdateWave,
+    DeleteWave,
+    MoveWave,
+    SetRulesetSettings
 };
 
 USTRUCT(BlueprintType)
@@ -72,6 +77,21 @@ struct AKUGCCORE_API FAkUGCCommand
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Logic")
     TArray<FAkUGCLogicConnection> LogicConnections;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Ruleset")
+    FAkUGCTowerDefenseWave Wave;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Ruleset")
+    int32 WaveIndex = INDEX_NONE;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Ruleset")
+    double WaveIntervalSeconds = 5.0;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Ruleset")
+    EAkUGCTowerDefenseDefeatCondition DefeatCondition = EAkUGCTowerDefenseDefeatCondition::BaseHealthDepleted;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Ruleset")
+    EAkUGCTowerDefenseVictoryCondition VictoryCondition = EAkUGCTowerDefenseVictoryCondition::AllWavesCleared;
 };
 
 USTRUCT(BlueprintType)

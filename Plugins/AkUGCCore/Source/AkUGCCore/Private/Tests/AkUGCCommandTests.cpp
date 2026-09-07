@@ -131,7 +131,15 @@ bool FAkUGCCommandJsonTest::RunTest(const FString& Parameters)
     const FGuid EntityId = FGuid::NewGuid();
     FAkUGCCommand Command = MakeCommand(EAkUGCCommandType::SetTransform, SceneId, EntityId);
     Command.Transform = FTransform(FVector(10.0, 20.0, 30.0));
-    const FAkUGCCommandTransaction Source = MakeTransaction(TEXT("Move entity"), {Command});
+    FAkUGCCommand AddWave = MakeCommand(EAkUGCCommandType::AddWave, SceneId, {});
+    AddWave.Wave.WaveId = FGuid::NewGuid();
+    AddWave.Wave.SpawnPointEntityId = FGuid::NewGuid();
+    AddWave.Wave.StartDelaySeconds = 2.5;
+    AddWave.WaveIndex = 1;
+    Command.Sequence = 9007199254740993LL;
+    AddWave.PropertyValue.Type = EAkUGCValueType::Integer;
+    AddWave.PropertyValue.IntegerValue = MAX_int64;
+    const FAkUGCCommandTransaction Source = MakeTransaction(TEXT("Move entity and add wave"), {Command, AddWave});
 
     FString Json;
     FString Error;
@@ -142,6 +150,22 @@ bool FAkUGCCommandJsonTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("Transaction ID round-trips"), Restored.TransactionId, Source.TransactionId);
     TestEqual(TEXT("Command type round-trips"), Restored.Commands[0].Type, EAkUGCCommandType::SetTransform);
     TestEqual(TEXT("Transform round-trips"), Restored.Commands[0].Transform.GetLocation(), FVector(10.0, 20.0, 30.0));
+    TestEqual(TEXT("Ruleset command type round-trips"), Restored.Commands[1].Type, EAkUGCCommandType::AddWave);
+    TestEqual(TEXT("Wave ID round-trips"), Restored.Commands[1].Wave.WaveId, AddWave.Wave.WaveId);
+    TestEqual(TEXT("Wave Spawn Point round-trips"),
+        Restored.Commands[1].Wave.SpawnPointEntityId,
+        AddWave.Wave.SpawnPointEntityId);
+    TestEqual(TEXT("Wave delay round-trips"), Restored.Commands[1].Wave.StartDelaySeconds, 2.5);
+    TestEqual(TEXT("Wave insertion index round-trips"), Restored.Commands[1].WaveIndex, 1);
+    TestEqual(TEXT("Command Sequence round-trips beyond JSON exact range"),
+        Restored.Commands[0].Sequence,
+        9007199254740993LL);
+    TestEqual(TEXT("Command int64 property round-trips at MAX_int64"),
+        Restored.Commands[1].PropertyValue.IntegerValue,
+        MAX_int64);
+    TestTrue(TEXT("Command int64 values serialize as decimal strings"),
+        Json.Contains(TEXT("\"9007199254740993\""))
+            && Json.Contains(TEXT("\"9223372036854775807\"")));
     return true;
 }
 
@@ -193,6 +217,58 @@ bool FAkUGCCommandSetParentTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("SetParent transaction deserializes"), FAkUGCCommandJson::Deserialize(Json, Restored, &Error));
     TestEqual(TEXT("SetParent type round-trips"), Restored.Commands[0].Type, EAkUGCCommandType::SetParent);
     TestEqual(TEXT("Parent entity ID round-trips"), Restored.Commands[0].ParentEntityId, ParentId);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FAkUGCRulesetCommandAtomicReferenceTest,
+    "AkUGC.Core.Command.RulesetAtomicReference",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCRulesetCommandAtomicReferenceTest::RunTest(const FString& Parameters)
+{
+    FGuid SceneId;
+    FAkUGCProjectDocument Document = MakeDocument(SceneId);
+    FAkUGCSceneDocument& Scene = Document.Scenes[0];
+
+    FAkUGCEntityRecord SpawnPoint;
+    SpawnPoint.EntityId = FGuid::NewGuid();
+    SpawnPoint.PrefabId = TEXT("official.gameplay.enemy_spawn");
+    Scene.Entities.Add(SpawnPoint);
+
+    FAkUGCTowerDefenseWave Wave;
+    Wave.WaveId = FGuid::NewGuid();
+    Wave.SpawnPointEntityId = SpawnPoint.EntityId;
+    Scene.Ruleset.Waves.Add(Wave);
+
+    FAkUGCCommand DeleteReferenced = MakeCommand(EAkUGCCommandType::DeleteEntity, SceneId, SpawnPoint.EntityId);
+    TestFalse(TEXT("Deleting a referenced Spawn Point alone is rejected"),
+        FAkUGCCommandExecutor::Apply(
+            Document,
+            MakeTransaction(TEXT("Reject referenced delete"), {DeleteReferenced})).bSucceeded);
+    TestEqual(TEXT("Rejected delete preserves Entity"), Document.Scenes[0].Entities.Num(), 1);
+    TestEqual(TEXT("Rejected delete preserves Wave"), Document.Scenes[0].Ruleset.Waves.Num(), 1);
+
+    FAkUGCCommand DeleteWave = MakeCommand(EAkUGCCommandType::DeleteWave, SceneId, {});
+    DeleteWave.Wave.WaveId = Wave.WaveId;
+    FAkUGCCommandTransaction DeleteBoth = MakeTransaction(
+        TEXT("Delete Wave and Spawn Point"),
+        {DeleteWave, DeleteReferenced});
+    FAkUGCCommandHistory History;
+    TestTrue(TEXT("Deleting Wave then Spawn Point succeeds atomically"),
+        History.Execute(Document, DeleteBoth).bSucceeded);
+    TestTrue(TEXT("Atomic delete removes Wave"), Document.Scenes[0].Ruleset.Waves.IsEmpty());
+    TestTrue(TEXT("Atomic delete removes Spawn Point"), Document.Scenes[0].Entities.IsEmpty());
+
+    TestTrue(TEXT("Undo atomic Ruleset delete succeeds"), History.Undo(Document).bSucceeded);
+    TestEqual(TEXT("Undo restores Spawn Point"), Document.Scenes[0].Entities.Num(), 1);
+    TestEqual(TEXT("Undo restores Wave"), Document.Scenes[0].Ruleset.Waves.Num(), 1);
+    TestEqual(TEXT("Undo restores Wave reference"),
+        Document.Scenes[0].Ruleset.Waves[0].SpawnPointEntityId,
+        SpawnPoint.EntityId);
+    TestTrue(TEXT("Redo atomic Ruleset delete succeeds"), History.Redo(Document).bSucceeded);
+    TestTrue(TEXT("Redo removes Wave"), Document.Scenes[0].Ruleset.Waves.IsEmpty());
+    TestTrue(TEXT("Redo removes Spawn Point"), Document.Scenes[0].Entities.IsEmpty());
     return true;
 }
 

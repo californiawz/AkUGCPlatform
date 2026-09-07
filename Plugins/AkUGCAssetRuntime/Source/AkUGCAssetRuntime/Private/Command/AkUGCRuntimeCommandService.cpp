@@ -479,6 +479,93 @@ FAkUGCCommandExecutionResult FAkUGCRuntimeCommandService::SetEntityProperty(
     return Execute(MoveTemp(Transaction));
 }
 
+FAkUGCCommandExecutionResult FAkUGCRuntimeCommandService::AddWave(
+    const FAkUGCTowerDefenseWave& Wave,
+    int32 WaveIndex)
+{
+    FAkUGCCommand Command;
+    Command.CommandId = FGuid::NewGuid();
+    Command.Type = EAkUGCCommandType::AddWave;
+    Command.SceneId = SceneId;
+    Command.Wave = Wave;
+    Command.WaveIndex = WaveIndex;
+
+    FAkUGCCommandTransaction Transaction;
+    Transaction.TransactionId = FGuid::NewGuid();
+    Transaction.Label = TEXT("Add tower defense wave");
+    Transaction.Commands.Add(MoveTemp(Command));
+    return Execute(MoveTemp(Transaction));
+}
+
+FAkUGCCommandExecutionResult FAkUGCRuntimeCommandService::UpdateWave(
+    const FAkUGCTowerDefenseWave& Wave)
+{
+    FAkUGCCommand Command;
+    Command.CommandId = FGuid::NewGuid();
+    Command.Type = EAkUGCCommandType::UpdateWave;
+    Command.SceneId = SceneId;
+    Command.Wave = Wave;
+
+    FAkUGCCommandTransaction Transaction;
+    Transaction.TransactionId = FGuid::NewGuid();
+    Transaction.Label = TEXT("Update tower defense wave");
+    Transaction.Commands.Add(MoveTemp(Command));
+    return Execute(MoveTemp(Transaction));
+}
+
+FAkUGCCommandExecutionResult FAkUGCRuntimeCommandService::DeleteWave(const FGuid& WaveId)
+{
+    FAkUGCCommand Command;
+    Command.CommandId = FGuid::NewGuid();
+    Command.Type = EAkUGCCommandType::DeleteWave;
+    Command.SceneId = SceneId;
+    Command.Wave.WaveId = WaveId;
+
+    FAkUGCCommandTransaction Transaction;
+    Transaction.TransactionId = FGuid::NewGuid();
+    Transaction.Label = TEXT("Delete tower defense wave");
+    Transaction.Commands.Add(MoveTemp(Command));
+    return Execute(MoveTemp(Transaction));
+}
+
+FAkUGCCommandExecutionResult FAkUGCRuntimeCommandService::MoveWave(
+    const FGuid& WaveId,
+    int32 TargetWaveIndex)
+{
+    FAkUGCCommand Command;
+    Command.CommandId = FGuid::NewGuid();
+    Command.Type = EAkUGCCommandType::MoveWave;
+    Command.SceneId = SceneId;
+    Command.Wave.WaveId = WaveId;
+    Command.WaveIndex = TargetWaveIndex;
+
+    FAkUGCCommandTransaction Transaction;
+    Transaction.TransactionId = FGuid::NewGuid();
+    Transaction.Label = TEXT("Move tower defense wave");
+    Transaction.Commands.Add(MoveTemp(Command));
+    return Execute(MoveTemp(Transaction));
+}
+
+FAkUGCCommandExecutionResult FAkUGCRuntimeCommandService::SetRulesetSettings(
+    double WaveIntervalSeconds,
+    EAkUGCTowerDefenseDefeatCondition DefeatCondition,
+    EAkUGCTowerDefenseVictoryCondition VictoryCondition)
+{
+    FAkUGCCommand Command;
+    Command.CommandId = FGuid::NewGuid();
+    Command.Type = EAkUGCCommandType::SetRulesetSettings;
+    Command.SceneId = SceneId;
+    Command.WaveIntervalSeconds = WaveIntervalSeconds;
+    Command.DefeatCondition = DefeatCondition;
+    Command.VictoryCondition = VictoryCondition;
+
+    FAkUGCCommandTransaction Transaction;
+    Transaction.TransactionId = FGuid::NewGuid();
+    Transaction.Label = TEXT("Set tower defense Ruleset settings");
+    Transaction.Commands.Add(MoveTemp(Command));
+    return Execute(MoveTemp(Transaction));
+}
+
 FAkUGCCommandExecutionResult FAkUGCRuntimeCommandService::Undo()
 {
     return Session.Undo(Document);

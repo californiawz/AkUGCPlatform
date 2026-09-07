@@ -272,7 +272,10 @@ Basic Tower 能稳定选择目标、按攻击间隔造成伤害并移除死亡�
 - 编辑态允许 0 至 3 波；完整三波要求将在独立 Playable Validator 中作为 Preview/PlayAuthority 门禁。
 - V3→V4 为旧 Scene 补齐空 Ruleset，不根据旧刷怪点猜测波次映射。
 - JSON 严格拒绝重复字段、非 canonical Ruleset 字段和非法枚举表示。
-- 下一提交新增 Ruleset Command、Undo/Redo 与删除引用保护。
+- 已新增 Ruleset Wave 增删改排序和设置 Command，Desktop/App 共用 Runtime Command Service。
+- Ruleset Command 支持 JSON 往返、事务原子性和 Undo/Redo，纯 Document 改动不触发 Actor 投影。
+- 删除被 Wave 引用的 Spawn Point 会被拒绝；同一事务先删除 Wave 后可安全删除实体。
+- 下一提交新增完整三波 Playable Validator 与 Preview/PlayAuthority 运行门禁。
 
 ### 目标
 

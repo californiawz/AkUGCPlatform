@@ -1458,6 +1458,11 @@ bool FAkUGCSceneRuntime::ApplyCommand(
     case EAkUGCCommandType::DeleteLogicNode:
     case EAkUGCCommandType::ConnectLogicNode:
     case EAkUGCCommandType::DisconnectLogicNode:
+    case EAkUGCCommandType::AddWave:
+    case EAkUGCCommandType::UpdateWave:
+    case EAkUGCCommandType::DeleteWave:
+    case EAkUGCCommandType::MoveWave:
+    case EAkUGCCommandType::SetRulesetSettings:
         return true;
     }
 
