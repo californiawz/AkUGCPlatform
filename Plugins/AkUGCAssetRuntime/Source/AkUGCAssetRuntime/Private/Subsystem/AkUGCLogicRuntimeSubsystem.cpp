@@ -108,10 +108,7 @@ FAkUGCLogicRuntimeResult UAkUGCLogicRuntimeSubsystem::AdvanceLogicTime(double De
                     MoveTemp(ErrorMessage));
                 PendingDelays.Reset();
                 PendingSpawnBatches.Reset();
-                if (bResetRequested || (RuntimeHandlerIsValid && !RuntimeHandlerIsValid()))
-                {
-                    ClearExecutionState(true);
-                }
+                ClearExecutionState(true);
                 return FailureResult;
             }
             break;
@@ -383,6 +380,10 @@ bool UAkUGCLogicRuntimeSubsystem::AdvanceGameplayTime(
         FAkUGCLogicRuntimeGoalReached& Event = GoalReachedEntities.AddDefaulted_GetRef();
         Event.SourceNodeId = Reached.SourceNodeId;
         Event.EntityId = Reached.EntityId;
+        Event.GoalEntityId = Reached.GoalEntityId;
+        Event.BaseEntityId = Reached.BaseEntityId;
+        Event.DamageApplied = Reached.DamageApplied;
+        Event.BaseHealthAfterDamage = Reached.BaseHealthAfterDamage;
         OnGoalReached.Broadcast(Event.SourceNodeId, Event.EntityId);
         if (bResetRequested)
         {

@@ -255,6 +255,27 @@ bool FAkUGCLogicRuntimeTimerSpawnTest::RunTest(const FString& Parameters)
     Scene.Entities.Add(FirstPathNode);
     Scene.Entities.Add(SecondPathNode);
 
+    const FGuid BaseEntityId = FGuid::NewGuid();
+    const FGuid GoalEntityId = FGuid::NewGuid();
+    FAkUGCEntityRecord BaseEntity;
+    FAkUGCEntityRecord GoalEntity;
+    TestTrue(TEXT("Tower defense Base is created"), Registry.CreateEntityRecord(
+        TEXT("official.gameplay.base"),
+        BaseEntityId,
+        FTransform(FVector(1100.0, 50.0, 0.0)),
+        BaseEntity,
+        &Error));
+    TestTrue(TEXT("Tower defense Goal is created"), Registry.CreateEntityRecord(
+        TEXT("official.gameplay.goal"),
+        GoalEntityId,
+        FTransform(FVector(1000.0, 50.0, 0.0)),
+        GoalEntity,
+        &Error));
+    BaseEntity.Components[0].Properties.FindChecked(TEXT("maxHealth")).NumberValue = 25.0;
+    GoalEntity.Components[0].Properties.FindChecked(TEXT("baseDamage")).NumberValue = 99.0;
+    Scene.Entities.Add(BaseEntity);
+    Scene.Entities.Add(GoalEntity);
+
     FAkUGCLogicNode Start;
     Start.NodeId = FGuid::NewGuid();
     Start.Type = EAkUGCLogicNodeType::GameStart;
@@ -292,6 +313,50 @@ bool FAkUGCLogicRuntimeTimerSpawnTest::RunTest(const FString& Parameters)
         TestFalse(TEXT("Play Authority rejects Spawn gameplay without a usable path"),
             MissingPathSession.Initialize(MissingPathDocument).bSucceeded);
     }
+    {
+        FAkUGCProjectDocument MissingBaseDocument = Document;
+        MissingBaseDocument.Scenes[0].Entities.RemoveAll([](const FAkUGCEntityRecord& Entity)
+        {
+            return Entity.PrefabId == TEXT("official.gameplay.base");
+        });
+        FAkUGCSceneRuntime MissingBaseRuntime(World);
+        FAkUGCDocumentRuntimeSession MissingBaseSession(
+            MissingBaseRuntime,
+            Registry,
+            Scene.SceneId,
+            EAkUGCRuntimeSessionMode::PlayAuthority);
+        TestFalse(TEXT("Play Authority rejects Spawn gameplay without a Base"),
+            MissingBaseSession.Initialize(MissingBaseDocument).bSucceeded);
+    }
+    {
+        FAkUGCProjectDocument MissingGoalDocument = Document;
+        MissingGoalDocument.Scenes[0].Entities.RemoveAll([](const FAkUGCEntityRecord& Entity)
+        {
+            return Entity.PrefabId == TEXT("official.gameplay.goal");
+        });
+        FAkUGCSceneRuntime MissingGoalRuntime(World);
+        FAkUGCDocumentRuntimeSession MissingGoalSession(
+            MissingGoalRuntime,
+            Registry,
+            Scene.SceneId,
+            EAkUGCRuntimeSessionMode::PlayAuthority);
+        TestFalse(TEXT("Play Authority rejects Spawn gameplay without a Goal"),
+            MissingGoalSession.Initialize(MissingGoalDocument).bSucceeded);
+    }
+    {
+        FAkUGCProjectDocument DuplicateBaseDocument = Document;
+        FAkUGCEntityRecord DuplicateBase = BaseEntity;
+        DuplicateBase.EntityId = FGuid::NewGuid();
+        DuplicateBaseDocument.Scenes[0].Entities.Add(DuplicateBase);
+        FAkUGCSceneRuntime DuplicateBaseRuntime(World);
+        FAkUGCDocumentRuntimeSession DuplicateBaseSession(
+            DuplicateBaseRuntime,
+            Registry,
+            Scene.SceneId,
+            EAkUGCRuntimeSessionMode::PlayAuthority);
+        TestFalse(TEXT("Play Authority rejects more than one Base"),
+            DuplicateBaseSession.Initialize(DuplicateBaseDocument).bSucceeded);
+    }
 
     {
         FAkUGCSceneRuntime Runtime(World);
@@ -301,7 +366,10 @@ bool FAkUGCLogicRuntimeTimerSpawnTest::RunTest(const FString& Parameters)
             Scene.SceneId,
             EAkUGCRuntimeSessionMode::PlayAuthority);
         TestTrue(TEXT("Timer Spawn scene initializes"), Session.Initialize(Document).bSucceeded);
-        TestEqual(TEXT("Three authored gameplay actors exist initially"), Runtime.Num(), 3);
+        TestEqual(TEXT("Five authored gameplay actors exist initially"), Runtime.Num(), 5);
+        TestEqual(TEXT("Base runtime health initializes from authored maxHealth"), Runtime.GetBaseCurrentHealth(), 25.0);
+        TestEqual(TEXT("Tower defense Base ID is observable"), Runtime.GetTowerDefenseBaseEntityId(), BaseEntityId);
+        TestEqual(TEXT("Tower defense Goal ID is observable"), Runtime.GetTowerDefenseGoalEntityId(), GoalEntityId);
         {
             FAkUGCSceneRuntime EditRuntime(World);
             FAkUGCDocumentRuntimeSession EditSession(EditRuntime, Registry, Scene.SceneId);
@@ -318,10 +386,10 @@ bool FAkUGCLogicRuntimeTimerSpawnTest::RunTest(const FString& Parameters)
                 ConflictingSession.Initialize(Document).bSucceeded);
         }
         TestTrue(TEXT("Other session teardown does not cancel authority Timer"), Subsystem->AdvanceLogicTime(0.5).bSucceeded);
-        TestEqual(TEXT("Enemy is not spawned before Timer expires"), Runtime.Num(), 3);
+        TestEqual(TEXT("Enemy is not spawned before Timer expires"), Runtime.Num(), 5);
         TestTrue(TEXT("Remaining delay advances successfully"), Subsystem->AdvanceLogicTime(0.5).bSucceeded);
-        TestEqual(TEXT("Timer spawns one Basic Enemy"), Runtime.Num(), 4);
-        TestEqual(TEXT("Logic Spawn does not modify authored Document"), Document.Scenes[0].Entities.Num(), 3);
+        TestEqual(TEXT("Timer spawns one Basic Enemy"), Runtime.Num(), 6);
+        TestEqual(TEXT("Logic Spawn does not modify authored Document"), Document.Scenes[0].Entities.Num(), 5);
         TestEqual(TEXT("Spawn result is observable"), Subsystem->GetSpawnedEntities().Num(), 1);
         if (Subsystem->GetSpawnedEntities().Num() == 1)
         {
@@ -340,9 +408,9 @@ bool FAkUGCLogicRuntimeTimerSpawnTest::RunTest(const FString& Parameters)
             }
         }
         TestTrue(TEXT("First batch interval advances"), Subsystem->AdvanceLogicTime(0.25).bSucceeded);
-        TestEqual(TEXT("Second configured enemy spawns"), Runtime.Num(), 5);
+        TestEqual(TEXT("Second configured enemy spawns"), Runtime.Num(), 7);
         TestTrue(TEXT("Second batch interval advances"), Subsystem->AdvanceLogicTime(0.25).bSucceeded);
-        TestEqual(TEXT("Third configured enemy spawns"), Runtime.Num(), 6);
+        TestEqual(TEXT("Third configured enemy spawns"), Runtime.Num(), 8);
         if (Subsystem->GetSpawnedEntities().Num() == 3)
         {
             AActor* FirstEnemy = Runtime.FindActor(Subsystem->GetSpawnedEntities()[0].EntityId);
@@ -358,21 +426,47 @@ bool FAkUGCLogicRuntimeTimerSpawnTest::RunTest(const FString& Parameters)
         TestTrue(TEXT("Large movement delta reaches path end"), Subsystem->AdvanceLogicTime(5.0).bSucceeded);
         TestEqual(TEXT("All three enemies produce GoalReached"), Subsystem->GetGoalReachedEntities().Num(), 3);
         TestEqual(TEXT("No enemy movement remains after reaching path end"), Runtime.GetActiveEnemyMovementCount(), 0);
+        TestEqual(TEXT("Three enemies clamp Base health to zero"), Runtime.GetBaseCurrentHealth(), 0.0);
+        double TotalAppliedDamage = 0.0;
+        FGuid PreviousGoalReachedEntityId;
+        for (const FAkUGCLogicRuntimeGoalReached& GoalReached : Subsystem->GetGoalReachedEntities())
+        {
+            TestEqual(TEXT("GoalReached identifies authored Goal"), GoalReached.GoalEntityId, GoalEntityId);
+            TestEqual(TEXT("GoalReached identifies authored Base"), GoalReached.BaseEntityId, BaseEntityId);
+            TestEqual(TEXT("GoalReached preserves Spawn source node"), GoalReached.SourceNodeId, Spawn.NodeId);
+            if (PreviousGoalReachedEntityId.IsValid())
+            {
+                TestTrue(TEXT("Simultaneous GoalReached events use stable EntityId order"),
+                    PreviousGoalReachedEntityId.ToString(EGuidFormats::Digits)
+                        < GoalReached.EntityId.ToString(EGuidFormats::Digits));
+            }
+            PreviousGoalReachedEntityId = GoalReached.EntityId;
+            TotalAppliedDamage += GoalReached.DamageApplied;
+        }
+        TestEqual(TEXT("Applied damage is clamped to remaining Base health"), TotalAppliedDamage, 25.0);
+        TestEqual(TEXT("Last GoalReached observes zero Base health"),
+            Subsystem->GetGoalReachedEntities().Last().BaseHealthAfterDamage,
+            0.0);
         for (const FAkUGCLogicRuntimeSpawn& RuntimeSpawn : Subsystem->GetSpawnedEntities())
         {
             AActor* EnemyActor = Runtime.FindActor(RuntimeSpawn.EntityId);
-            TestNotNull(TEXT("GoalReached enemy remains available for next gameplay slice"), EnemyActor);
-            if (EnemyActor)
-            {
-                TestEqual(TEXT("GoalReached enemy stops at final path node"),
-                    EnemyActor->GetActorLocation(),
-                    SecondPathNode.Transform.GetLocation());
-            }
+            TestNull(TEXT("GoalReached enemy is removed from runtime"), EnemyActor);
         }
         TestTrue(TEXT("Extra time does not produce duplicate GoalReached"), Subsystem->AdvanceLogicTime(1.0).bSucceeded);
         TestEqual(TEXT("GoalReached is emitted exactly once per enemy"), Subsystem->GetGoalReachedEntities().Num(), 3);
-        TestEqual(TEXT("Batch stops at configured enemyCount"), Runtime.Num(), 6);
-        TestEqual(TEXT("Batch still leaves authored Document unchanged"), Document.Scenes[0].Entities.Num(), 3);
+        TestEqual(TEXT("Reached enemies leave only authored runtime actors"), Runtime.Num(), 5);
+        TestEqual(TEXT("Batch still leaves authored Document unchanged"), Document.Scenes[0].Entities.Num(), 5);
+        const FAkUGCEntityRecord* AuthoredBase = Document.Scenes[0].Entities.FindByPredicate([BaseEntityId](const FAkUGCEntityRecord& Entity)
+        {
+            return Entity.EntityId == BaseEntityId;
+        });
+        TestNotNull(TEXT("Authored Base remains in Document"), AuthoredBase);
+        if (AuthoredBase)
+        {
+            const FAkUGCValue* AuthoredMaximumHealth = AuthoredBase->Components[0].Properties.Find(TEXT("maxHealth"));
+            TestTrue(TEXT("Runtime damage does not mutate authored Base maxHealth"),
+                AuthoredMaximumHealth && AuthoredMaximumHealth->NumberValue == 25.0);
+        }
     }
 
     {
@@ -384,10 +478,14 @@ bool FAkUGCLogicRuntimeTimerSpawnTest::RunTest(const FString& Parameters)
                 Scene.SceneId,
                 EAkUGCRuntimeSessionMode::PlayAuthority);
             TestTrue(TEXT("Cancellation fixture initializes"), Session.Initialize(Document).bSucceeded);
-            TestEqual(TEXT("Cancellation fixture waits at Timer"), Runtime.Num(), 3);
+            TestTrue(TEXT("Cancellation fixture advances to first Spawn"), Subsystem->AdvanceLogicTime(1.0).bSucceeded);
+            TestEqual(TEXT("Cancellation fixture contains one dynamic enemy"), Runtime.Num(), 6);
+            TestEqual(TEXT("Cancellation fixture tracks active movement"), Runtime.GetActiveEnemyMovementCount(), 1);
         }
         TestTrue(TEXT("Advancing after Session destruction is harmless"), Subsystem->AdvanceLogicTime(1.0).bSucceeded);
-        TestEqual(TEXT("Session destruction cancels Timer and Spawn Batch"), Runtime.Num(), 3);
+        TestEqual(TEXT("Session destruction removes dynamic enemy and preserves authored actors"), Runtime.Num(), 5);
+        TestEqual(TEXT("Session destruction clears active movement"), Runtime.GetActiveEnemyMovementCount(), 0);
+        TestEqual(TEXT("Session destruction clears Base runtime health"), Runtime.GetBaseCurrentHealth(), 0.0);
     }
     {
         FAkUGCSceneRuntime Runtime(World);
@@ -398,7 +496,7 @@ bool FAkUGCLogicRuntimeTimerSpawnTest::RunTest(const FString& Parameters)
             EAkUGCRuntimeSessionMode::PlayAuthority);
         TestTrue(TEXT("Large delta fixture initializes"), Session.Initialize(Document).bSucceeded);
         TestTrue(TEXT("Large delta advances Timer and all batch intervals"), Subsystem->AdvanceLogicTime(1.5).bSucceeded);
-        TestEqual(TEXT("Large delta deterministically catches up all configured enemies"), Runtime.Num(), 6);
+        TestEqual(TEXT("Large delta deterministically catches up all configured enemies"), Runtime.Num(), 8);
         TestEqual(TEXT("Large delta records all configured enemies"), Subsystem->GetSpawnedEntities().Num(), 3);
     }
 

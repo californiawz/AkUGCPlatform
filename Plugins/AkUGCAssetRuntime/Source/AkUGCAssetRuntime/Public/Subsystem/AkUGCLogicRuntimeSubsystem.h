@@ -47,6 +47,18 @@ struct AKUGCASSETRUNTIME_API FAkUGCLogicRuntimeGoalReached
 
     UPROPERTY(BlueprintReadOnly, Category = "UGC|Logic")
     FGuid EntityId;
+
+    UPROPERTY(BlueprintReadOnly, Category = "UGC|Logic")
+    FGuid GoalEntityId;
+
+    UPROPERTY(BlueprintReadOnly, Category = "UGC|Logic")
+    FGuid BaseEntityId;
+
+    UPROPERTY(BlueprintReadOnly, Category = "UGC|Logic")
+    double DamageApplied = 0.0;
+
+    UPROPERTY(BlueprintReadOnly, Category = "UGC|Logic")
+    double BaseHealthAfterDamage = 0.0;
 };
 
 USTRUCT(BlueprintType)

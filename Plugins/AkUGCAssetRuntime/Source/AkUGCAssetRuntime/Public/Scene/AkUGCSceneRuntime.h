@@ -47,6 +47,10 @@ public:
     FGuid GetActiveSceneId() const;
     const FAkUGCTowerDefensePath& GetTowerDefensePath() const;
     int32 GetActiveEnemyMovementCount() const;
+    double GetBaseCurrentHealth() const;
+    double GetBaseMaximumHealth() const;
+    FGuid GetTowerDefenseBaseEntityId() const;
+    FGuid GetTowerDefenseGoalEntityId() const;
     const TArray<FAkUGCTowerDefenseGoalReached>& GetGoalReachedEvents() const;
     bool AdvanceTowerDefenseMovement(
         double DeltaSeconds,
@@ -86,6 +90,13 @@ private:
         const FAkUGCLogicSpawnEffect& SpawnEffect,
         const FAkUGCEntityRecord& Entity,
         FString& OutError);
+    bool ValidateTowerDefenseGameplay(
+        const FAkUGCSceneDocument& Scene,
+        FString* OutError = nullptr) const;
+    bool InitializeTowerDefenseGameplay(
+        const FAkUGCSceneDocument& Scene,
+        FString* OutError = nullptr);
+    void ResetTowerDefenseGameplay();
 
     bool ValidateScene(
         const FAkUGCSceneDocument& Scene,
@@ -112,7 +123,11 @@ private:
     FGuid ActiveSceneId;
     FGuid LogicExecutionOwnerId;
     FAkUGCTowerDefensePath TowerDefensePath;
+    FGuid TowerDefenseBaseEntityId;
+    FGuid TowerDefenseGoalEntityId;
+    FAkUGCTowerDefenseRuntimeHealth BaseHealth;
     TMap<FGuid, FAkUGCTowerDefenseEnemyMovement> EnemyMovements;
+    TSet<FGuid> RuntimeSpawnedEntityIds;
     TArray<FAkUGCTowerDefenseGoalReached> GoalReachedEvents;
     TMap<FGuid, TWeakObjectPtr<AActor>> Actors;
     TSet<FGuid> ExternallyDeletedEntityIds;

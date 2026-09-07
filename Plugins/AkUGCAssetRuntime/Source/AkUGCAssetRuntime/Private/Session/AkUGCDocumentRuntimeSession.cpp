@@ -33,8 +33,8 @@ FAkUGCDocumentRuntimeSession::FAkUGCDocumentRuntimeSession(
 
 FAkUGCDocumentRuntimeSession::~FAkUGCDocumentRuntimeSession()
 {
-    *LifetimeToken = false;
     Runtime.CancelLogicExecution(ExecutionOwnerId);
+    *LifetimeToken = false;
 }
 
 FAkUGCCommandExecutionResult FAkUGCDocumentRuntimeSession::Initialize(FAkUGCProjectDocument& Document)
@@ -69,12 +69,25 @@ FAkUGCCommandExecutionResult FAkUGCDocumentRuntimeSession::Initialize(FAkUGCProj
                 TEXT("runtime.path.") + PathResult.ErrorPath,
                 PathResult.ErrorMessage);
         }
+        FString GameplayError;
+        if (!Runtime.ValidateTowerDefenseGameplay(*Scene, &GameplayError))
+        {
+            return FAkUGCCommandExecutionResult::Failure(
+                TEXT("runtime.towerDefense"),
+                MoveTemp(GameplayError));
+        }
     }
 
     FString Error;
     if (!Runtime.LoadScene(*Scene, Registry, &Error))
     {
         return FAkUGCCommandExecutionResult::Failure(TEXT("runtime.initialize"), MoveTemp(Error));
+    }
+    if (bRequiresTowerDefensePath
+        && !Runtime.InitializeTowerDefenseGameplay(*Scene, &Error))
+    {
+        Runtime.Unload();
+        return FAkUGCCommandExecutionResult::Failure(TEXT("runtime.towerDefense"), MoveTemp(Error));
     }
     if (bRunGameStart
         && !Runtime.RunGameStartLogic(

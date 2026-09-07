@@ -188,7 +188,17 @@ Phase 0 的目标是证明同一份 UGC Project Document 能够被 Desktop Creat
 1. `功能：构建并校验塔防路径`
 2. `功能：驱动敌人沿路径确定性移动`
 
-## P2：Goal 与基地伤害
+## P2：Goal 与基地伤害（已完成）
+
+### 状态
+
+- 包含 Spawn 玩法的 Preview/PlayAuthority 要求且只允许一个 Base 和一个 Goal。
+- Base 的 maxHealth 在玩法启动时初始化为独立 Runtime Health，不写回作者 Document。
+- Basic Enemy 在生成时快照并校验 tower_defense.enemy.goalDamage。
+- 敌人到达最后路径点后按 EntityId 稳定顺序扣减基地生命，并将生命钳制到零。
+- GoalReached 记录 Base/Goal ID、实际伤害和结算后生命，且每个敌人只产生一次。
+- 完成结算的敌人从 Runtime 移除，不再参与移动。
+- tower_defense.goal.baseDamage 保留为旧目录字段，但 P2 运行时只使用敌人的 goalDamage 作为伤害真源。
 
 ### 目标
 
@@ -466,8 +476,8 @@ P10 Android/DS 一致性验收
 
 1. `重构：区分 UGC 编辑会话与玩法运行会话`（已提交）
 2. `功能：构建并校验塔防路径`（已提交）
-3. `功能：驱动敌人沿路径确定性移动`（已开发，待提交）
-4. `功能：结算敌人到达目标与基地伤害`
+3. `功能：驱动敌人沿路径确定性移动`（已提交，待远端同步）
+4. `功能：结算敌人到达目标与基地伤害`（已开发，待提交）
 5. `功能：新增运行时生命与伤害模型`
 6. `功能：新增基础塔确定性攻击`
 7. `功能：新增 V4 塔防 Ruleset 与迁移`
