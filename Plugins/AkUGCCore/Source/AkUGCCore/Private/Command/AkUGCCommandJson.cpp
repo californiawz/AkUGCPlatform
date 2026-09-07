@@ -7,7 +7,7 @@
 
 namespace
 {
-    constexpr double MaxExactJsonInteger = 9007199254740991.0;
+    constexpr double MaxExactCommandJsonInteger = 9007199254740991.0;
 
     TSharedPtr<FJsonValue> ExportCommandProperty(FProperty* Property, const void* Value)
     {
@@ -41,7 +41,7 @@ namespace
         {
             const double Number = JsonValue->AsNumber();
             if (!FMath::IsFinite(Number)
-                || FMath::Abs(Number) > MaxExactJsonInteger
+                || FMath::Abs(Number) > MaxExactCommandJsonInteger
                 || Number != FMath::TruncToDouble(Number))
             {
                 return false;
