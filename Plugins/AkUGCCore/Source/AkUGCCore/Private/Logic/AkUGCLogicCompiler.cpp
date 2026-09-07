@@ -56,11 +56,31 @@ FAkUGCLogicCompileResult FAkUGCLogicCompiler::Compile(const FAkUGCLogicGraph& Lo
         const FAkUGCLogicNode* Node = NodesById.FindChecked(NodeId);
 
         FAkUGCLogicInstruction& Instruction = Result.Program.Instructions.AddDefaulted_GetRef();
-        Instruction.Opcode = Node->Type == EAkUGCLogicNodeType::GameStart
-            ? EAkUGCLogicOpcode::GameStart
-            : EAkUGCLogicOpcode::Message;
+        switch (Node->Type)
+        {
+        case EAkUGCLogicNodeType::GameStart:
+            Instruction.Opcode = EAkUGCLogicOpcode::GameStart;
+            break;
+        case EAkUGCLogicNodeType::Message:
+            Instruction.Opcode = EAkUGCLogicOpcode::Message;
+            break;
+        case EAkUGCLogicNodeType::Timer:
+            Instruction.Opcode = EAkUGCLogicOpcode::Timer;
+            break;
+        case EAkUGCLogicNodeType::Spawn:
+            Instruction.Opcode = EAkUGCLogicOpcode::Spawn;
+            break;
+        default:
+            Result.Program.Instructions.Reset();
+            Result.ErrorPath = TEXT("logicGraph.nodes.type");
+            Result.ErrorMessage = TEXT("Logic node type is not supported.");
+            return Result;
+        }
         Instruction.SourceNodeId = NodeId;
         Instruction.Operand = Node->Message;
+        Instruction.DelaySeconds = Node->DelaySeconds;
+        Instruction.SpawnPrefabId = Node->SpawnPrefabId;
+        Instruction.SpawnAtEntityId = Node->SpawnAtEntityId;
 
         TArray<FGuid> Targets;
         TargetsBySource.MultiFind(NodeId, Targets);

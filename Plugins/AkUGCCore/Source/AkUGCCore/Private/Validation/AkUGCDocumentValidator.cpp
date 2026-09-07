@@ -116,6 +116,10 @@ FAkUGCValidationResult FAkUGCDocumentValidator::ValidateLogicGraph(
             {
                 Result.AddError(NodePath + TEXT(".message"), TEXT("Game Start node cannot contain a message."));
             }
+            if (Node.DelaySeconds != 0.0 || !Node.SpawnPrefabId.IsNone() || Node.SpawnAtEntityId.IsValid())
+            {
+                Result.AddError(NodePath, TEXT("Game Start node contains parameters for another node type."));
+            }
             break;
 
         case EAkUGCLogicNodeType::Message:
@@ -128,6 +132,38 @@ FAkUGCValidationResult FAkUGCDocumentValidator::ValidateLogicGraph(
                 Result.AddError(
                     NodePath + TEXT(".message"),
                     FString::Printf(TEXT("Message exceeds the length budget of %d characters."), AkUGCLogicLimits::MaxMessageLength));
+            }
+            if (Node.DelaySeconds != 0.0 || !Node.SpawnPrefabId.IsNone() || Node.SpawnAtEntityId.IsValid())
+            {
+                Result.AddError(NodePath, TEXT("Message node contains parameters for another node type."));
+            }
+            break;
+
+        case EAkUGCLogicNodeType::Timer:
+            if (!Node.Message.IsEmpty() || !Node.SpawnPrefabId.IsNone() || Node.SpawnAtEntityId.IsValid())
+            {
+                Result.AddError(NodePath, TEXT("Timer node contains parameters for another node type."));
+            }
+            if (!FMath::IsFinite(Node.DelaySeconds)
+                || Node.DelaySeconds <= 0.0
+                || Node.DelaySeconds > AkUGCLogicLimits::MaxTimerDelaySeconds)
+            {
+                Result.AddError(
+                    NodePath + TEXT(".delaySeconds"),
+                    FString::Printf(
+                        TEXT("Timer delay must be finite, positive, and at most %.0f seconds."),
+                        AkUGCLogicLimits::MaxTimerDelaySeconds));
+            }
+            break;
+
+        case EAkUGCLogicNodeType::Spawn:
+            if (!Node.Message.IsEmpty() || Node.DelaySeconds != 0.0)
+            {
+                Result.AddError(NodePath, TEXT("Spawn node contains parameters for another node type."));
+            }
+            if (Node.SpawnPrefabId.IsNone())
+            {
+                Result.AddError(NodePath + TEXT(".spawnPrefabId"), TEXT("Spawn Prefab ID is required."));
             }
             break;
 
@@ -188,9 +224,14 @@ FAkUGCValidationResult FAkUGCDocumentValidator::ValidateLogicGraph(
         {
             Result.AddError(Path + TEXT(".connections"), TEXT("Game Start node cannot have incoming connections."));
         }
-        if (Pair.Value == EAkUGCLogicNodeType::Message && OutgoingCounts.FindRef(Pair.Key) > 0)
+        if ((Pair.Value == EAkUGCLogicNodeType::Message || Pair.Value == EAkUGCLogicNodeType::Spawn)
+            && OutgoingCounts.FindRef(Pair.Key) > 0)
         {
-            Result.AddError(Path + TEXT(".connections"), TEXT("Message node cannot have outgoing connections."));
+            Result.AddError(Path + TEXT(".connections"), TEXT("Terminal logic node cannot have outgoing connections."));
+        }
+        if (Pair.Value == EAkUGCLogicNodeType::Timer && OutgoingCounts.FindRef(Pair.Key) != 1)
+        {
+            Result.AddError(Path + TEXT(".connections"), TEXT("Timer node must have exactly one outgoing connection."));
         }
     }
 
@@ -394,6 +435,18 @@ FAkUGCValidationResult FAkUGCDocumentValidator::Validate(const FAkUGCProjectDocu
             Scene.LogicGraph,
             ScenePath + TEXT(".logicGraph"));
         Result.Issues.Append(LogicValidation.Issues);
+        for (int32 NodeIndex = 0; NodeIndex < Scene.LogicGraph.Nodes.Num(); ++NodeIndex)
+        {
+            const FAkUGCLogicNode& Node = Scene.LogicGraph.Nodes[NodeIndex];
+            if (Node.Type == EAkUGCLogicNodeType::Spawn
+                && Node.SpawnAtEntityId.IsValid()
+                && !SceneEntityIds.Contains(Node.SpawnAtEntityId))
+            {
+                Result.AddError(
+                    FString::Printf(TEXT("%s.logicGraph.nodes[%d].spawnAtEntityId"), *ScenePath, NodeIndex),
+                    TEXT("Spawn anchor entity must exist in the same scene."));
+            }
+        }
     }
 
     if (Document.Scenes.IsEmpty())

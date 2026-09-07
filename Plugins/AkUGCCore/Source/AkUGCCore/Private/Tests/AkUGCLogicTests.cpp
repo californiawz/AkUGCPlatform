@@ -180,6 +180,63 @@ bool FAkUGCLogicRunnerTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FAkUGCLogicTimerSpawnTest,
+    "AkUGC.Core.Logic.TimerSpawnScheduling",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCLogicTimerSpawnTest::RunTest(const FString& Parameters)
+{
+    FAkUGCLogicNode Start;
+    Start.NodeId = FGuid(1, 0, 0, 0);
+    Start.Type = EAkUGCLogicNodeType::GameStart;
+    FAkUGCLogicNode Timer;
+    Timer.NodeId = FGuid(2, 0, 0, 0);
+    Timer.Type = EAkUGCLogicNodeType::Timer;
+    Timer.DelaySeconds = 1.0;
+    FAkUGCLogicNode Spawn;
+    Spawn.NodeId = FGuid(3, 0, 0, 0);
+    Spawn.Type = EAkUGCLogicNodeType::Spawn;
+    Spawn.SpawnPrefabId = TEXT("official.unit.basic_enemy");
+    Spawn.SpawnAtEntityId = FGuid(4, 0, 0, 0);
+
+    FAkUGCLogicConnection StartToTimer;
+    StartToTimer.SourceNodeId = Start.NodeId;
+    StartToTimer.TargetNodeId = Timer.NodeId;
+    FAkUGCLogicConnection TimerToSpawn;
+    TimerToSpawn.SourceNodeId = Timer.NodeId;
+    TimerToSpawn.TargetNodeId = Spawn.NodeId;
+    FAkUGCLogicGraph Graph;
+    Graph.Nodes = {Spawn, Start, Timer};
+    Graph.Connections = {TimerToSpawn, StartToTimer};
+
+    const FAkUGCLogicCompileResult CompileResult = FAkUGCLogicCompiler::Compile(Graph);
+    TestTrue(TEXT("Timer Spawn graph compiles"), CompileResult.bSucceeded);
+    const FAkUGCLogicRunResult StartResult = FAkUGCLogicRunner::RunGameStart(CompileResult.Program);
+    TestTrue(TEXT("Game Start reaches Timer"), StartResult.bSucceeded);
+    TestEqual(TEXT("Game Start and Timer execute immediately"), StartResult.ExecutedInstructionCount, 2);
+    TestEqual(TEXT("Timer creates one delayed continuation"), StartResult.Delays.Num(), 1);
+    TestTrue(TEXT("Spawn does not execute before delay"), StartResult.SpawnEffects.IsEmpty());
+    if (StartResult.Delays.Num() != 1)
+    {
+        return false;
+    }
+    TestEqual(TEXT("Timer delay compiles exactly"), StartResult.Delays[0].DelaySeconds, 1.0);
+
+    const FAkUGCLogicRunResult ContinueResult = FAkUGCLogicRunner::RunFromInstructions(
+        CompileResult.Program,
+        StartResult.Delays[0].SuccessorIndices);
+    TestTrue(TEXT("Delayed continuation succeeds"), ContinueResult.bSucceeded);
+    TestEqual(TEXT("Delayed continuation executes Spawn"), ContinueResult.ExecutedInstructionCount, 1);
+    TestEqual(TEXT("Spawn emits one effect"), ContinueResult.SpawnEffects.Num(), 1);
+    if (ContinueResult.SpawnEffects.Num() == 1)
+    {
+        TestEqual(TEXT("Spawn Prefab is preserved"), ContinueResult.SpawnEffects[0].PrefabId, FName(TEXT("official.unit.basic_enemy")));
+        TestEqual(TEXT("Spawn anchor is preserved"), ContinueResult.SpawnEffects[0].SpawnAtEntityId, Spawn.SpawnAtEntityId);
+    }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FAkUGCLogicGraphValidationTest,
     "AkUGC.Core.Logic.RejectsInvalidGraphs",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

@@ -7,6 +7,7 @@
 #include "Engine/World.h"
 #include "Entity/AkUGCEntityBindingComponent.h"
 #include "Entity/AkUGCRuntimeEntityActor.h"
+#include "Logic/AkUGCLogicRunner.h"
 #include "Prefab/AkUGCPrefabRegistry.h"
 #include "Subsystem/AkUGCLogicRuntimeSubsystem.h"
 
@@ -34,6 +35,7 @@ FAkUGCSceneRuntime::FAkUGCSceneRuntime(UWorld* InWorld)
 
 FAkUGCSceneRuntime::~FAkUGCSceneRuntime()
 {
+    *LifetimeToken = false;
     Unload();
 }
 
@@ -70,6 +72,7 @@ bool FAkUGCSceneRuntime::LoadScene(
 
 bool FAkUGCSceneRuntime::RunGameStartLogic(
     const FAkUGCSceneDocument& Scene,
+    const FAkUGCPrefabRegistry& Registry,
     FString* OutError)
 {
     UWorld* RuntimeWorld = World.Get();
@@ -80,6 +83,21 @@ bool FAkUGCSceneRuntime::RunGameStartLogic(
     {
         return true;
     }
+    if (RuntimeWorld && RuntimeWorld->GetNetMode() == NM_Client)
+    {
+        return true;
+    }
+
+    for (const FAkUGCLogicNode& Node : Scene.LogicGraph.Nodes)
+    {
+        if (Node.Type == EAkUGCLogicNodeType::Spawn && !Registry.Find(Node.SpawnPrefabId))
+        {
+            return Fail(OutError, FString::Printf(
+                TEXT("Spawn Prefab '%s' is not registered."),
+                *Node.SpawnPrefabId.ToString()));
+        }
+    }
+
     UAkUGCLogicRuntimeSubsystem* LogicRuntime = RuntimeWorld
         ? RuntimeWorld->GetSubsystem<UAkUGCLogicRuntimeSubsystem>()
         : nullptr;
@@ -87,11 +105,67 @@ bool FAkUGCSceneRuntime::RunGameStartLogic(
     {
         return Fail(OutError, TEXT("Logic Runtime subsystem is not available for the scene world."));
     }
+    const TWeakPtr<bool, ESPMode::ThreadSafe> WeakLifetime = LifetimeToken;
+    LogicRuntime->SetSpawnHandler(
+        [this, &Registry](
+            const FAkUGCLogicSpawnEffect& SpawnEffect,
+            FGuid& OutEntityId,
+            FString& OutSpawnError)
+        {
+            return SpawnLogicPrefab(SpawnEffect, Registry, OutEntityId, OutSpawnError);
+        },
+        [WeakLifetime]()
+        {
+            const TSharedPtr<bool, ESPMode::ThreadSafe> Lifetime = WeakLifetime.Pin();
+            return Lifetime.IsValid() && *Lifetime;
+        });
 
     const FAkUGCLogicRuntimeResult Result = LogicRuntime->RunGameStart(Scene.LogicGraph);
     return Result.bSucceeded
         ? true
         : Fail(OutError, FString::Printf(TEXT("%s: %s"), *Result.ErrorPath, *Result.ErrorMessage));
+}
+
+bool FAkUGCSceneRuntime::SpawnLogicPrefab(
+    const FAkUGCLogicSpawnEffect& SpawnEffect,
+    const FAkUGCPrefabRegistry& Registry,
+    FGuid& OutEntityId,
+    FString& OutError)
+{
+    OutEntityId.Invalidate();
+    UWorld* RuntimeWorld = World.Get();
+    if (!RuntimeWorld || RuntimeWorld->GetNetMode() == NM_Client)
+    {
+        OutError = TEXT("Logic Spawn effects require an authoritative runtime world.");
+        return false;
+    }
+
+    FTransform SpawnTransform = FTransform::Identity;
+    if (SpawnEffect.SpawnAtEntityId.IsValid())
+    {
+        const AActor* AnchorActor = FindActor(SpawnEffect.SpawnAtEntityId);
+        if (!AnchorActor)
+        {
+            OutError = TEXT("Logic Spawn anchor does not exist in the runtime scene.");
+            return false;
+        }
+        SpawnTransform = AnchorActor->GetActorTransform();
+    }
+
+    OutEntityId = FGuid::NewGuid();
+    FAkUGCEntityRecord Entity;
+    if (!Registry.CreateEntityRecord(
+        SpawnEffect.PrefabId,
+        OutEntityId,
+        SpawnTransform,
+        Entity,
+        &OutError)
+        || !SpawnEntity(Entity, Registry, &OutError))
+    {
+        OutEntityId.Invalidate();
+        return false;
+    }
+    return true;
 }
 
 bool FAkUGCSceneRuntime::SynchronizeScene(

@@ -6,7 +6,7 @@
 namespace AkUGCSchema
 {
     inline constexpr int32 OldestSupportedProjectDocumentVersion = 0;
-    inline constexpr int32 CurrentProjectDocumentVersion = 2;
+    inline constexpr int32 CurrentProjectDocumentVersion = 3;
 }
 
 namespace AkUGCLogicLimits
@@ -15,6 +15,7 @@ namespace AkUGCLogicLimits
     inline constexpr int32 MaxConnections = 1024;
     inline constexpr int32 MaxMessageLength = 1024;
     inline constexpr int32 MaxExecutedInstructions = 1024;
+    inline constexpr double MaxTimerDelaySeconds = 3600.0;
 }
 
 UENUM(BlueprintType)
@@ -102,7 +103,9 @@ UENUM(BlueprintType)
 enum class EAkUGCLogicNodeType : uint8
 {
     GameStart,
-    Message
+    Message,
+    Timer,
+    Spawn
 };
 
 USTRUCT(BlueprintType)
@@ -118,6 +121,15 @@ struct AKUGCCORE_API FAkUGCLogicNode
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Logic")
     FString Message;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Logic", meta = (ClampMin = "0.0"))
+    double DelaySeconds = 0.0;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Logic")
+    FName SpawnPrefabId;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Logic")
+    FGuid SpawnAtEntityId;
 };
 
 USTRUCT(BlueprintType)

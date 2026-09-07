@@ -8,7 +8,9 @@ UENUM(BlueprintType)
 enum class EAkUGCLogicOpcode : uint8
 {
     GameStart,
-    Message
+    Message,
+    Timer,
+    Spawn
 };
 
 USTRUCT(BlueprintType)
@@ -24,6 +26,15 @@ struct AKUGCCORE_API FAkUGCLogicInstruction
 
     UPROPERTY(BlueprintReadOnly, Category = "UGC|Logic")
     FString Operand;
+
+    UPROPERTY(BlueprintReadOnly, Category = "UGC|Logic")
+    double DelaySeconds = 0.0;
+
+    UPROPERTY(BlueprintReadOnly, Category = "UGC|Logic")
+    FName SpawnPrefabId;
+
+    UPROPERTY(BlueprintReadOnly, Category = "UGC|Logic")
+    FGuid SpawnAtEntityId;
 
     UPROPERTY(BlueprintReadOnly, Category = "UGC|Logic")
     TArray<int32> SuccessorIndices;

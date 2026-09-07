@@ -5,6 +5,7 @@
 struct FAkUGCCommand;
 struct FAkUGCCommandTransaction;
 struct FAkUGCEntityRecord;
+struct FAkUGCLogicSpawnEffect;
 struct FAkUGCPrefabDefinition;
 struct FAkUGCSceneDocument;
 class AActor;
@@ -50,7 +51,15 @@ private:
         const FAkUGCCommandTransaction& Transaction,
         const FAkUGCPrefabRegistry& Registry,
         FString* OutError = nullptr);
-    bool RunGameStartLogic(const FAkUGCSceneDocument& Scene, FString* OutError = nullptr);
+    bool RunGameStartLogic(
+        const FAkUGCSceneDocument& Scene,
+        const FAkUGCPrefabRegistry& Registry,
+        FString* OutError = nullptr);
+    bool SpawnLogicPrefab(
+        const FAkUGCLogicSpawnEffect& SpawnEffect,
+        const FAkUGCPrefabRegistry& Registry,
+        FGuid& OutEntityId,
+        FString& OutError);
 
     bool ValidateScene(
         const FAkUGCSceneDocument& Scene,
@@ -73,6 +82,7 @@ private:
     bool AttachParents(const FAkUGCSceneDocument& Scene, FString* OutError);
 
     TWeakObjectPtr<UWorld> World;
+    TSharedRef<bool, ESPMode::ThreadSafe> LifetimeToken = MakeShared<bool, ESPMode::ThreadSafe>(true);
     FGuid ActiveSceneId;
     TMap<FGuid, TWeakObjectPtr<AActor>> Actors;
     TSet<FGuid> ExternallyDeletedEntityIds;

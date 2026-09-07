@@ -244,7 +244,7 @@ bool FAkUGCDocumentLegacyMigrationTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Migration succeeds"), Migration.bSucceeded);
     TestEqual(TEXT("Missing version is recognized as V0"), Migration.SourceVersion, 0);
     TestEqual(TEXT("Migration targets current version"), Migration.TargetVersion, AkUGCSchema::CurrentProjectDocumentVersion);
-    TestEqual(TEXT("V0 to current applies two migration steps"), Migration.AppliedSteps.Num(), 2);
+    TestEqual(TEXT("V0 to current applies three migration steps"), Migration.AppliedSteps.Num(), 3);
     if (Migrated.Scenes.IsEmpty()
         || Migrated.Scenes[0].Entities.IsEmpty()
         || Migrated.Scenes[0].Entities[0].Components.IsEmpty())
@@ -254,7 +254,7 @@ bool FAkUGCDocumentLegacyMigrationTest::RunTest(const FString& Parameters)
     }
     TestEqual(TEXT("Migrated manifest uses current version"), Migrated.Manifest.SchemaVersion, AkUGCSchema::CurrentProjectDocumentVersion);
     TestEqual(TEXT("Missing component version normalizes to V1"), Migrated.Scenes[0].Entities[0].Components[0].SchemaVersion, 1);
-    TestTrue(TEXT("V2 migration initializes an empty Logic Graph"), Migrated.Scenes[0].LogicGraph.Nodes.IsEmpty());
+    TestTrue(TEXT("Logic Graph migration initializes an empty graph"), Migrated.Scenes[0].LogicGraph.Nodes.IsEmpty());
     TestEqual(TEXT("Project ID is preserved"), Migrated.Manifest.ProjectId, Source.Manifest.ProjectId);
     TestEqual(TEXT("Entity ID is preserved"), Migrated.Scenes[0].Entities[0].EntityId, Entity.EntityId);
     TestEqual(TEXT("Entity transform is preserved"), Migrated.Scenes[0].Entities[0].Transform.GetLocation(), Entity.Transform.GetLocation());
@@ -294,9 +294,9 @@ bool FAkUGCDocumentMigrationRejectionTest::RunTest(const FString& Parameters)
     FString Error;
     FAkUGCDocumentMigrationResult Migration;
 
-    const FString FutureJson = TEXT("{\"manifest\":{\"schemaVersion\":3},\"scenes\":[]}");
+    const FString FutureJson = TEXT("{\"manifest\":{\"schemaVersion\":4},\"scenes\":[]}");
     TestFalse(TEXT("Future project version is rejected"), FAkUGCDocumentJson::Deserialize(FutureJson, Output, &Error, &Migration));
-    TestEqual(TEXT("Future version is reported"), Migration.SourceVersion, 3);
+    TestEqual(TEXT("Future version is reported"), Migration.SourceVersion, 4);
     TestEqual(TEXT("Future version error path is precise"), Migration.ErrorPath, FString(TEXT("manifest.schemaVersion")));
     TestFalse(TEXT("Rejected output is reset instead of partially populated"), Output.Manifest.ProjectId.IsValid());
 

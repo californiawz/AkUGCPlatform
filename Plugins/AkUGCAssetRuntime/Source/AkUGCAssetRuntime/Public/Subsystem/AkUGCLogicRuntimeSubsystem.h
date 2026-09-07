@@ -2,8 +2,12 @@
 
 #include "CoreMinimal.h"
 #include "Document/AkUGCDocument.h"
+#include "Logic/AkUGCLogicCompiler.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "AkUGCLogicRuntimeSubsystem.generated.h"
+
+struct FAkUGCLogicRunResult;
+struct FAkUGCLogicSpawnEffect;
 
 USTRUCT(BlueprintType)
 struct AKUGCASSETRUNTIME_API FAkUGCLogicRuntimeMessage
@@ -15,6 +19,21 @@ struct AKUGCASSETRUNTIME_API FAkUGCLogicRuntimeMessage
 
     UPROPERTY(BlueprintReadOnly, Category = "UGC|Logic")
     FString Message;
+};
+
+USTRUCT(BlueprintType)
+struct AKUGCASSETRUNTIME_API FAkUGCLogicRuntimeSpawn
+{
+    GENERATED_BODY()
+
+    UPROPERTY(BlueprintReadOnly, Category = "UGC|Logic")
+    FGuid SourceNodeId;
+
+    UPROPERTY(BlueprintReadOnly, Category = "UGC|Logic")
+    FGuid EntityId;
+
+    UPROPERTY(BlueprintReadOnly, Category = "UGC|Logic")
+    FName PrefabId;
 };
 
 USTRUCT(BlueprintType)
@@ -42,8 +61,23 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(
     const FString&,
     Message);
 
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(
+    FAkUGCLogicSpawnDelegate,
+    FGuid,
+    SourceNodeId,
+    FGuid,
+    EntityId,
+    FName,
+    PrefabId);
+
+struct FAkUGCPendingLogicDelay
+{
+    double RemainingSeconds = 0.0;
+    TArray<int32> SuccessorIndices;
+};
+
 UCLASS()
-class AKUGCASSETRUNTIME_API UAkUGCLogicRuntimeSubsystem : public UWorldSubsystem
+class AKUGCASSETRUNTIME_API UAkUGCLogicRuntimeSubsystem : public UTickableWorldSubsystem
 {
     GENERATED_BODY()
 
@@ -51,8 +85,14 @@ public:
     UPROPERTY(BlueprintAssignable, Category = "UGC|Logic")
     FAkUGCLogicMessageDelegate OnMessage;
 
+    UPROPERTY(BlueprintAssignable, Category = "UGC|Logic")
+    FAkUGCLogicSpawnDelegate OnSpawn;
+
     UFUNCTION(BlueprintCallable, Category = "UGC|Logic")
     FAkUGCLogicRuntimeResult RunGameStart(const FAkUGCLogicGraph& LogicGraph);
+
+    UFUNCTION(BlueprintCallable, Category = "UGC|Logic")
+    FAkUGCLogicRuntimeResult AdvanceLogicTime(double DeltaSeconds);
 
     UFUNCTION(BlueprintCallable, Category = "UGC|Logic")
     void ResetLogicRuntime();
@@ -60,10 +100,31 @@ public:
     UFUNCTION(BlueprintPure, Category = "UGC|Logic")
     TArray<FAkUGCLogicRuntimeMessage> GetEmittedMessages() const;
 
+    UFUNCTION(BlueprintPure, Category = "UGC|Logic")
+    TArray<FAkUGCLogicRuntimeSpawn> GetSpawnedEntities() const;
+
+    void SetSpawnHandler(
+        TFunction<bool(const FAkUGCLogicSpawnEffect&, FGuid&, FString&)> InSpawnHandler,
+        TFunction<bool()> InSpawnHandlerIsValid = {});
+
+    virtual void Tick(float DeltaTime) override;
+    virtual TStatId GetStatId() const override;
+    virtual bool IsTickable() const override;
+
 protected:
     virtual bool DoesSupportWorldType(const EWorldType::Type WorldType) const override;
 
 private:
+    bool ApplyRunResult(const FAkUGCLogicRunResult& RunResult, FString& OutErrorPath, FString& OutErrorMessage);
+    FAkUGCLogicRuntimeResult MakeCurrentResult(bool bSucceeded, FString ErrorPath = {}, FString ErrorMessage = {}) const;
+    void ClearExecutionState(bool bClearSpawnHandler);
+
+    FAkUGCLogicProgram ActiveProgram;
+    TArray<FAkUGCPendingLogicDelay> PendingDelays;
     TArray<FAkUGCLogicRuntimeMessage> EmittedMessages;
+    TArray<FAkUGCLogicRuntimeSpawn> SpawnedEntities;
+    TFunction<bool(const FAkUGCLogicSpawnEffect&, FGuid&, FString&)> SpawnHandler;
+    TFunction<bool()> SpawnHandlerIsValid;
+    int32 TotalExecutedInstructionCount = 0;
     bool bIsRunning = false;
 };

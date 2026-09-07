@@ -316,6 +316,12 @@ FAkUGCDocumentMigrationResult FAkUGCDocumentMigrator::Migrate(
         Result.AppliedSteps.Add(TEXT("ProjectDocumentV1ToV2"));
         WorkingVersion = 2;
     }
+    if (WorkingVersion == 2)
+    {
+        Manifest->SetNumberField(TEXT("schemaVersion"), 3);
+        Result.AppliedSteps.Add(TEXT("ProjectDocumentV2ToV3"));
+        WorkingVersion = 3;
+    }
 
     if (WorkingVersion != AkUGCSchema::CurrentProjectDocumentVersion)
     {
