@@ -2,13 +2,23 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/GameModeBase.h"
+#include "Subsystem/AkUGCLogicRuntimeSubsystem.h"
+#include "Prefab/AkUGCPrefabRegistry.h"
+#include "Scene/AkUGCSceneRuntime.h"
+#include "Session/AkUGCDocumentRuntimeSession.h"
 #include "AkUGCGameMode.generated.h"
+
+class AAkUGCGameState;
+struct FAkUGCProjectDocument;
 
 /**
  * 塔防权威会话的托管点。
  *
- * 服务器端负责创建 PlayAuthority 运行会话并投影权威状态到 GameState，
- * 客户端仅观察 GameState 的复制状态，不执行权威玩法。
+ * 服务器权威端通过 InitializeAuthoritySession 托管 PlayAuthority 会话，
+ * 并在 Tick 中把 Scene Runtime 与 Logic Runtime 的可观察状态投影到
+ * GameState 的复制属性；客户端仅观察复制状态，不执行权威玩法。
+ *
+ * Document 来源（Logic Pack）由 P8 接入，当前由调用方注入。
  */
 UCLASS()
 class AKUGCPLATFORM_API AAkUGCGameMode : public AGameModeBase
@@ -17,4 +27,28 @@ class AKUGCPLATFORM_API AAkUGCGameMode : public AGameModeBase
 
 public:
     AAkUGCGameMode();
+    ~AAkUGCGameMode() override;
+
+    // 服务器权威端初始化三波塔防会话。重复调用会被拒绝。
+    bool InitializeAuthoritySession(FAkUGCProjectDocument& Document, FString* OutError = nullptr);
+
+    bool HasAuthoritySession() const;
+
+    // 把权威玩法状态投影到 GameState（仅可观察状态变化时触发复制）。
+    void ProjectStateToGameState(AAkUGCGameState* GameState);
+
+    virtual void Tick(float DeltaSeconds) override;
+    virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+
+private:
+    TUniquePtr<FAkUGCSceneRuntime> SceneRuntime;
+    TUniquePtr<FAkUGCPrefabRegistry> PrefabRegistry;
+    TUniquePtr<FAkUGCDocumentRuntimeSession> Session;
+
+    // 变化检测缓存，避免逐帧复制瞬态值（如 SecondsUntilNextBoundary）。
+    FAkUGCWaveRuntimeSnapshot LastProjectedWaveSnapshot;
+    double LastProjectedBaseHealthCurrent = 0.0;
+    double LastProjectedBaseHealthMaximum = 0.0;
+    int32 LastProjectedActiveEnemyCount = 0;
+    bool bHasProjectedState = false;
 };
