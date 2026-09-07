@@ -30,6 +30,34 @@ bool FAkUGCOfficialPrefabCatalogTest::RunTest(const FString& Parameters)
     TestNotNull(TEXT("Enemy prefab is registered"), Registry.Find(TEXT("official.unit.basic_enemy")));
     TestNotNull(TEXT("Tower prefab is registered"), Registry.Find(TEXT("official.tower.basic")));
 
+    const FAkUGCPrefabDefinition* EnemySpawn = Registry.Find(TEXT("official.gameplay.enemy_spawn"));
+    TestNotNull(TEXT("Enemy Spawn prefab is registered"), EnemySpawn);
+    if (EnemySpawn)
+    {
+        const FAkUGCPropertyDefinition* EnemyPrefab = EnemySpawn->EditableProperties.FindByPredicate([](const FAkUGCPropertyDefinition& Property)
+        {
+            return Property.ComponentTypeId == TEXT("tower_defense.spawn") && Property.PropertyId == TEXT("enemyPrefab");
+        });
+        const FAkUGCPropertyDefinition* EnemyCount = EnemySpawn->EditableProperties.FindByPredicate([](const FAkUGCPropertyDefinition& Property)
+        {
+            return Property.ComponentTypeId == TEXT("tower_defense.spawn") && Property.PropertyId == TEXT("enemyCount");
+        });
+        const FAkUGCPropertyDefinition* SpawnInterval = EnemySpawn->EditableProperties.FindByPredicate([](const FAkUGCPropertyDefinition& Property)
+        {
+            return Property.ComponentTypeId == TEXT("tower_defense.spawn") && Property.PropertyId == TEXT("spawnInterval");
+        });
+        TestTrue(TEXT("Enemy Spawn enemyPrefab contract is a mobile Name"),
+            EnemyPrefab && EnemyPrefab->ValueType == EAkUGCValueType::Name && EnemyPrefab->bMobileEditable);
+        TestTrue(TEXT("Enemy Spawn enemyCount contract is 1 to 500"),
+            EnemyCount && EnemyCount->ValueType == EAkUGCValueType::Integer
+                && EnemyCount->bHasMinimum && EnemyCount->bHasMaximum
+                && EnemyCount->Minimum == 1.0 && EnemyCount->Maximum == 500.0);
+        TestTrue(TEXT("Enemy Spawn spawnInterval contract is 0.1 to 60"),
+            SpawnInterval && SpawnInterval->ValueType == EAkUGCValueType::Number
+                && SpawnInterval->bHasMinimum && SpawnInterval->bHasMaximum
+                && SpawnInterval->Minimum == 0.1 && SpawnInterval->Maximum == 60.0);
+    }
+
     FAkUGCEntityRecord BaseEntity;
     const FGuid EntityId = FGuid::NewGuid();
     TestTrue(

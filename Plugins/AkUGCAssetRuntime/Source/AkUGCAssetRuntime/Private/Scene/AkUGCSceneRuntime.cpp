@@ -73,6 +73,7 @@ bool FAkUGCSceneRuntime::LoadScene(
 bool FAkUGCSceneRuntime::RunGameStartLogic(
     const FAkUGCSceneDocument& Scene,
     const FAkUGCPrefabRegistry& Registry,
+    const TWeakPtr<bool, ESPMode::ThreadSafe>& SessionLifetime,
     FString* OutError)
 {
     UWorld* RuntimeWorld = World.Get();
@@ -106,7 +107,14 @@ bool FAkUGCSceneRuntime::RunGameStartLogic(
         return Fail(OutError, TEXT("Logic Runtime subsystem is not available for the scene world."));
     }
     const TWeakPtr<bool, ESPMode::ThreadSafe> WeakLifetime = LifetimeToken;
-    LogicRuntime->SetSpawnHandler(
+    LogicRuntime->SetSpawnHandlers(
+        [this, &Registry](
+            const FAkUGCLogicSpawnEffect& SpawnEffect,
+            FAkUGCLogicSpawnPlan& OutPlan,
+            FString& OutPlanError)
+        {
+            return BuildLogicSpawnPlan(SpawnEffect, Registry, OutPlan, OutPlanError);
+        },
         [this, &Registry](
             const FAkUGCLogicSpawnEffect& SpawnEffect,
             FGuid& OutEntityId,
@@ -114,16 +122,100 @@ bool FAkUGCSceneRuntime::RunGameStartLogic(
         {
             return SpawnLogicPrefab(SpawnEffect, Registry, OutEntityId, OutSpawnError);
         },
-        [WeakLifetime]()
+        [WeakLifetime, SessionLifetime]()
         {
-            const TSharedPtr<bool, ESPMode::ThreadSafe> Lifetime = WeakLifetime.Pin();
-            return Lifetime.IsValid() && *Lifetime;
+            const TSharedPtr<bool, ESPMode::ThreadSafe> RuntimeLifetime = WeakLifetime.Pin();
+            const TSharedPtr<bool, ESPMode::ThreadSafe> ActiveSession = SessionLifetime.Pin();
+            return RuntimeLifetime.IsValid()
+                && *RuntimeLifetime
+                && ActiveSession.IsValid()
+                && *ActiveSession;
         });
 
     const FAkUGCLogicRuntimeResult Result = LogicRuntime->RunGameStart(Scene.LogicGraph);
     return Result.bSucceeded
         ? true
         : Fail(OutError, FString::Printf(TEXT("%s: %s"), *Result.ErrorPath, *Result.ErrorMessage));
+}
+
+bool FAkUGCSceneRuntime::BuildLogicSpawnPlan(
+    const FAkUGCLogicSpawnEffect& SpawnEffect,
+    const FAkUGCPrefabRegistry& Registry,
+    FAkUGCLogicSpawnPlan& OutPlan,
+    FString& OutError) const
+{
+    OutPlan = FAkUGCLogicSpawnPlan{};
+    OutPlan.SourceNodeId = SpawnEffect.SourceNodeId;
+    OutPlan.PrefabId = SpawnEffect.PrefabId;
+    OutPlan.SpawnAtEntityId = SpawnEffect.SpawnAtEntityId;
+    if (!Registry.Find(OutPlan.PrefabId))
+    {
+        OutError = FString::Printf(TEXT("Spawn Prefab '%s' is not registered."), *OutPlan.PrefabId.ToString());
+        return false;
+    }
+    if (!SpawnEffect.SpawnAtEntityId.IsValid())
+    {
+        return true;
+    }
+
+    AActor* AnchorActor = FindActor(SpawnEffect.SpawnAtEntityId);
+    const UAkUGCEntityBindingComponent* Binding = FindBinding(AnchorActor);
+    if (!Binding)
+    {
+        OutError = TEXT("Logic Spawn anchor does not exist in the runtime scene.");
+        return false;
+    }
+    if (Binding->PrefabId != TEXT("official.gameplay.enemy_spawn"))
+    {
+        return true;
+    }
+
+    const FAkUGCComponentRecord* SpawnComponent = Binding->SourceRecord.Components.FindByPredicate(
+        [](const FAkUGCComponentRecord& Component)
+        {
+            return Component.TypeId == TEXT("tower_defense.spawn");
+        });
+    if (!SpawnComponent)
+    {
+        OutError = TEXT("Enemy Spawn anchor is missing tower_defense.spawn configuration.");
+        return false;
+    }
+
+    const FAkUGCValue* EnemyPrefab = SpawnComponent->Properties.Find(TEXT("enemyPrefab"));
+    const FAkUGCValue* EnemyCount = SpawnComponent->Properties.Find(TEXT("enemyCount"));
+    const FAkUGCValue* SpawnInterval = SpawnComponent->Properties.Find(TEXT("spawnInterval"));
+    if (!EnemyPrefab || EnemyPrefab->Type != EAkUGCValueType::Name || EnemyPrefab->NameValue.IsNone())
+    {
+        OutError = TEXT("Enemy Spawn enemyPrefab must be a valid Name value.");
+        return false;
+    }
+    if (!EnemyCount
+        || EnemyCount->Type != EAkUGCValueType::Integer
+        || EnemyCount->IntegerValue < 1
+        || EnemyCount->IntegerValue > 500)
+    {
+        OutError = TEXT("Enemy Spawn enemyCount must be an Integer from 1 to 500.");
+        return false;
+    }
+    if (!SpawnInterval
+        || SpawnInterval->Type != EAkUGCValueType::Number
+        || !FMath::IsFinite(SpawnInterval->NumberValue)
+        || SpawnInterval->NumberValue < 0.1
+        || SpawnInterval->NumberValue > 60.0)
+    {
+        OutError = TEXT("Enemy Spawn spawnInterval must be a Number from 0.1 to 60 seconds.");
+        return false;
+    }
+    if (!Registry.Find(EnemyPrefab->NameValue))
+    {
+        OutError = FString::Printf(TEXT("Enemy Prefab '%s' is not registered."), *EnemyPrefab->NameValue.ToString());
+        return false;
+    }
+
+    OutPlan.PrefabId = EnemyPrefab->NameValue;
+    OutPlan.Count = static_cast<int32>(EnemyCount->IntegerValue);
+    OutPlan.IntervalSeconds = SpawnInterval->NumberValue;
+    return true;
 }
 
 bool FAkUGCSceneRuntime::SpawnLogicPrefab(
@@ -348,7 +440,7 @@ bool FAkUGCSceneRuntime::NotifyActorDeletedExternally(const FGuid& EntityId, con
     return true;
 }
 
-void FAkUGCSceneRuntime::Unload()
+void FAkUGCSceneRuntime::CancelLogicExecution()
 {
     if (UWorld* RuntimeWorld = World.Get())
     {
@@ -357,6 +449,11 @@ void FAkUGCSceneRuntime::Unload()
             LogicRuntime->ResetLogicRuntime();
         }
     }
+}
+
+void FAkUGCSceneRuntime::Unload()
+{
+    CancelLogicExecution();
 
     for (TPair<FGuid, TWeakObjectPtr<AActor>>& Pair : Actors)
     {

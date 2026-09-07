@@ -164,6 +164,19 @@ bool FAkUGCLogicRuntimeTimerSpawnTest::RunTest(const FString& Parameters)
         SpawnPointTransform,
         SpawnPoint,
         &Error));
+    FAkUGCComponentRecord* SpawnConfig = SpawnPoint.Components.FindByPredicate([](const FAkUGCComponentRecord& Component)
+    {
+        return Component.TypeId == TEXT("tower_defense.spawn");
+    });
+    TestNotNull(TEXT("Enemy Spawn exposes batch configuration"), SpawnConfig);
+    if (!SpawnConfig)
+    {
+        GEngine->DestroyWorldContext(World);
+        World->DestroyWorld(false);
+        return false;
+    }
+    SpawnConfig->Properties.FindChecked(TEXT("enemyCount")).IntegerValue = 3;
+    SpawnConfig->Properties.FindChecked(TEXT("spawnInterval")).NumberValue = 0.25;
     Scene.Entities.Add(SpawnPoint);
 
     FAkUGCLogicNode Start;
@@ -215,6 +228,33 @@ bool FAkUGCLogicRuntimeTimerSpawnTest::RunTest(const FString& Parameters)
                 }
             }
         }
+        TestTrue(TEXT("First batch interval advances"), Subsystem->AdvanceLogicTime(0.25).bSucceeded);
+        TestEqual(TEXT("Second configured enemy spawns"), Runtime.Num(), 3);
+        TestTrue(TEXT("Second batch interval advances"), Subsystem->AdvanceLogicTime(0.25).bSucceeded);
+        TestEqual(TEXT("Third configured enemy spawns"), Runtime.Num(), 4);
+        TestEqual(TEXT("All configured spawns are observable"), Subsystem->GetSpawnedEntities().Num(), 3);
+        TestTrue(TEXT("Extra time does not over-spawn"), Subsystem->AdvanceLogicTime(1.0).bSucceeded);
+        TestEqual(TEXT("Batch stops at configured enemyCount"), Runtime.Num(), 4);
+        TestEqual(TEXT("Batch still leaves authored Document unchanged"), Document.Scenes[0].Entities.Num(), 1);
+    }
+
+    {
+        FAkUGCSceneRuntime Runtime(World);
+        {
+            FAkUGCDocumentRuntimeSession Session(Runtime, Registry, Scene.SceneId);
+            TestTrue(TEXT("Cancellation fixture initializes"), Session.Initialize(Document).bSucceeded);
+            TestEqual(TEXT("Cancellation fixture waits at Timer"), Runtime.Num(), 1);
+        }
+        TestTrue(TEXT("Advancing after Session destruction is harmless"), Subsystem->AdvanceLogicTime(1.0).bSucceeded);
+        TestEqual(TEXT("Session destruction cancels Timer and Spawn Batch"), Runtime.Num(), 1);
+    }
+    {
+        FAkUGCSceneRuntime Runtime(World);
+        FAkUGCDocumentRuntimeSession Session(Runtime, Registry, Scene.SceneId);
+        TestTrue(TEXT("Large delta fixture initializes"), Session.Initialize(Document).bSucceeded);
+        TestTrue(TEXT("Large delta advances Timer and all batch intervals"), Subsystem->AdvanceLogicTime(1.5).bSucceeded);
+        TestEqual(TEXT("Large delta deterministically catches up all configured enemies"), Runtime.Num(), 4);
+        TestEqual(TEXT("Large delta records all configured enemies"), Subsystem->GetSpawnedEntities().Num(), 3);
     }
 
     GEngine->DestroyWorldContext(World);

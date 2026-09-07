@@ -15,6 +15,12 @@ FAkUGCDocumentRuntimeSession::FAkUGCDocumentRuntimeSession(
 {
 }
 
+FAkUGCDocumentRuntimeSession::~FAkUGCDocumentRuntimeSession()
+{
+    *LifetimeToken = false;
+    Runtime.CancelLogicExecution();
+}
+
 FAkUGCCommandExecutionResult FAkUGCDocumentRuntimeSession::Initialize(FAkUGCProjectDocument& Document)
 {
     const FAkUGCSceneDocument* Scene = FindScene(Document);
@@ -28,7 +34,7 @@ FAkUGCCommandExecutionResult FAkUGCDocumentRuntimeSession::Initialize(FAkUGCProj
     {
         return FAkUGCCommandExecutionResult::Failure(TEXT("runtime.initialize"), MoveTemp(Error));
     }
-    if (!Runtime.RunGameStartLogic(*Scene, Registry, &Error))
+    if (!Runtime.RunGameStartLogic(*Scene, Registry, LifetimeToken, &Error))
     {
         Runtime.Unload();
         return FAkUGCCommandExecutionResult::Failure(TEXT("runtime.logic.gameStart"), MoveTemp(Error));

@@ -70,10 +70,26 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(
     FName,
     PrefabId);
 
+struct FAkUGCLogicSpawnPlan
+{
+    FGuid SourceNodeId;
+    FName PrefabId;
+    FGuid SpawnAtEntityId;
+    int32 Count = 1;
+    double IntervalSeconds = 0.0;
+};
+
 struct FAkUGCPendingLogicDelay
 {
     double RemainingSeconds = 0.0;
     TArray<int32> SuccessorIndices;
+};
+
+struct FAkUGCPendingLogicSpawnBatch
+{
+    FAkUGCLogicSpawnPlan Plan;
+    int32 RemainingCount = 0;
+    double RemainingSeconds = 0.0;
 };
 
 UCLASS()
@@ -103,7 +119,8 @@ public:
     UFUNCTION(BlueprintPure, Category = "UGC|Logic")
     TArray<FAkUGCLogicRuntimeSpawn> GetSpawnedEntities() const;
 
-    void SetSpawnHandler(
+    void SetSpawnHandlers(
+        TFunction<bool(const FAkUGCLogicSpawnEffect&, FAkUGCLogicSpawnPlan&, FString&)> InSpawnPlanHandler,
         TFunction<bool(const FAkUGCLogicSpawnEffect&, FGuid&, FString&)> InSpawnHandler,
         TFunction<bool()> InSpawnHandlerIsValid = {});
 
@@ -116,15 +133,20 @@ protected:
 
 private:
     bool ApplyRunResult(const FAkUGCLogicRunResult& RunResult, FString& OutErrorPath, FString& OutErrorMessage);
+    bool SpawnSingle(const FAkUGCLogicSpawnPlan& Plan, FString& OutErrorPath, FString& OutErrorMessage);
     FAkUGCLogicRuntimeResult MakeCurrentResult(bool bSucceeded, FString ErrorPath = {}, FString ErrorMessage = {}) const;
     void ClearExecutionState(bool bClearSpawnHandler);
 
     FAkUGCLogicProgram ActiveProgram;
     TArray<FAkUGCPendingLogicDelay> PendingDelays;
+    TArray<FAkUGCPendingLogicSpawnBatch> PendingSpawnBatches;
     TArray<FAkUGCLogicRuntimeMessage> EmittedMessages;
     TArray<FAkUGCLogicRuntimeSpawn> SpawnedEntities;
+    TFunction<bool(const FAkUGCLogicSpawnEffect&, FAkUGCLogicSpawnPlan&, FString&)> SpawnPlanHandler;
     TFunction<bool(const FAkUGCLogicSpawnEffect&, FGuid&, FString&)> SpawnHandler;
     TFunction<bool()> SpawnHandlerIsValid;
     int32 TotalExecutedInstructionCount = 0;
+    int32 ReservedSpawnCount = 0;
     bool bIsRunning = false;
+    bool bResetRequested = false;
 };

@@ -27,8 +27,19 @@ FAkUGCLogicRuntimeResult UAkUGCLogicRuntimeSubsystem::RunGameStart(const FAkUGCL
     FString ErrorMessage;
     if (!ApplyRunResult(RunResult, ErrorPath, ErrorMessage))
     {
+        const FAkUGCLogicRuntimeResult FailureResult = MakeCurrentResult(
+            false,
+            MoveTemp(ErrorPath),
+            MoveTemp(ErrorMessage));
         PendingDelays.Reset();
-        return MakeCurrentResult(false, MoveTemp(ErrorPath), MoveTemp(ErrorMessage));
+        PendingSpawnBatches.Reset();
+        ReservedSpawnCount = SpawnedEntities.Num();
+        if (bResetRequested)
+        {
+            ClearExecutionState(true);
+            bResetRequested = false;
+        }
+        return FailureResult;
     }
     return MakeCurrentResult(true);
 }
@@ -52,27 +63,39 @@ FAkUGCLogicRuntimeResult UAkUGCLogicRuntimeSubsystem::AdvanceLogicTime(double De
     TGuardValue<bool> RunningGuard(bIsRunning, true);
 
     double RemainingDelta = DeltaSeconds;
-    while (!PendingDelays.IsEmpty())
+    while (!PendingDelays.IsEmpty() || !PendingSpawnBatches.IsEmpty())
     {
-        double NextDelay = PendingDelays[0].RemainingSeconds;
+        double NextEventSeconds = TNumericLimits<double>::Max();
         for (const FAkUGCPendingLogicDelay& Delay : PendingDelays)
         {
-            NextDelay = FMath::Min(NextDelay, Delay.RemainingSeconds);
+            NextEventSeconds = FMath::Min(NextEventSeconds, Delay.RemainingSeconds);
         }
-        if (NextDelay > RemainingDelta)
+        for (const FAkUGCPendingLogicSpawnBatch& Batch : PendingSpawnBatches)
+        {
+            NextEventSeconds = FMath::Min(NextEventSeconds, Batch.RemainingSeconds);
+        }
+        if (NextEventSeconds > RemainingDelta)
         {
             for (FAkUGCPendingLogicDelay& Delay : PendingDelays)
             {
                 Delay.RemainingSeconds -= RemainingDelta;
+            }
+            for (FAkUGCPendingLogicSpawnBatch& Batch : PendingSpawnBatches)
+            {
+                Batch.RemainingSeconds -= RemainingDelta;
             }
             break;
         }
 
         for (FAkUGCPendingLogicDelay& Delay : PendingDelays)
         {
-            Delay.RemainingSeconds -= NextDelay;
+            Delay.RemainingSeconds -= NextEventSeconds;
         }
-        RemainingDelta -= NextDelay;
+        for (FAkUGCPendingLogicSpawnBatch& Batch : PendingSpawnBatches)
+        {
+            Batch.RemainingSeconds -= NextEventSeconds;
+        }
+        RemainingDelta -= NextEventSeconds;
 
         TArray<FAkUGCPendingLogicDelay> DueDelays;
         for (int32 DelayIndex = PendingDelays.Num() - 1; DelayIndex >= 0; --DelayIndex)
@@ -83,7 +106,6 @@ FAkUGCLogicRuntimeResult UAkUGCLogicRuntimeSubsystem::AdvanceLogicTime(double De
                 PendingDelays.RemoveAt(DelayIndex);
             }
         }
-
         for (const FAkUGCPendingLogicDelay& Delay : DueDelays)
         {
             const int32 RemainingBudget = AkUGCLogicLimits::MaxExecutedInstructions - TotalExecutedInstructionCount;
@@ -95,8 +117,58 @@ FAkUGCLogicRuntimeResult UAkUGCLogicRuntimeSubsystem::AdvanceLogicTime(double De
             FString ErrorMessage;
             if (!ApplyRunResult(RunResult, ErrorPath, ErrorMessage))
             {
+                const FAkUGCLogicRuntimeResult FailureResult = MakeCurrentResult(
+                    false,
+                    MoveTemp(ErrorPath),
+                    MoveTemp(ErrorMessage));
                 PendingDelays.Reset();
-                return MakeCurrentResult(false, MoveTemp(ErrorPath), MoveTemp(ErrorMessage));
+                PendingSpawnBatches.Reset();
+                ReservedSpawnCount = SpawnedEntities.Num();
+                if (bResetRequested)
+                {
+                    ClearExecutionState(true);
+                    bResetRequested = false;
+                }
+                return FailureResult;
+            }
+        }
+
+        for (int32 BatchIndex = 0; BatchIndex < PendingSpawnBatches.Num();)
+        {
+            FAkUGCPendingLogicSpawnBatch& Batch = PendingSpawnBatches[BatchIndex];
+            if (Batch.RemainingSeconds > 0.0)
+            {
+                ++BatchIndex;
+                continue;
+            }
+
+            FString ErrorPath;
+            FString ErrorMessage;
+            if (!SpawnSingle(Batch.Plan, ErrorPath, ErrorMessage))
+            {
+                const FAkUGCLogicRuntimeResult FailureResult = MakeCurrentResult(
+                    false,
+                    MoveTemp(ErrorPath),
+                    MoveTemp(ErrorMessage));
+                PendingDelays.Reset();
+                PendingSpawnBatches.Reset();
+                ReservedSpawnCount = SpawnedEntities.Num();
+                if (bResetRequested)
+                {
+                    ClearExecutionState(true);
+                    bResetRequested = false;
+                }
+                return FailureResult;
+            }
+            --Batch.RemainingCount;
+            if (Batch.RemainingCount > 0)
+            {
+                Batch.RemainingSeconds += Batch.Plan.IntervalSeconds;
+                ++BatchIndex;
+            }
+            else
+            {
+                PendingSpawnBatches.RemoveAt(BatchIndex);
             }
         }
 
@@ -110,10 +182,12 @@ FAkUGCLogicRuntimeResult UAkUGCLogicRuntimeSubsystem::AdvanceLogicTime(double De
 
 void UAkUGCLogicRuntimeSubsystem::ResetLogicRuntime()
 {
-    if (!bIsRunning)
+    if (bIsRunning)
     {
-        ClearExecutionState(true);
+        bResetRequested = true;
+        return;
     }
+    ClearExecutionState(true);
 }
 
 TArray<FAkUGCLogicRuntimeMessage> UAkUGCLogicRuntimeSubsystem::GetEmittedMessages() const
@@ -126,17 +200,24 @@ TArray<FAkUGCLogicRuntimeSpawn> UAkUGCLogicRuntimeSubsystem::GetSpawnedEntities(
     return SpawnedEntities;
 }
 
-void UAkUGCLogicRuntimeSubsystem::SetSpawnHandler(
+void UAkUGCLogicRuntimeSubsystem::SetSpawnHandlers(
+    TFunction<bool(const FAkUGCLogicSpawnEffect&, FAkUGCLogicSpawnPlan&, FString&)> InSpawnPlanHandler,
     TFunction<bool(const FAkUGCLogicSpawnEffect&, FGuid&, FString&)> InSpawnHandler,
     TFunction<bool()> InSpawnHandlerIsValid)
 {
+    if (bIsRunning)
+    {
+        bResetRequested = true;
+        return;
+    }
+    SpawnPlanHandler = MoveTemp(InSpawnPlanHandler);
     SpawnHandler = MoveTemp(InSpawnHandler);
     SpawnHandlerIsValid = MoveTemp(InSpawnHandlerIsValid);
 }
 
 void UAkUGCLogicRuntimeSubsystem::Tick(float DeltaTime)
 {
-    if (!PendingDelays.IsEmpty())
+    if (!PendingDelays.IsEmpty() || !PendingSpawnBatches.IsEmpty())
     {
         const FAkUGCLogicRuntimeResult Result = AdvanceLogicTime(static_cast<double>(DeltaTime));
         if (!Result.bSucceeded)
@@ -153,7 +234,7 @@ TStatId UAkUGCLogicRuntimeSubsystem::GetStatId() const
 
 bool UAkUGCLogicRuntimeSubsystem::IsTickable() const
 {
-    return !PendingDelays.IsEmpty();
+    return !PendingDelays.IsEmpty() || !PendingSpawnBatches.IsEmpty();
 }
 
 bool UAkUGCLogicRuntimeSubsystem::DoesSupportWorldType(const EWorldType::Type WorldType) const
@@ -184,40 +265,76 @@ bool UAkUGCLogicRuntimeSubsystem::ApplyRunResult(
         EmittedMessages.Add(Message);
         UE_LOG(LogTemp, Display, TEXT("UGC Logic Message: %s"), *Message.Message);
         OnMessage.Broadcast(Message.SourceNodeId, Message.Message);
+        if (bResetRequested)
+        {
+            OutErrorPath = TEXT("logicRuntime.cancelled");
+            OutErrorMessage = TEXT("Logic execution was cancelled during a message callback.");
+            return false;
+        }
     }
 
+    TArray<FAkUGCLogicSpawnPlan> SpawnPlans;
+    SpawnPlans.Reserve(RunResult.SpawnEffects.Num());
+    int32 NewReservedSpawnCount = ReservedSpawnCount;
     for (const FAkUGCLogicSpawnEffect& SpawnEffect : RunResult.SpawnEffects)
     {
-        if (!SpawnHandler)
+        if (!SpawnPlanHandler || !SpawnHandler)
         {
             OutErrorPath = TEXT("logicRuntime.spawnHandler");
-            OutErrorMessage = TEXT("Logic Spawn effect has no runtime handler.");
+            OutErrorMessage = TEXT("Logic Spawn effect has no runtime handlers.");
             return false;
         }
         if (SpawnHandlerIsValid && !SpawnHandlerIsValid())
         {
             OutErrorPath = TEXT("logicRuntime.spawnHandler");
             OutErrorMessage = TEXT("Logic Spawn runtime owner is no longer valid.");
+            SpawnPlanHandler = {};
             SpawnHandler = {};
             SpawnHandlerIsValid = {};
             return false;
         }
 
-        FGuid EntityId;
-        FString SpawnError;
-        if (!SpawnHandler(SpawnEffect, EntityId, SpawnError))
+        FAkUGCLogicSpawnPlan Plan;
+        FString PlanError;
+        if (!SpawnPlanHandler(SpawnEffect, Plan, PlanError))
         {
-            OutErrorPath = TEXT("logicRuntime.spawn");
-            OutErrorMessage = MoveTemp(SpawnError);
+            OutErrorPath = TEXT("logicRuntime.spawnPlan");
+            OutErrorMessage = MoveTemp(PlanError);
             return false;
         }
+        if (Plan.Count < 1
+            || Plan.Count > AkUGCLogicLimits::MaxSpawnedEntitiesPerRun
+            || Plan.PrefabId.IsNone()
+            || (Plan.Count > 1 && (!FMath::IsFinite(Plan.IntervalSeconds) || Plan.IntervalSeconds <= 0.0)))
+        {
+            OutErrorPath = TEXT("logicRuntime.spawnPlan");
+            OutErrorMessage = TEXT("Logic Spawn plan is invalid.");
+            return false;
+        }
+        NewReservedSpawnCount += Plan.Count;
+        if (NewReservedSpawnCount > AkUGCLogicLimits::MaxSpawnedEntitiesPerRun)
+        {
+            OutErrorPath = TEXT("logicRuntime.spawnBudget");
+            OutErrorMessage = TEXT("Logic runtime Spawn budget exceeded.");
+            return false;
+        }
+        SpawnPlans.Add(MoveTemp(Plan));
+    }
 
-        FAkUGCLogicRuntimeSpawn Spawn;
-        Spawn.SourceNodeId = SpawnEffect.SourceNodeId;
-        Spawn.EntityId = EntityId;
-        Spawn.PrefabId = SpawnEffect.PrefabId;
-        SpawnedEntities.Add(Spawn);
-        OnSpawn.Broadcast(Spawn.SourceNodeId, Spawn.EntityId, Spawn.PrefabId);
+    ReservedSpawnCount = NewReservedSpawnCount;
+    for (const FAkUGCLogicSpawnPlan& Plan : SpawnPlans)
+    {
+        if (!SpawnSingle(Plan, OutErrorPath, OutErrorMessage))
+        {
+            return false;
+        }
+        if (Plan.Count > 1)
+        {
+            FAkUGCPendingLogicSpawnBatch& Batch = PendingSpawnBatches.AddDefaulted_GetRef();
+            Batch.Plan = Plan;
+            Batch.RemainingCount = Plan.Count - 1;
+            Batch.RemainingSeconds = Plan.IntervalSeconds;
+        }
     }
 
     for (const FAkUGCLogicDelayRequest& DelayRequest : RunResult.Delays)
@@ -225,6 +342,49 @@ bool UAkUGCLogicRuntimeSubsystem::ApplyRunResult(
         FAkUGCPendingLogicDelay& Delay = PendingDelays.AddDefaulted_GetRef();
         Delay.RemainingSeconds = DelayRequest.DelaySeconds;
         Delay.SuccessorIndices = DelayRequest.SuccessorIndices;
+    }
+    return true;
+}
+
+bool UAkUGCLogicRuntimeSubsystem::SpawnSingle(
+    const FAkUGCLogicSpawnPlan& Plan,
+    FString& OutErrorPath,
+    FString& OutErrorMessage)
+{
+    if (!SpawnHandler || (SpawnHandlerIsValid && !SpawnHandlerIsValid()))
+    {
+        OutErrorPath = TEXT("logicRuntime.spawnHandler");
+        OutErrorMessage = TEXT("Logic Spawn runtime owner is no longer valid.");
+        SpawnPlanHandler = {};
+        SpawnHandler = {};
+        SpawnHandlerIsValid = {};
+        return false;
+    }
+
+    FAkUGCLogicSpawnEffect SpawnEffect;
+    SpawnEffect.SourceNodeId = Plan.SourceNodeId;
+    SpawnEffect.PrefabId = Plan.PrefabId;
+    SpawnEffect.SpawnAtEntityId = Plan.SpawnAtEntityId;
+    FGuid EntityId;
+    FString SpawnError;
+    if (!SpawnHandler(SpawnEffect, EntityId, SpawnError))
+    {
+        OutErrorPath = TEXT("logicRuntime.spawn");
+        OutErrorMessage = MoveTemp(SpawnError);
+        return false;
+    }
+
+    FAkUGCLogicRuntimeSpawn Spawn;
+    Spawn.SourceNodeId = Plan.SourceNodeId;
+    Spawn.EntityId = EntityId;
+    Spawn.PrefabId = Plan.PrefabId;
+    SpawnedEntities.Add(Spawn);
+    OnSpawn.Broadcast(Spawn.SourceNodeId, Spawn.EntityId, Spawn.PrefabId);
+    if (bResetRequested)
+    {
+        OutErrorPath = TEXT("logicRuntime.cancelled");
+        OutErrorMessage = TEXT("Logic execution was cancelled during a Spawn callback.");
+        return false;
     }
     return true;
 }
@@ -246,11 +406,15 @@ void UAkUGCLogicRuntimeSubsystem::ClearExecutionState(bool bClearSpawnHandler)
 {
     ActiveProgram = FAkUGCLogicProgram{};
     PendingDelays.Reset();
+    PendingSpawnBatches.Reset();
     EmittedMessages.Reset();
     SpawnedEntities.Reset();
     TotalExecutedInstructionCount = 0;
+    ReservedSpawnCount = 0;
+    bResetRequested = false;
     if (bClearSpawnHandler)
     {
+        SpawnPlanHandler = {};
         SpawnHandler = {};
         SpawnHandlerIsValid = {};
     }

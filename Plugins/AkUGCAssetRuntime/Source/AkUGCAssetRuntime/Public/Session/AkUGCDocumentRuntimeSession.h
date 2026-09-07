@@ -13,6 +13,7 @@ public:
         const FAkUGCPrefabRegistry& InRegistry,
         FGuid InSceneId,
         int32 MaxHistoryEntries = 100);
+    ~FAkUGCDocumentRuntimeSession();
 
     FAkUGCCommandExecutionResult Initialize(FAkUGCProjectDocument& Document);
 
@@ -38,5 +39,6 @@ private:
     FAkUGCSceneRuntime& Runtime;
     const FAkUGCPrefabRegistry& Registry;
     FGuid SceneId;
+    TSharedRef<bool, ESPMode::ThreadSafe> LifetimeToken = MakeShared<bool, ESPMode::ThreadSafe>(true);
     FAkUGCCommandHistory History;
 };

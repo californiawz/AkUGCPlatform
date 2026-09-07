@@ -6,6 +6,7 @@ struct FAkUGCCommand;
 struct FAkUGCCommandTransaction;
 struct FAkUGCEntityRecord;
 struct FAkUGCLogicSpawnEffect;
+struct FAkUGCLogicSpawnPlan;
 struct FAkUGCPrefabDefinition;
 struct FAkUGCSceneDocument;
 class AActor;
@@ -37,6 +38,7 @@ public:
     bool RemoveEntity(const FGuid& EntityId);
     bool NotifyActorDeletedExternally(const FGuid& EntityId, const AActor* Actor);
     void Unload();
+    void CancelLogicExecution();
 
     AActor* FindActor(const FGuid& EntityId) const;
     int32 Num() const;
@@ -54,7 +56,13 @@ private:
     bool RunGameStartLogic(
         const FAkUGCSceneDocument& Scene,
         const FAkUGCPrefabRegistry& Registry,
+        const TWeakPtr<bool, ESPMode::ThreadSafe>& SessionLifetime,
         FString* OutError = nullptr);
+    bool BuildLogicSpawnPlan(
+        const FAkUGCLogicSpawnEffect& SpawnEffect,
+        const FAkUGCPrefabRegistry& Registry,
+        FAkUGCLogicSpawnPlan& OutPlan,
+        FString& OutError) const;
     bool SpawnLogicPrefab(
         const FAkUGCLogicSpawnEffect& SpawnEffect,
         const FAkUGCPrefabRegistry& Registry,

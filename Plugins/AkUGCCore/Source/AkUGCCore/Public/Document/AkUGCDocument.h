@@ -15,6 +15,7 @@ namespace AkUGCLogicLimits
     inline constexpr int32 MaxConnections = 1024;
     inline constexpr int32 MaxMessageLength = 1024;
     inline constexpr int32 MaxExecutedInstructions = 1024;
+    inline constexpr int32 MaxSpawnedEntitiesPerRun = 500;
     inline constexpr double MaxTimerDelaySeconds = 3600.0;
 }
 
