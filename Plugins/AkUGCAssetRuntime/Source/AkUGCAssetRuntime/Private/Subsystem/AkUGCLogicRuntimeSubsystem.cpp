@@ -93,8 +93,30 @@ FAkUGCLogicRuntimeResult UAkUGCLogicRuntimeSubsystem::AdvanceLogicTime(double De
     TGuardValue<bool> RunningGuard(bIsRunning, true);
 
     double RemainingDelta = DeltaSeconds;
-    while (!PendingDelays.IsEmpty() || !PendingSpawnBatches.IsEmpty())
+    while (RemainingDelta > 0.0 || !PendingDelays.IsEmpty() || !PendingSpawnBatches.IsEmpty())
     {
+        const bool bHasLogicEvents = !PendingDelays.IsEmpty() || !PendingSpawnBatches.IsEmpty();
+        if (!bHasLogicEvents)
+        {
+            FString ErrorPath;
+            FString ErrorMessage;
+            if (!AdvanceGameplayTime(RemainingDelta, ErrorPath, ErrorMessage))
+            {
+                const FAkUGCLogicRuntimeResult FailureResult = MakeCurrentResult(
+                    false,
+                    MoveTemp(ErrorPath),
+                    MoveTemp(ErrorMessage));
+                PendingDelays.Reset();
+                PendingSpawnBatches.Reset();
+                if (bResetRequested || (RuntimeHandlerIsValid && !RuntimeHandlerIsValid()))
+                {
+                    ClearExecutionState(true);
+                }
+                return FailureResult;
+            }
+            break;
+        }
+
         double NextEventSeconds = TNumericLimits<double>::Max();
         for (const FAkUGCPendingLogicDelay& Delay : PendingDelays)
         {
@@ -104,28 +126,36 @@ FAkUGCLogicRuntimeResult UAkUGCLogicRuntimeSubsystem::AdvanceLogicTime(double De
         {
             NextEventSeconds = FMath::Min(NextEventSeconds, Batch.RemainingSeconds);
         }
-        if (NextEventSeconds > RemainingDelta)
+        const double TimeSlice = FMath::Min(NextEventSeconds, RemainingDelta);
+        FString GameplayErrorPath;
+        FString GameplayErrorMessage;
+        if (!AdvanceGameplayTime(TimeSlice, GameplayErrorPath, GameplayErrorMessage))
         {
-            for (FAkUGCPendingLogicDelay& Delay : PendingDelays)
+            const FAkUGCLogicRuntimeResult FailureResult = MakeCurrentResult(
+                false,
+                MoveTemp(GameplayErrorPath),
+                MoveTemp(GameplayErrorMessage));
+            PendingDelays.Reset();
+            PendingSpawnBatches.Reset();
+            if (bResetRequested || (RuntimeHandlerIsValid && !RuntimeHandlerIsValid()))
             {
-                Delay.RemainingSeconds -= RemainingDelta;
+                ClearExecutionState(true);
             }
-            for (FAkUGCPendingLogicSpawnBatch& Batch : PendingSpawnBatches)
-            {
-                Batch.RemainingSeconds -= RemainingDelta;
-            }
-            break;
+            return FailureResult;
         }
-
         for (FAkUGCPendingLogicDelay& Delay : PendingDelays)
         {
-            Delay.RemainingSeconds -= NextEventSeconds;
+            Delay.RemainingSeconds -= TimeSlice;
         }
         for (FAkUGCPendingLogicSpawnBatch& Batch : PendingSpawnBatches)
         {
-            Batch.RemainingSeconds -= NextEventSeconds;
+            Batch.RemainingSeconds -= TimeSlice;
         }
-        RemainingDelta -= NextEventSeconds;
+        RemainingDelta -= TimeSlice;
+        if (TimeSlice < NextEventSeconds)
+        {
+            break;
+        }
 
         TArray<FAkUGCPendingLogicDelay> DueDelays;
         for (int32 DelayIndex = PendingDelays.Num() - 1; DelayIndex >= 0; --DelayIndex)
@@ -240,11 +270,19 @@ TArray<FAkUGCLogicRuntimeSpawn> UAkUGCLogicRuntimeSubsystem::GetSpawnedEntities(
     return SpawnedEntities;
 }
 
-bool UAkUGCLogicRuntimeSubsystem::SetSpawnHandlers(
+TArray<FAkUGCLogicRuntimeGoalReached> UAkUGCLogicRuntimeSubsystem::GetGoalReachedEntities() const
+{
+    return GoalReachedEntities;
+}
+
+bool UAkUGCLogicRuntimeSubsystem::SetRuntimeHandlers(
     const FGuid& ExecutionOwnerId,
     TFunction<bool(const FAkUGCLogicSpawnEffect&, FAkUGCLogicSpawnPlan&, FString&)> InSpawnPlanHandler,
     TFunction<bool(const FAkUGCLogicSpawnEffect&, FGuid&, FString&)> InSpawnHandler,
-    TFunction<bool()> InSpawnHandlerIsValid,
+    TFunction<bool(double, TArray<FAkUGCTowerDefenseGoalReached>&, FString&)> InAdvanceGameplayTimeHandler,
+    TFunction<bool()> InHasGameplayTimeWorkHandler,
+    TFunction<void()> InResetGameplayHandler,
+    TFunction<bool()> InRuntimeHandlerIsValid,
     FString* OutError)
 {
     if (!ExecutionOwnerId.IsValid())
@@ -274,13 +312,16 @@ bool UAkUGCLogicRuntimeSubsystem::SetSpawnHandlers(
     ActiveExecutionOwnerId = ExecutionOwnerId;
     SpawnPlanHandler = MoveTemp(InSpawnPlanHandler);
     SpawnHandler = MoveTemp(InSpawnHandler);
-    SpawnHandlerIsValid = MoveTemp(InSpawnHandlerIsValid);
+    AdvanceGameplayTimeHandler = MoveTemp(InAdvanceGameplayTimeHandler);
+    HasGameplayTimeWorkHandler = MoveTemp(InHasGameplayTimeWorkHandler);
+    ResetGameplayHandler = MoveTemp(InResetGameplayHandler);
+    RuntimeHandlerIsValid = MoveTemp(InRuntimeHandlerIsValid);
     return true;
 }
 
 void UAkUGCLogicRuntimeSubsystem::Tick(float DeltaTime)
 {
-    if (!PendingDelays.IsEmpty() || !PendingSpawnBatches.IsEmpty())
+    if (IsTickable())
     {
         const FAkUGCLogicRuntimeResult Result = AdvanceLogicTime(static_cast<double>(DeltaTime));
         if (!Result.bSucceeded)
@@ -297,7 +338,13 @@ TStatId UAkUGCLogicRuntimeSubsystem::GetStatId() const
 
 bool UAkUGCLogicRuntimeSubsystem::IsTickable() const
 {
-    return !PendingDelays.IsEmpty() || !PendingSpawnBatches.IsEmpty();
+    if (RuntimeHandlerIsValid && !RuntimeHandlerIsValid())
+    {
+        return false;
+    }
+    return !PendingDelays.IsEmpty()
+        || !PendingSpawnBatches.IsEmpty()
+        || (HasGameplayTimeWorkHandler && HasGameplayTimeWorkHandler());
 }
 
 bool UAkUGCLogicRuntimeSubsystem::DoesSupportWorldType(const EWorldType::Type WorldType) const
@@ -305,6 +352,46 @@ bool UAkUGCLogicRuntimeSubsystem::DoesSupportWorldType(const EWorldType::Type Wo
     return WorldType == EWorldType::Game
         || WorldType == EWorldType::PIE
         || WorldType == EWorldType::GamePreview;
+}
+
+bool UAkUGCLogicRuntimeSubsystem::AdvanceGameplayTime(
+    double DeltaSeconds,
+    FString& OutErrorPath,
+    FString& OutErrorMessage)
+{
+    if (DeltaSeconds <= 0.0 || !HasGameplayTimeWorkHandler || !HasGameplayTimeWorkHandler())
+    {
+        return true;
+    }
+    if (!AdvanceGameplayTimeHandler || (RuntimeHandlerIsValid && !RuntimeHandlerIsValid()))
+    {
+        OutErrorPath = TEXT("logicRuntime.gameplayTimeHandler");
+        OutErrorMessage = TEXT("Gameplay time handler is no longer valid.");
+        return false;
+    }
+
+    TArray<FAkUGCTowerDefenseGoalReached> ReachedEvents;
+    FString Error;
+    if (!AdvanceGameplayTimeHandler(DeltaSeconds, ReachedEvents, Error))
+    {
+        OutErrorPath = TEXT("logicRuntime.gameplayTime");
+        OutErrorMessage = MoveTemp(Error);
+        return false;
+    }
+    for (const FAkUGCTowerDefenseGoalReached& Reached : ReachedEvents)
+    {
+        FAkUGCLogicRuntimeGoalReached& Event = GoalReachedEntities.AddDefaulted_GetRef();
+        Event.SourceNodeId = Reached.SourceNodeId;
+        Event.EntityId = Reached.EntityId;
+        OnGoalReached.Broadcast(Event.SourceNodeId, Event.EntityId);
+        if (bResetRequested)
+        {
+            OutErrorPath = TEXT("logicRuntime.cancelled");
+            OutErrorMessage = TEXT("Logic execution was cancelled during a GoalReached callback.");
+            return false;
+        }
+    }
+    return true;
 }
 
 bool UAkUGCLogicRuntimeSubsystem::ApplyRunResult(
@@ -347,13 +434,13 @@ bool UAkUGCLogicRuntimeSubsystem::ApplyRunResult(
             OutErrorMessage = TEXT("Logic Spawn effect has no runtime handlers.");
             return false;
         }
-        if (SpawnHandlerIsValid && !SpawnHandlerIsValid())
+        if (RuntimeHandlerIsValid && !RuntimeHandlerIsValid())
         {
             OutErrorPath = TEXT("logicRuntime.spawnHandler");
             OutErrorMessage = TEXT("Logic Spawn runtime owner is no longer valid.");
             SpawnPlanHandler = {};
             SpawnHandler = {};
-            SpawnHandlerIsValid = {};
+            RuntimeHandlerIsValid = {};
             return false;
         }
 
@@ -414,13 +501,13 @@ bool UAkUGCLogicRuntimeSubsystem::SpawnSingle(
     FString& OutErrorPath,
     FString& OutErrorMessage)
 {
-    if (!SpawnHandler || (SpawnHandlerIsValid && !SpawnHandlerIsValid()))
+    if (!SpawnHandler || (RuntimeHandlerIsValid && !RuntimeHandlerIsValid()))
     {
         OutErrorPath = TEXT("logicRuntime.spawnHandler");
         OutErrorMessage = TEXT("Logic Spawn runtime owner is no longer valid.");
         SpawnPlanHandler = {};
         SpawnHandler = {};
-        SpawnHandlerIsValid = {};
+        RuntimeHandlerIsValid = {};
         return false;
     }
 
@@ -472,14 +559,23 @@ void UAkUGCLogicRuntimeSubsystem::ClearExecutionState(bool bClearSpawnHandler)
     PendingSpawnBatches.Reset();
     EmittedMessages.Reset();
     SpawnedEntities.Reset();
+    GoalReachedEntities.Reset();
     TotalExecutedInstructionCount = 0;
     ReservedSpawnCount = 0;
     bResetRequested = false;
     if (bClearSpawnHandler)
     {
+        if (ResetGameplayHandler
+            && (!RuntimeHandlerIsValid || RuntimeHandlerIsValid()))
+        {
+            ResetGameplayHandler();
+        }
         SpawnPlanHandler = {};
         SpawnHandler = {};
-        SpawnHandlerIsValid = {};
+        AdvanceGameplayTimeHandler = {};
+        HasGameplayTimeWorkHandler = {};
+        ResetGameplayHandler = {};
+        RuntimeHandlerIsValid = {};
         ActiveExecutionOwnerId.Invalidate();
     }
 }

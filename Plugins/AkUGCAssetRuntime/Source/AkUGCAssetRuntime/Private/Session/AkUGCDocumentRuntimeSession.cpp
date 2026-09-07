@@ -97,6 +97,12 @@ FAkUGCCommandExecutionResult FAkUGCDocumentRuntimeSession::Execute(
     FAkUGCProjectDocument& Document,
     const FAkUGCCommandTransaction& Transaction)
 {
+    if (Mode != EAkUGCRuntimeSessionMode::Edit)
+    {
+        return FAkUGCCommandExecutionResult::Failure(
+            TEXT("session.mode"),
+            TEXT("Document commands are only available in Edit sessions."));
+    }
     return History.Execute(
         Document,
         Transaction,
@@ -108,6 +114,12 @@ FAkUGCCommandExecutionResult FAkUGCDocumentRuntimeSession::Execute(
 
 FAkUGCCommandExecutionResult FAkUGCDocumentRuntimeSession::Undo(FAkUGCProjectDocument& Document)
 {
+    if (Mode != EAkUGCRuntimeSessionMode::Edit)
+    {
+        return FAkUGCCommandExecutionResult::Failure(
+            TEXT("session.mode"),
+            TEXT("Undo is only available in Edit sessions."));
+    }
     return History.Undo(
         Document,
         [this](const FAkUGCProjectDocument& Before, const FAkUGCProjectDocument& After, const FAkUGCCommandTransaction& Applied)
@@ -118,6 +130,12 @@ FAkUGCCommandExecutionResult FAkUGCDocumentRuntimeSession::Undo(FAkUGCProjectDoc
 
 FAkUGCCommandExecutionResult FAkUGCDocumentRuntimeSession::Redo(FAkUGCProjectDocument& Document)
 {
+    if (Mode != EAkUGCRuntimeSessionMode::Edit)
+    {
+        return FAkUGCCommandExecutionResult::Failure(
+            TEXT("session.mode"),
+            TEXT("Redo is only available in Edit sessions."));
+    }
     return History.Redo(
         Document,
         [this](const FAkUGCProjectDocument& Before, const FAkUGCProjectDocument& After, const FAkUGCCommandTransaction& Applied)
@@ -128,12 +146,12 @@ FAkUGCCommandExecutionResult FAkUGCDocumentRuntimeSession::Redo(FAkUGCProjectDoc
 
 bool FAkUGCDocumentRuntimeSession::CanUndo() const
 {
-    return History.CanUndo();
+    return Mode == EAkUGCRuntimeSessionMode::Edit && History.CanUndo();
 }
 
 bool FAkUGCDocumentRuntimeSession::CanRedo() const
 {
-    return History.CanRedo();
+    return Mode == EAkUGCRuntimeSessionMode::Edit && History.CanRedo();
 }
 
 void FAkUGCDocumentRuntimeSession::ResetHistory()

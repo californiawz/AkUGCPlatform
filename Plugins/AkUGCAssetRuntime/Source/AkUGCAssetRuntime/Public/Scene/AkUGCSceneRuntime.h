@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Gameplay/AkUGCTowerDefenseMovement.h"
 #include "Gameplay/AkUGCTowerDefensePath.h"
 
 struct FAkUGCCommand;
@@ -45,6 +46,14 @@ public:
     int32 Num() const;
     FGuid GetActiveSceneId() const;
     const FAkUGCTowerDefensePath& GetTowerDefensePath() const;
+    int32 GetActiveEnemyMovementCount() const;
+    const TArray<FAkUGCTowerDefenseGoalReached>& GetGoalReachedEvents() const;
+    bool AdvanceTowerDefenseMovement(
+        double DeltaSeconds,
+        TArray<FAkUGCTowerDefenseGoalReached>& OutGoalReached,
+        FString& OutError);
+    bool HasActiveEnemyMovement() const;
+    void ResetTowerDefenseMovement();
 
     static FName GetCurrentPlatformVariant();
 
@@ -73,6 +82,10 @@ private:
         const FAkUGCPrefabRegistry& Registry,
         FGuid& OutEntityId,
         FString& OutError);
+    bool RegisterEnemyMovement(
+        const FAkUGCLogicSpawnEffect& SpawnEffect,
+        const FAkUGCEntityRecord& Entity,
+        FString& OutError);
 
     bool ValidateScene(
         const FAkUGCSceneDocument& Scene,
@@ -99,6 +112,8 @@ private:
     FGuid ActiveSceneId;
     FGuid LogicExecutionOwnerId;
     FAkUGCTowerDefensePath TowerDefensePath;
+    TMap<FGuid, FAkUGCTowerDefenseEnemyMovement> EnemyMovements;
+    TArray<FAkUGCTowerDefenseGoalReached> GoalReachedEvents;
     TMap<FGuid, TWeakObjectPtr<AActor>> Actors;
     TSet<FGuid> ExternallyDeletedEntityIds;
 };

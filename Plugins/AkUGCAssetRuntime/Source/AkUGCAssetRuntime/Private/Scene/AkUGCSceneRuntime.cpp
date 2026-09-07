@@ -124,7 +124,7 @@ bool FAkUGCSceneRuntime::RunGameStartLogic(
     }
     const TWeakPtr<bool, ESPMode::ThreadSafe> WeakLifetime = LifetimeToken;
     FString HandlerError;
-    if (!LogicRuntime->SetSpawnHandlers(
+    if (!LogicRuntime->SetRuntimeHandlers(
         ExecutionOwnerId,
         [this, &Registry](
             const FAkUGCLogicSpawnEffect& SpawnEffect,
@@ -139,6 +139,18 @@ bool FAkUGCSceneRuntime::RunGameStartLogic(
             FString& OutSpawnError)
         {
             return SpawnLogicPrefab(SpawnEffect, Registry, OutEntityId, OutSpawnError);
+        },
+        [this](double DeltaSeconds, TArray<FAkUGCTowerDefenseGoalReached>& OutReached, FString& OutMovementError)
+        {
+            return AdvanceTowerDefenseMovement(DeltaSeconds, OutReached, OutMovementError);
+        },
+        [this]()
+        {
+            return HasActiveEnemyMovement();
+        },
+        [this]()
+        {
+            ResetTowerDefenseMovement();
         },
         [WeakLifetime, SessionLifetime]()
         {
@@ -260,6 +272,11 @@ bool FAkUGCSceneRuntime::SpawnLogicPrefab(
         OutError = TEXT("Logic Spawn effects require an authoritative runtime world.");
         return false;
     }
+    if (SpawnEffect.PrefabId == TEXT("official.unit.basic_enemy") && TowerDefensePath.Num() < 2)
+    {
+        OutError = TEXT("Basic Enemy Spawn requires at least two path nodes.");
+        return false;
+    }
 
     FTransform SpawnTransform = FTransform::Identity;
     if (SpawnEffect.SpawnAtEntityId.IsValid())
@@ -286,6 +303,50 @@ bool FAkUGCSceneRuntime::SpawnLogicPrefab(
         OutEntityId.Invalidate();
         return false;
     }
+    if (!RegisterEnemyMovement(SpawnEffect, Entity, OutError))
+    {
+        RemoveEntity(OutEntityId);
+        OutEntityId.Invalidate();
+        return false;
+    }
+    return true;
+}
+
+bool FAkUGCSceneRuntime::RegisterEnemyMovement(
+    const FAkUGCLogicSpawnEffect& SpawnEffect,
+    const FAkUGCEntityRecord& Entity,
+    FString& OutError)
+{
+    if (Entity.PrefabId != TEXT("official.unit.basic_enemy"))
+    {
+        return true;
+    }
+    if (TowerDefensePath.Num() < 2)
+    {
+        OutError = TEXT("Basic Enemy movement requires at least two path nodes.");
+        return false;
+    }
+
+    const FAkUGCComponentRecord* EnemyComponent = Entity.Components.FindByPredicate([](const FAkUGCComponentRecord& Component)
+    {
+        return Component.TypeId == TEXT("tower_defense.enemy");
+    });
+    const FAkUGCValue* MoveSpeed = EnemyComponent ? EnemyComponent->Properties.Find(TEXT("moveSpeed")) : nullptr;
+    if (!MoveSpeed
+        || MoveSpeed->Type != EAkUGCValueType::Number
+        || !FMath::IsFinite(MoveSpeed->NumberValue)
+        || MoveSpeed->NumberValue < 10.0
+        || MoveSpeed->NumberValue > 2000.0)
+    {
+        OutError = TEXT("Basic Enemy moveSpeed must be a Number from 10 to 2000.");
+        return false;
+    }
+
+    FAkUGCTowerDefenseEnemyMovement Movement;
+    Movement.SourceNodeId = SpawnEffect.SourceNodeId;
+    Movement.EntityId = Entity.EntityId;
+    Movement.MoveSpeed = MoveSpeed->NumberValue;
+    EnemyMovements.Add(Entity.EntityId, MoveTemp(Movement));
     return true;
 }
 
@@ -478,6 +539,7 @@ bool FAkUGCSceneRuntime::RemoveEntity(const FGuid& EntityId)
     }
     Actors.Remove(EntityId);
     ExternallyDeletedEntityIds.Remove(EntityId);
+    EnemyMovements.Remove(EntityId);
     return true;
 }
 
@@ -491,6 +553,7 @@ bool FAkUGCSceneRuntime::NotifyActorDeletedExternally(const FGuid& EntityId, con
 
     Actors.Remove(EntityId);
     ExternallyDeletedEntityIds.Add(EntityId);
+    EnemyMovements.Remove(EntityId);
     return true;
 }
 
@@ -523,6 +586,7 @@ void FAkUGCSceneRuntime::Unload()
     }
     Actors.Reset();
     ExternallyDeletedEntityIds.Reset();
+    ResetTowerDefenseMovement();
     TowerDefensePath = FAkUGCTowerDefensePath{};
     ActiveSceneId.Invalidate();
 }
@@ -546,6 +610,120 @@ FGuid FAkUGCSceneRuntime::GetActiveSceneId() const
 const FAkUGCTowerDefensePath& FAkUGCSceneRuntime::GetTowerDefensePath() const
 {
     return TowerDefensePath;
+}
+
+int32 FAkUGCSceneRuntime::GetActiveEnemyMovementCount() const
+{
+    return EnemyMovements.Num();
+}
+
+const TArray<FAkUGCTowerDefenseGoalReached>& FAkUGCSceneRuntime::GetGoalReachedEvents() const
+{
+    return GoalReachedEvents;
+}
+
+bool FAkUGCSceneRuntime::AdvanceTowerDefenseMovement(
+    double DeltaSeconds,
+    TArray<FAkUGCTowerDefenseGoalReached>& OutGoalReached,
+    FString& OutError)
+{
+    OutGoalReached.Reset();
+    const UWorld* RuntimeWorld = World.Get();
+    if (!RuntimeWorld || RuntimeWorld->GetNetMode() == NM_Client)
+    {
+        OutError = TEXT("Enemy movement requires an authoritative runtime world.");
+        return false;
+    }
+    if (!FMath::IsFinite(DeltaSeconds) || DeltaSeconds < 0.0)
+    {
+        OutError = TEXT("Enemy movement delta must be finite and non-negative.");
+        return false;
+    }
+    if (DeltaSeconds == 0.0 || EnemyMovements.IsEmpty())
+    {
+        return true;
+    }
+    if (TowerDefensePath.Num() < 2)
+    {
+        OutError = TEXT("Active enemy movement requires at least two path nodes.");
+        return false;
+    }
+
+    TArray<FGuid> EntityIds;
+    EnemyMovements.GetKeys(EntityIds);
+    EntityIds.Sort([](const FGuid& Left, const FGuid& Right)
+    {
+        return Left.ToString(EGuidFormats::Digits) < Right.ToString(EGuidFormats::Digits);
+    });
+
+    for (const FGuid& EntityId : EntityIds)
+    {
+        if (!EnemyMovements.Contains(EntityId) || !FindActor(EntityId))
+        {
+            OutError = FString::Printf(TEXT("Active enemy '%s' is missing from the runtime scene."), *EntityId.ToString());
+            return false;
+        }
+    }
+
+    TArray<FGuid> ReachedEntityIds;
+    for (const FGuid& EntityId : EntityIds)
+    {
+        FAkUGCTowerDefenseEnemyMovement& Movement = EnemyMovements.FindChecked(EntityId);
+        AActor* Actor = FindActor(EntityId);
+        double RemainingDistance = Movement.MoveSpeed * DeltaSeconds;
+        while (Movement.NextPathNodeIndex < TowerDefensePath.Num())
+        {
+            const FVector Target = TowerDefensePath.Nodes[Movement.NextPathNodeIndex].Location;
+            const FVector Current = Actor->GetActorLocation();
+            const double DistanceToTarget = FVector::Distance(Current, Target);
+            if (DistanceToTarget <= UE_KINDA_SMALL_NUMBER)
+            {
+                Actor->SetActorLocation(Target, false, nullptr, ETeleportType::TeleportPhysics);
+                ++Movement.NextPathNodeIndex;
+                continue;
+            }
+            if (RemainingDistance < DistanceToTarget)
+            {
+                Actor->SetActorLocation(
+                    Current + (Target - Current).GetSafeNormal() * RemainingDistance,
+                    false,
+                    nullptr,
+                    ETeleportType::TeleportPhysics);
+                RemainingDistance = 0.0;
+                break;
+            }
+
+            Actor->SetActorLocation(Target, false, nullptr, ETeleportType::TeleportPhysics);
+            RemainingDistance -= DistanceToTarget;
+            ++Movement.NextPathNodeIndex;
+        }
+
+        if (Movement.NextPathNodeIndex >= TowerDefensePath.Num())
+        {
+            FAkUGCTowerDefenseGoalReached Reached;
+            Reached.SourceNodeId = Movement.SourceNodeId;
+            Reached.EntityId = EntityId;
+            GoalReachedEvents.Add(Reached);
+            OutGoalReached.Add(Reached);
+            ReachedEntityIds.Add(EntityId);
+        }
+    }
+    for (const FGuid& EntityId : ReachedEntityIds)
+    {
+        EnemyMovements.Remove(EntityId);
+    }
+    return true;
+}
+
+bool FAkUGCSceneRuntime::HasActiveEnemyMovement() const
+{
+    return !EnemyMovements.IsEmpty();
+}
+
+void FAkUGCSceneRuntime::ResetTowerDefenseMovement()
+{
+    EnemyMovements.Reset();
+    GoalReachedEvents.Reset();
 }
 
 FName FAkUGCSceneRuntime::GetCurrentPlatformVariant()

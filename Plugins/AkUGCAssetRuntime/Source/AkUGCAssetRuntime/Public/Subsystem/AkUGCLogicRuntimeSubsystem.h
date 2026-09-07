@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Document/AkUGCDocument.h"
+#include "Gameplay/AkUGCTowerDefenseMovement.h"
 #include "Logic/AkUGCLogicCompiler.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "AkUGCLogicRuntimeSubsystem.generated.h"
@@ -34,6 +35,18 @@ struct AKUGCASSETRUNTIME_API FAkUGCLogicRuntimeSpawn
 
     UPROPERTY(BlueprintReadOnly, Category = "UGC|Logic")
     FName PrefabId;
+};
+
+USTRUCT(BlueprintType)
+struct AKUGCASSETRUNTIME_API FAkUGCLogicRuntimeGoalReached
+{
+    GENERATED_BODY()
+
+    UPROPERTY(BlueprintReadOnly, Category = "UGC|Logic")
+    FGuid SourceNodeId;
+
+    UPROPERTY(BlueprintReadOnly, Category = "UGC|Logic")
+    FGuid EntityId;
 };
 
 USTRUCT(BlueprintType)
@@ -70,6 +83,13 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(
     FName,
     PrefabId);
 
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(
+    FAkUGCLogicGoalReachedDelegate,
+    FGuid,
+    SourceNodeId,
+    FGuid,
+    EntityId);
+
 struct FAkUGCLogicSpawnPlan
 {
     FGuid SourceNodeId;
@@ -104,6 +124,9 @@ public:
     UPROPERTY(BlueprintAssignable, Category = "UGC|Logic")
     FAkUGCLogicSpawnDelegate OnSpawn;
 
+    UPROPERTY(BlueprintAssignable, Category = "UGC|Logic")
+    FAkUGCLogicGoalReachedDelegate OnGoalReached;
+
     UFUNCTION(BlueprintCallable, Category = "UGC|Logic")
     FAkUGCLogicRuntimeResult RunGameStart(const FAkUGCLogicGraph& LogicGraph);
 
@@ -124,11 +147,17 @@ public:
     UFUNCTION(BlueprintPure, Category = "UGC|Logic")
     TArray<FAkUGCLogicRuntimeSpawn> GetSpawnedEntities() const;
 
-    bool SetSpawnHandlers(
+    UFUNCTION(BlueprintPure, Category = "UGC|Logic")
+    TArray<FAkUGCLogicRuntimeGoalReached> GetGoalReachedEntities() const;
+
+    bool SetRuntimeHandlers(
         const FGuid& ExecutionOwnerId,
         TFunction<bool(const FAkUGCLogicSpawnEffect&, FAkUGCLogicSpawnPlan&, FString&)> InSpawnPlanHandler,
         TFunction<bool(const FAkUGCLogicSpawnEffect&, FGuid&, FString&)> InSpawnHandler,
-        TFunction<bool()> InSpawnHandlerIsValid,
+        TFunction<bool(double, TArray<FAkUGCTowerDefenseGoalReached>&, FString&)> InAdvanceGameplayTimeHandler,
+        TFunction<bool()> InHasGameplayTimeWorkHandler,
+        TFunction<void()> InResetGameplayHandler,
+        TFunction<bool()> InRuntimeHandlerIsValid,
         FString* OutError = nullptr);
 
     virtual void Tick(float DeltaTime) override;
@@ -140,6 +169,7 @@ protected:
 
 private:
     bool ApplyRunResult(const FAkUGCLogicRunResult& RunResult, FString& OutErrorPath, FString& OutErrorMessage);
+    bool AdvanceGameplayTime(double DeltaSeconds, FString& OutErrorPath, FString& OutErrorMessage);
     bool SpawnSingle(const FAkUGCLogicSpawnPlan& Plan, FString& OutErrorPath, FString& OutErrorMessage);
     FAkUGCLogicRuntimeResult MakeCurrentResult(bool bSucceeded, FString ErrorPath = {}, FString ErrorMessage = {}) const;
     void ClearExecutionState(bool bClearSpawnHandler);
@@ -149,9 +179,13 @@ private:
     TArray<FAkUGCPendingLogicSpawnBatch> PendingSpawnBatches;
     TArray<FAkUGCLogicRuntimeMessage> EmittedMessages;
     TArray<FAkUGCLogicRuntimeSpawn> SpawnedEntities;
+    TArray<FAkUGCLogicRuntimeGoalReached> GoalReachedEntities;
     TFunction<bool(const FAkUGCLogicSpawnEffect&, FAkUGCLogicSpawnPlan&, FString&)> SpawnPlanHandler;
     TFunction<bool(const FAkUGCLogicSpawnEffect&, FGuid&, FString&)> SpawnHandler;
-    TFunction<bool()> SpawnHandlerIsValid;
+    TFunction<bool(double, TArray<FAkUGCTowerDefenseGoalReached>&, FString&)> AdvanceGameplayTimeHandler;
+    TFunction<bool()> HasGameplayTimeWorkHandler;
+    TFunction<void()> ResetGameplayHandler;
+    TFunction<bool()> RuntimeHandlerIsValid;
     int32 TotalExecutedInstructionCount = 0;
     int32 ReservedSpawnCount = 0;
     FGuid ActiveExecutionOwnerId;

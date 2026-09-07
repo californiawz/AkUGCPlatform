@@ -343,8 +343,34 @@ bool FAkUGCLogicRuntimeTimerSpawnTest::RunTest(const FString& Parameters)
         TestEqual(TEXT("Second configured enemy spawns"), Runtime.Num(), 5);
         TestTrue(TEXT("Second batch interval advances"), Subsystem->AdvanceLogicTime(0.25).bSucceeded);
         TestEqual(TEXT("Third configured enemy spawns"), Runtime.Num(), 6);
+        if (Subsystem->GetSpawnedEntities().Num() == 3)
+        {
+            AActor* FirstEnemy = Runtime.FindActor(Subsystem->GetSpawnedEntities()[0].EntityId);
+            TestNotNull(TEXT("First enemy remains in runtime while moving"), FirstEnemy);
+            if (FirstEnemy)
+            {
+                TestEqual(TEXT("First enemy moves 150 units toward first path node"),
+                    FirstEnemy->GetActorLocation(),
+                    FVector(400.0, 50.0, 0.0));
+            }
+        }
         TestEqual(TEXT("All configured spawns are observable"), Subsystem->GetSpawnedEntities().Num(), 3);
-        TestTrue(TEXT("Extra time does not over-spawn"), Subsystem->AdvanceLogicTime(1.0).bSucceeded);
+        TestTrue(TEXT("Large movement delta reaches path end"), Subsystem->AdvanceLogicTime(5.0).bSucceeded);
+        TestEqual(TEXT("All three enemies produce GoalReached"), Subsystem->GetGoalReachedEntities().Num(), 3);
+        TestEqual(TEXT("No enemy movement remains after reaching path end"), Runtime.GetActiveEnemyMovementCount(), 0);
+        for (const FAkUGCLogicRuntimeSpawn& RuntimeSpawn : Subsystem->GetSpawnedEntities())
+        {
+            AActor* EnemyActor = Runtime.FindActor(RuntimeSpawn.EntityId);
+            TestNotNull(TEXT("GoalReached enemy remains available for next gameplay slice"), EnemyActor);
+            if (EnemyActor)
+            {
+                TestEqual(TEXT("GoalReached enemy stops at final path node"),
+                    EnemyActor->GetActorLocation(),
+                    SecondPathNode.Transform.GetLocation());
+            }
+        }
+        TestTrue(TEXT("Extra time does not produce duplicate GoalReached"), Subsystem->AdvanceLogicTime(1.0).bSucceeded);
+        TestEqual(TEXT("GoalReached is emitted exactly once per enemy"), Subsystem->GetGoalReachedEntities().Num(), 3);
         TestEqual(TEXT("Batch stops at configured enemyCount"), Runtime.Num(), 6);
         TestEqual(TEXT("Batch still leaves authored Document unchanged"), Document.Scenes[0].Entities.Num(), 3);
     }
