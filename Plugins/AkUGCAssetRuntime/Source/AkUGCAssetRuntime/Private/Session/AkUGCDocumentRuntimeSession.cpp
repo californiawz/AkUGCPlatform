@@ -55,12 +55,9 @@ FAkUGCCommandExecutionResult FAkUGCDocumentRuntimeSession::Initialize(FAkUGCProj
 
     const bool bRunGameStart = Mode == EAkUGCRuntimeSessionMode::Preview
         || Mode == EAkUGCRuntimeSessionMode::PlayAuthority;
-    const bool bRequiresTowerDefensePath = bRunGameStart
-        && Scene->LogicGraph.Nodes.ContainsByPredicate([](const FAkUGCLogicNode& Node)
-        {
-            return Node.Type == EAkUGCLogicNodeType::Spawn;
-        });
-    if (bRequiresTowerDefensePath)
+    const bool bRequiresTowerDefenseGameplay = bRunGameStart
+        && Document.Manifest.TemplateId == TEXT("official.tower_defense");
+    if (bRequiresTowerDefenseGameplay)
     {
         const FAkUGCTowerDefensePathBuildResult PathResult = FAkUGCTowerDefensePathBuilder::Build(*Scene, true);
         if (!PathResult.bSucceeded)
@@ -70,7 +67,7 @@ FAkUGCCommandExecutionResult FAkUGCDocumentRuntimeSession::Initialize(FAkUGCProj
                 PathResult.ErrorMessage);
         }
         FString GameplayError;
-        if (!Runtime.ValidateTowerDefenseGameplay(*Scene, &GameplayError))
+        if (!Runtime.ValidateTowerDefenseGameplay(*Scene, Registry, &GameplayError))
         {
             return FAkUGCCommandExecutionResult::Failure(
                 TEXT("runtime.towerDefense"),
@@ -83,8 +80,8 @@ FAkUGCCommandExecutionResult FAkUGCDocumentRuntimeSession::Initialize(FAkUGCProj
     {
         return FAkUGCCommandExecutionResult::Failure(TEXT("runtime.initialize"), MoveTemp(Error));
     }
-    if (bRequiresTowerDefensePath
-        && !Runtime.InitializeTowerDefenseGameplay(*Scene, &Error))
+    if (bRequiresTowerDefenseGameplay
+        && !Runtime.InitializeTowerDefenseGameplay(*Scene, Registry, &Error))
     {
         Runtime.Unload();
         return FAkUGCCommandExecutionResult::Failure(TEXT("runtime.towerDefense"), MoveTemp(Error));

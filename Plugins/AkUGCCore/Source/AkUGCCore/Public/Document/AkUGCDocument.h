@@ -12,6 +12,7 @@ namespace AkUGCSchema
 namespace AkUGCTowerDefenseRulesetLimits
 {
     inline constexpr int32 RequiredWaveCount = 3;
+    inline constexpr int32 MaxTotalEnemyCount = 500;
     inline constexpr double MaxStartDelaySeconds = 3600.0;
     inline constexpr double MaxWaveIntervalSeconds = 3600.0;
 }

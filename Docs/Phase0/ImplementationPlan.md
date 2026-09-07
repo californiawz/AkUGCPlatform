@@ -275,7 +275,9 @@ Basic Tower 能稳定选择目标、按攻击间隔造成伤害并移除死亡�
 - 已新增 Ruleset Wave 增删改排序和设置 Command，Desktop/App 共用 Runtime Command Service。
 - Ruleset Command 支持 JSON 往返、事务原子性和 Undo/Redo，纯 Document 改动不触发 Actor 投影。
 - 删除被 Wave 引用的 Spawn Point 会被拒绝；同一事务先删除 Wave 后可安全删除实体。
-- 下一提交新增完整三波 Playable Validator 与 Preview/PlayAuthority 运行门禁。
+- 已新增完整三波 Playable Validator；Preview/PlayAuthority 会校验 Wave 数量、Spawn 配置、Enemy 能力和总敌人预算。
+- Edit 继续允许 0 至 3 波中间态，PlayClient 不在本地启动权威玩法。
+- 下一提交新增 WaveStart Logic 事件入口。
 
 ### 目标
 

@@ -105,9 +105,11 @@ private:
     bool SelectBasicTowerTarget(const FAkUGCTowerDefenseBasicTowerAttack& Tower, FGuid& OutTargetEntityId) const;
     bool ValidateTowerDefenseGameplay(
         const FAkUGCSceneDocument& Scene,
+        const FAkUGCPrefabRegistry& Registry,
         FString* OutError = nullptr) const;
     bool InitializeTowerDefenseGameplay(
         const FAkUGCSceneDocument& Scene,
+        const FAkUGCPrefabRegistry& Registry,
         FString* OutError = nullptr);
     void ResetTowerDefenseGameplay();
 

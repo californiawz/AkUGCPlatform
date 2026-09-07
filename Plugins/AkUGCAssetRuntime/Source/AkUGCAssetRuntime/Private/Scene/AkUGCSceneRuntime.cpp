@@ -195,6 +195,7 @@ bool FAkUGCSceneRuntime::RunGameStartLogic(
 
 bool FAkUGCSceneRuntime::ValidateTowerDefenseGameplay(
     const FAkUGCSceneDocument& Scene,
+    const FAkUGCPrefabRegistry& Registry,
     FString* OutError) const
 {
     const FAkUGCEntityRecord* Base = nullptr;
@@ -249,14 +250,168 @@ bool FAkUGCSceneRuntime::ValidateTowerDefenseGameplay(
     {
         return Fail(OutError, TEXT("Tower defense Goal must contain exactly one tower_defense.goal component."));
     }
+
+    if (Scene.Ruleset.Waves.Num() != AkUGCTowerDefenseRulesetLimits::RequiredWaveCount)
+    {
+        return Fail(
+            OutError,
+            FString::Printf(
+                TEXT("Playable tower defense requires exactly %d waves."),
+                AkUGCTowerDefenseRulesetLimits::RequiredWaveCount));
+    }
+    if (!FMath::IsFinite(Scene.Ruleset.WaveIntervalSeconds)
+        || Scene.Ruleset.WaveIntervalSeconds < 0.0
+        || Scene.Ruleset.WaveIntervalSeconds > AkUGCTowerDefenseRulesetLimits::MaxWaveIntervalSeconds)
+    {
+        return Fail(OutError, TEXT("Tower defense wave interval must be finite and from 0 to 3600 seconds."));
+    }
+
+    int64 TotalEnemyCount = 0;
+    TSet<FGuid> WaveIds;
+    TSet<FGuid> WaveSpawnPointIds;
+    for (int32 WaveIndex = 0; WaveIndex < Scene.Ruleset.Waves.Num(); ++WaveIndex)
+    {
+        const FAkUGCTowerDefenseWave& Wave = Scene.Ruleset.Waves[WaveIndex];
+        const FString WavePrefix = FString::Printf(TEXT("Wave %d"), WaveIndex + 1);
+        if (!Wave.WaveId.IsValid() || WaveIds.Contains(Wave.WaveId))
+        {
+            return Fail(OutError, WavePrefix + TEXT(" requires a unique valid WaveId."));
+        }
+        WaveIds.Add(Wave.WaveId);
+        if (!FMath::IsFinite(Wave.StartDelaySeconds)
+            || Wave.StartDelaySeconds < 0.0
+            || Wave.StartDelaySeconds > AkUGCTowerDefenseRulesetLimits::MaxStartDelaySeconds)
+        {
+            return Fail(OutError, WavePrefix + TEXT(" start delay must be finite and from 0 to 3600 seconds."));
+        }
+
+        const FAkUGCEntityRecord* SpawnPoint = Scene.Entities.FindByPredicate([&Wave](const FAkUGCEntityRecord& Entity)
+        {
+            return Entity.EntityId == Wave.SpawnPointEntityId;
+        });
+        if (!SpawnPoint || SpawnPoint->PrefabId != TEXT("official.gameplay.enemy_spawn"))
+        {
+            return Fail(OutError, WavePrefix + TEXT(" must reference an official.gameplay.enemy_spawn in the same scene."));
+        }
+        WaveSpawnPointIds.Add(Wave.SpawnPointEntityId);
+
+        const FAkUGCComponentRecord* SpawnComponent = nullptr;
+        int32 SpawnComponentCount = 0;
+        for (const FAkUGCComponentRecord& Component : SpawnPoint->Components)
+        {
+            if (Component.TypeId == TEXT("tower_defense.spawn"))
+            {
+                SpawnComponent = &Component;
+                ++SpawnComponentCount;
+            }
+        }
+        if (SpawnComponentCount != 1 || !SpawnComponent)
+        {
+            return Fail(OutError, WavePrefix + TEXT(" Spawn Point requires exactly one tower_defense.spawn component."));
+        }
+
+        const FAkUGCValue* EnemyPrefab = SpawnComponent->Properties.Find(TEXT("enemyPrefab"));
+        const FAkUGCValue* EnemyCount = SpawnComponent->Properties.Find(TEXT("enemyCount"));
+        const FAkUGCValue* SpawnInterval = SpawnComponent->Properties.Find(TEXT("spawnInterval"));
+        if (!EnemyPrefab || EnemyPrefab->Type != EAkUGCValueType::Name || EnemyPrefab->NameValue.IsNone())
+        {
+            return Fail(OutError, WavePrefix + TEXT(" enemyPrefab must be a valid Name value."));
+        }
+        if (!EnemyCount
+            || EnemyCount->Type != EAkUGCValueType::Integer
+            || EnemyCount->IntegerValue < 1
+            || EnemyCount->IntegerValue > 500)
+        {
+            return Fail(OutError, WavePrefix + TEXT(" enemyCount must be an Integer from 1 to 500."));
+        }
+        if (!SpawnInterval
+            || SpawnInterval->Type != EAkUGCValueType::Number
+            || !FMath::IsFinite(SpawnInterval->NumberValue)
+            || SpawnInterval->NumberValue < 0.1
+            || SpawnInterval->NumberValue > 60.0)
+        {
+            return Fail(OutError, WavePrefix + TEXT(" spawnInterval must be a Number from 0.1 to 60 seconds."));
+        }
+
+        const FAkUGCPrefabDefinition* EnemyDefinition = Registry.Find(EnemyPrefab->NameValue);
+        if (!EnemyDefinition || EnemyDefinition->PrefabId != TEXT("official.unit.basic_enemy"))
+        {
+            return Fail(OutError, WavePrefix + TEXT(" must use the supported official.unit.basic_enemy Prefab."));
+        }
+        FAkUGCEntityRecord EnemyDefaults;
+        FString EnemyDefaultsError;
+        if (!Registry.CreateEntityRecord(
+            EnemyPrefab->NameValue,
+            FGuid::NewGuid(),
+            FTransform::Identity,
+            EnemyDefaults,
+            &EnemyDefaultsError))
+        {
+            return Fail(OutError, WavePrefix + TEXT(" Enemy Prefab defaults are invalid: ") + EnemyDefaultsError);
+        }
+        const FAkUGCComponentRecord* EnemyHealth = EnemyDefaults.Components.FindByPredicate([](const FAkUGCComponentRecord& Component)
+        {
+            return Component.TypeId == TEXT("core.health");
+        });
+        const FAkUGCComponentRecord* EnemyGameplay = EnemyDefaults.Components.FindByPredicate([](const FAkUGCComponentRecord& Component)
+        {
+            return Component.TypeId == TEXT("tower_defense.enemy");
+        });
+        const FAkUGCValue* EnemyMaximumHealth = EnemyHealth ? EnemyHealth->Properties.Find(TEXT("maxHealth")) : nullptr;
+        const FAkUGCValue* EnemyMoveSpeed = EnemyGameplay ? EnemyGameplay->Properties.Find(TEXT("moveSpeed")) : nullptr;
+        const FAkUGCValue* EnemyGoalDamage = EnemyGameplay ? EnemyGameplay->Properties.Find(TEXT("goalDamage")) : nullptr;
+        if (!EnemyMaximumHealth
+            || EnemyMaximumHealth->Type != EAkUGCValueType::Number
+            || !FMath::IsFinite(EnemyMaximumHealth->NumberValue)
+            || EnemyMaximumHealth->NumberValue < 1.0
+            || EnemyMaximumHealth->NumberValue > 100000.0
+            || !EnemyMoveSpeed
+            || EnemyMoveSpeed->Type != EAkUGCValueType::Number
+            || !FMath::IsFinite(EnemyMoveSpeed->NumberValue)
+            || EnemyMoveSpeed->NumberValue < 10.0
+            || EnemyMoveSpeed->NumberValue > 2000.0
+            || !EnemyGoalDamage
+            || EnemyGoalDamage->Type != EAkUGCValueType::Number
+            || !FMath::IsFinite(EnemyGoalDamage->NumberValue)
+            || EnemyGoalDamage->NumberValue < 0.0
+            || EnemyGoalDamage->NumberValue > 100000.0)
+        {
+            return Fail(OutError, WavePrefix + TEXT(" Basic Enemy Prefab has invalid health or movement configuration."));
+        }
+
+        TotalEnemyCount += EnemyCount->IntegerValue;
+        if (TotalEnemyCount > AkUGCTowerDefenseRulesetLimits::MaxTotalEnemyCount)
+        {
+            return Fail(
+                OutError,
+                FString::Printf(
+                    TEXT("Tower defense Ruleset exceeds the total enemy budget of %d."),
+                    AkUGCTowerDefenseRulesetLimits::MaxTotalEnemyCount));
+        }
+    }
+
+    for (int32 NodeIndex = 0; NodeIndex < Scene.LogicGraph.Nodes.Num(); ++NodeIndex)
+    {
+        const FAkUGCLogicNode& Node = Scene.LogicGraph.Nodes[NodeIndex];
+        if (Node.Type == EAkUGCLogicNodeType::Spawn
+            && (!Node.SpawnAtEntityId.IsValid() || !WaveSpawnPointIds.Contains(Node.SpawnAtEntityId)))
+        {
+            return Fail(
+                OutError,
+                FString::Printf(
+                    TEXT("Tower defense Spawn node %d must reference a Spawn Point used by the Ruleset."),
+                    NodeIndex));
+        }
+    }
     return true;
 }
 
 bool FAkUGCSceneRuntime::InitializeTowerDefenseGameplay(
     const FAkUGCSceneDocument& Scene,
+    const FAkUGCPrefabRegistry& Registry,
     FString* OutError)
 {
-    if (!ValidateTowerDefenseGameplay(Scene, OutError))
+    if (!ValidateTowerDefenseGameplay(Scene, Registry, OutError))
     {
         return false;
     }
