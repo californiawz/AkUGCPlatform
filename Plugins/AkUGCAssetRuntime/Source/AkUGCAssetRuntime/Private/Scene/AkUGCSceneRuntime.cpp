@@ -1764,6 +1764,11 @@ bool FAkUGCSceneRuntime::SpawnEntity(
     }
     Binding->ApplyRecord(Entity);
 
+    if (AAkUGCRuntimeEntityActor* RuntimeEntity = Cast<AAkUGCRuntimeEntityActor>(Actor))
+    {
+        RuntimeEntity->SetEntityIdentity(Entity.EntityId, Entity.PrefabId);
+    }
+
     if (StaticMesh)
     {
         if (AAkUGCRuntimeEntityActor* RuntimeEntity = Cast<AAkUGCRuntimeEntityActor>(Actor))

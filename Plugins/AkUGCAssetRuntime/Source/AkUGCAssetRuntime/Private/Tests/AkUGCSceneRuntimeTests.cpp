@@ -4,6 +4,7 @@
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "Entity/AkUGCEntityBindingComponent.h"
+#include "Entity/AkUGCRuntimeEntityActor.h"
 #include "Prefab/AkUGCPrefabRegistry.h"
 #include "Scene/AkUGCSceneRuntime.h"
 
@@ -157,6 +158,65 @@ bool FAkUGCSceneRuntimeParentCycleTest::RunTest(const FString& Parameters)
     TestFalse(TEXT("Runtime rejects parent cycle before spawning"), Runtime.LoadScene(Scene, Registry, &Error));
     TestEqual(TEXT("Rejected cycle spawns no actors"), Runtime.Num(), 0);
     TestFalse(TEXT("Cycle rejection returns an error"), Error.IsEmpty());
+
+    GEngine->DestroyWorldContext(World);
+    World->DestroyWorld(false);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FAkUGCSceneRuntimeEntityIdentityTest,
+    "AkUGC.Runtime.Scene.ReplicatesEntityIdentity",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCSceneRuntimeEntityIdentityTest::RunTest(const FString& Parameters)
+{
+    UWorld* World = UWorld::CreateWorld(EWorldType::Game, false, TEXT("AkUGCSceneEntityIdentityTest"));
+    TestNotNull(TEXT("Test world is created"), World);
+    if (!World)
+    {
+        return false;
+    }
+
+    FWorldContext& WorldContext = GEngine->CreateNewWorldContext(EWorldType::Game);
+    WorldContext.SetCurrentWorld(World);
+
+    FAkUGCPrefabRegistry Registry;
+    FString Error;
+    TestTrue(TEXT("Base prefab registers"), Registry.Register(MakePrefab(TEXT("official.gameplay.base")), &Error));
+
+    const FAkUGCEntityRecord Entity = MakeEntity(TEXT("official.gameplay.base"), FVector(50.0, 0.0, 0.0));
+    FAkUGCSceneDocument Scene;
+    Scene.SceneId = FGuid::NewGuid();
+    Scene.Entities = {Entity};
+
+    {
+        FAkUGCSceneRuntime Runtime(World);
+        TestTrue(TEXT("Scene loads"), Runtime.LoadScene(Scene, Registry, &Error));
+
+        AActor* Actor = Runtime.FindActor(Entity.EntityId);
+        TestNotNull(TEXT("Runtime actor exists"), Actor);
+        if (!Actor)
+        {
+            GEngine->DestroyWorldContext(World);
+            World->DestroyWorld(false);
+            return false;
+        }
+
+        TestTrue(TEXT("Runtime actor is network replicated"), Actor->GetIsReplicated());
+
+        const AAkUGCRuntimeEntityActor* RuntimeEntity = Cast<AAkUGCRuntimeEntityActor>(Actor);
+        TestNotNull(TEXT("Actor is a runtime entity"), RuntimeEntity);
+        if (RuntimeEntity)
+        {
+            TestEqual(TEXT("Replicated EntityId matches document"), RuntimeEntity->GetEntityId(), Entity.EntityId);
+            TestEqual(TEXT("Replicated PrefabId matches document"), RuntimeEntity->GetPrefabId(), Entity.PrefabId);
+        }
+
+        // 销毁协议：权威端移除实体后，Actor 销毁并退出场景映射。
+        TestTrue(TEXT("Entity removal succeeds"), Runtime.RemoveEntity(Entity.EntityId));
+        TestEqual(TEXT("Removed entity leaves the actor map"), Runtime.Num(), 0);
+    }
 
     GEngine->DestroyWorldContext(World);
     World->DestroyWorld(false);

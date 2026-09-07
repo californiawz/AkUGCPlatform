@@ -2,6 +2,7 @@
 
 #include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Net/UnrealNetwork.h"
 
 #if WITH_EDITORONLY_DATA
 #include "Components/BillboardComponent.h"
@@ -45,4 +46,18 @@ void AAkUGCRuntimeEntityActor::SetVisualMesh(UStaticMesh* Mesh)
         EditorSprite->SetVisibility(Mesh == nullptr);
     }
 #endif
+}
+
+void AAkUGCRuntimeEntityActor::SetEntityIdentity(const FGuid& InEntityId, const FName& InPrefabId)
+{
+    EntityId = InEntityId;
+    PrefabId = InPrefabId;
+}
+
+void AAkUGCRuntimeEntityActor::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+    Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+
+    DOREPLIFETIME(AAkUGCRuntimeEntityActor, EntityId);
+    DOREPLIFETIME(AAkUGCRuntimeEntityActor, PrefabId);
 }
