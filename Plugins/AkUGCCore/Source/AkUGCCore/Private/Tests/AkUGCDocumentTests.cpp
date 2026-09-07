@@ -38,6 +38,20 @@ bool FAkUGCDocumentRoundTripTest::RunTest(const FString& Parameters)
     HealthValue.Type = EAkUGCValueType::Number;
     HealthValue.NumberValue = 1000.0;
     Health.Properties.Add(TEXT("maxHealth"), HealthValue);
+    const FGuid BaseEntityId = Entity.EntityId;
+
+    Scene.Ruleset.WaveIntervalSeconds = 7.5;
+    for (int32 WaveIndex = 0; WaveIndex < AkUGCTowerDefenseRulesetLimits::RequiredWaveCount; ++WaveIndex)
+    {
+        FAkUGCEntityRecord& SpawnPoint = Scene.Entities.AddDefaulted_GetRef();
+        SpawnPoint.EntityId = FGuid::NewGuid();
+        SpawnPoint.PrefabId = TEXT("official.gameplay.enemy_spawn");
+
+        FAkUGCTowerDefenseWave& Wave = Scene.Ruleset.Waves.AddDefaulted_GetRef();
+        Wave.WaveId = FGuid::NewGuid();
+        Wave.SpawnPointEntityId = SpawnPoint.EntityId;
+        Wave.StartDelaySeconds = WaveIndex * 2.0;
+    }
 
     const FAkUGCValidationResult SourceValidation = FAkUGCDocumentValidator::Validate(Source);
     TestTrue(TEXT("Source document is valid"), SourceValidation.IsValid());
@@ -60,9 +74,20 @@ bool FAkUGCDocumentRoundTripTest::RunTest(const FString& Parameters)
         AddError(TEXT("Restored document does not contain the expected entity."));
         return false;
     }
-    TestEqual(TEXT("Entity ID round-trips"), Restored.Scenes[0].Entities[0].EntityId, Entity.EntityId);
-    TestEqual(TEXT("Prefab ID round-trips"), Restored.Scenes[0].Entities[0].PrefabId, Entity.PrefabId);
+    TestEqual(TEXT("Entity ID round-trips"), Restored.Scenes[0].Entities[0].EntityId, BaseEntityId);
+    TestEqual(TEXT("Prefab ID round-trips"), Restored.Scenes[0].Entities[0].PrefabId, FName(TEXT("official.gameplay.base")));
     TestEqual(TEXT("Component count round-trips"), Restored.Scenes[0].Entities[0].Components.Num(), 1);
+    TestEqual(TEXT("Ruleset wave count round-trips"),
+        Restored.Scenes[0].Ruleset.Waves.Num(),
+        AkUGCTowerDefenseRulesetLimits::RequiredWaveCount);
+    TestEqual(TEXT("Ruleset wave interval round-trips"), Restored.Scenes[0].Ruleset.WaveIntervalSeconds, 7.5);
+    if (Restored.Scenes[0].Ruleset.Waves.Num() == AkUGCTowerDefenseRulesetLimits::RequiredWaveCount)
+    {
+        TestEqual(TEXT("Wave delay round-trips"), Restored.Scenes[0].Ruleset.Waves[2].StartDelaySeconds, 4.0);
+        TestEqual(TEXT("Wave Spawn Point reference round-trips"),
+            Restored.Scenes[0].Ruleset.Waves[1].SpawnPointEntityId,
+            Source.Scenes[0].Ruleset.Waves[1].SpawnPointEntityId);
+    }
 
     FAkUGCDocumentMigrationResult Migration;
     TestTrue(TEXT("Current document loads through migration boundary"), FAkUGCDocumentJson::Deserialize(Json, Restored, &Error, &Migration));
@@ -215,6 +240,7 @@ bool FAkUGCDocumentLegacyMigrationTest::RunTest(const FString& Parameters)
         return false;
     }
     (*Scenes)[0]->AsObject()->RemoveField(TEXT("logicGraph"));
+    (*Scenes)[0]->AsObject()->RemoveField(TEXT("ruleset"));
     const TArray<TSharedPtr<FJsonValue>>& Entities = (*Scenes)[0]->AsObject()->GetArrayField(TEXT("entities"));
     if (Entities.IsEmpty() || Entities[0]->Type != EJson::Object)
     {
@@ -244,7 +270,7 @@ bool FAkUGCDocumentLegacyMigrationTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Migration succeeds"), Migration.bSucceeded);
     TestEqual(TEXT("Missing version is recognized as V0"), Migration.SourceVersion, 0);
     TestEqual(TEXT("Migration targets current version"), Migration.TargetVersion, AkUGCSchema::CurrentProjectDocumentVersion);
-    TestEqual(TEXT("V0 to current applies three migration steps"), Migration.AppliedSteps.Num(), 3);
+    TestEqual(TEXT("V0 to current applies four migration steps"), Migration.AppliedSteps.Num(), 4);
     if (Migrated.Scenes.IsEmpty()
         || Migrated.Scenes[0].Entities.IsEmpty()
         || Migrated.Scenes[0].Entities[0].Components.IsEmpty())
@@ -255,6 +281,8 @@ bool FAkUGCDocumentLegacyMigrationTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("Migrated manifest uses current version"), Migrated.Manifest.SchemaVersion, AkUGCSchema::CurrentProjectDocumentVersion);
     TestEqual(TEXT("Missing component version normalizes to V1"), Migrated.Scenes[0].Entities[0].Components[0].SchemaVersion, 1);
     TestTrue(TEXT("Logic Graph migration initializes an empty graph"), Migrated.Scenes[0].LogicGraph.Nodes.IsEmpty());
+    TestTrue(TEXT("Ruleset migration initializes empty editable waves"), Migrated.Scenes[0].Ruleset.Waves.IsEmpty());
+    TestEqual(TEXT("Ruleset migration initializes wave interval"), Migrated.Scenes[0].Ruleset.WaveIntervalSeconds, 5.0);
     TestEqual(TEXT("Project ID is preserved"), Migrated.Manifest.ProjectId, Source.Manifest.ProjectId);
     TestEqual(TEXT("Entity ID is preserved"), Migrated.Scenes[0].Entities[0].EntityId, Entity.EntityId);
     TestEqual(TEXT("Entity transform is preserved"), Migrated.Scenes[0].Entities[0].Transform.GetLocation(), Entity.Transform.GetLocation());
@@ -294,9 +322,9 @@ bool FAkUGCDocumentMigrationRejectionTest::RunTest(const FString& Parameters)
     FString Error;
     FAkUGCDocumentMigrationResult Migration;
 
-    const FString FutureJson = TEXT("{\"manifest\":{\"schemaVersion\":4},\"scenes\":[]}");
+    const FString FutureJson = TEXT("{\"manifest\":{\"schemaVersion\":5},\"scenes\":[]}");
     TestFalse(TEXT("Future project version is rejected"), FAkUGCDocumentJson::Deserialize(FutureJson, Output, &Error, &Migration));
-    TestEqual(TEXT("Future version is reported"), Migration.SourceVersion, 4);
+    TestEqual(TEXT("Future version is reported"), Migration.SourceVersion, 5);
     TestEqual(TEXT("Future version error path is precise"), Migration.ErrorPath, FString(TEXT("manifest.schemaVersion")));
     TestFalse(TEXT("Rejected output is reset instead of partially populated"), Output.Manifest.ProjectId.IsValid());
 
@@ -314,6 +342,36 @@ bool FAkUGCDocumentMigrationRejectionTest::RunTest(const FString& Parameters)
 
     const FString ConflictingJson = TEXT("{\"manifest\":{\"schemaVersion\":1,\"SchemaVersion\":2},\"scenes\":[]}");
     TestFalse(TEXT("Conflicting version aliases are rejected"), FAkUGCDocumentJson::Deserialize(ConflictingJson, Output, &Error, &Migration));
+
+    const FString RulesetAliasJson = TEXT("{\"manifest\":{\"schemaVersion\":3},\"scenes\":[{\"Ruleset\":{}}]}");
+    TestFalse(TEXT("Non-canonical Ruleset alias is rejected"),
+        FAkUGCDocumentJson::Deserialize(RulesetAliasJson, Output, &Error, &Migration));
+    TestEqual(TEXT("Ruleset alias error path is precise"), Migration.ErrorPath, FString(TEXT("scenes[0].ruleset")));
+
+    const FString DuplicateFieldJson = TEXT("{\"manifest\":{\"schemaVersion\":5,\"schemaVersion\":4},\"scenes\":[]}");
+    TestFalse(TEXT("Exact duplicate JSON fields are rejected before overwrite"),
+        FAkUGCDocumentJson::Deserialize(DuplicateFieldJson, Output, &Error, &Migration));
+    TestTrue(TEXT("Duplicate field error is explicit"), Error.Contains(TEXT("duplicated")));
+
+    const FString DuplicateEmptyFieldJson = TEXT("{\"manifest\":{\"schemaVersion\":4},\"scenes\":[],\"\":1,\"\":2}");
+    TestFalse(TEXT("Duplicate empty JSON field names are rejected"),
+        FAkUGCDocumentJson::Deserialize(DuplicateEmptyFieldJson, Output, &Error, &Migration));
+
+    const FString V4NestedAliasJson = TEXT(
+        "{\"manifest\":{\"schemaVersion\":4},\"scenes\":[{\"ruleset\":{"
+        "\"Waves\":[],\"waveIntervalSeconds\":5,"
+        "\"defeatCondition\":\"BaseHealthDepleted\","
+        "\"victoryCondition\":\"AllWavesCleared\"}}]}");
+    TestFalse(TEXT("V4 nested Ruleset aliases are rejected"),
+        FAkUGCDocumentJson::Deserialize(V4NestedAliasJson, Output, &Error, &Migration));
+    TestTrue(TEXT("Nested alias error identifies canonical field"), Error.Contains(TEXT("waves")));
+
+    const FString V4NumericEnumJson = TEXT(
+        "{\"manifest\":{\"schemaVersion\":4},\"scenes\":[{\"ruleset\":{"
+        "\"waves\":[],\"waveIntervalSeconds\":5,\"defeatCondition\":0,"
+        "\"victoryCondition\":\"AllWavesCleared\"}}]}");
+    TestFalse(TEXT("V4 numeric Ruleset enums are rejected"),
+        FAkUGCDocumentJson::Deserialize(V4NumericEnumJson, Output, &Error, &Migration));
 
     TSharedRef<FJsonObject> AtomicRoot = MakeShared<FJsonObject>();
     TSharedRef<FJsonObject> AtomicManifest = MakeShared<FJsonObject>();
@@ -395,6 +453,64 @@ bool FAkUGCDocumentInt64JsonTest::RunTest(const FString& Parameters)
     TestFalse(
         TEXT("Unsafe numeric int64 representation is rejected"),
         FAkUGCDocumentJson::Deserialize(UnsafeNumericJson, Restored, &Error));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FAkUGCTowerDefenseRulesetValidationTest,
+    "AkUGC.Core.Document.Ruleset.Validation",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCTowerDefenseRulesetValidationTest::RunTest(const FString& Parameters)
+{
+    FAkUGCProjectDocument Document;
+    Document.Manifest.ProjectId = FGuid::NewGuid();
+    Document.Manifest.DisplayName = TEXT("Ruleset Validation");
+    Document.Manifest.TemplateId = TEXT("official.tower_defense");
+    FAkUGCSceneDocument& Scene = Document.Scenes.AddDefaulted_GetRef();
+    Scene.SceneId = FGuid::NewGuid();
+
+    TestTrue(TEXT("Empty Ruleset is a valid editing intermediate state"),
+        FAkUGCDocumentValidator::Validate(Document).IsValid());
+
+    for (int32 WaveIndex = 0; WaveIndex < AkUGCTowerDefenseRulesetLimits::RequiredWaveCount; ++WaveIndex)
+    {
+        FAkUGCEntityRecord& SpawnPoint = Scene.Entities.AddDefaulted_GetRef();
+        SpawnPoint.EntityId = FGuid::NewGuid();
+        SpawnPoint.PrefabId = TEXT("official.gameplay.enemy_spawn");
+        FAkUGCTowerDefenseWave& Wave = Scene.Ruleset.Waves.AddDefaulted_GetRef();
+        Wave.WaveId = FGuid::NewGuid();
+        Wave.SpawnPointEntityId = SpawnPoint.EntityId;
+        Wave.StartDelaySeconds = WaveIndex;
+    }
+    TestTrue(TEXT("Complete three-wave Ruleset validates"),
+        FAkUGCDocumentValidator::Validate(Document).IsValid());
+
+    const FGuid ThirdWaveId = Scene.Ruleset.Waves[2].WaveId;
+    Scene.Ruleset.Waves[2].WaveId = Scene.Ruleset.Waves[0].WaveId;
+    TestFalse(TEXT("Ruleset rejects duplicate Wave IDs"),
+        FAkUGCDocumentValidator::Validate(Document).IsValid());
+    Scene.Ruleset.Waves[2].WaveId = ThirdWaveId;
+
+    FAkUGCTowerDefenseWave FourthWave = Scene.Ruleset.Waves[0];
+    Scene.Ruleset.Waves.Add(FourthWave);
+    TestFalse(TEXT("Ruleset rejects more than three waves"),
+        FAkUGCDocumentValidator::Validate(Document).IsValid());
+    Scene.Ruleset.Waves.Pop();
+
+    Scene.Ruleset.Waves[0].StartDelaySeconds = AkUGCTowerDefenseRulesetLimits::MaxStartDelaySeconds + 1.0;
+    TestFalse(TEXT("Ruleset rejects excessive Wave delay"),
+        FAkUGCDocumentValidator::Validate(Document).IsValid());
+    Scene.Ruleset.Waves[0].StartDelaySeconds = 0.0;
+
+    Scene.Entities[0].PrefabId = TEXT("official.gameplay.base");
+    TestFalse(TEXT("Wave must reference an official Enemy Spawn"),
+        FAkUGCDocumentValidator::Validate(Document).IsValid());
+    Scene.Entities[0].PrefabId = TEXT("official.gameplay.enemy_spawn");
+
+    Scene.Ruleset.Waves[0].SpawnPointEntityId = FGuid::NewGuid();
+    TestFalse(TEXT("Wave rejects missing cross-reference"),
+        FAkUGCDocumentValidator::Validate(Document).IsValid());
     return true;
 }
 

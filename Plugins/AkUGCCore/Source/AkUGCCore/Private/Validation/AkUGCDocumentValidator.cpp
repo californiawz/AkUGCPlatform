@@ -340,6 +340,7 @@ FAkUGCValidationResult FAkUGCDocumentValidator::Validate(const FAkUGCProjectDocu
         TSet<FGuid> SceneEntityIds;
         TMap<FGuid, FGuid> ParentByEntity;
         TMap<FGuid, int32> EntityIndexById;
+        TMap<FGuid, FName> PrefabIdByEntityId;
 
         for (int32 EntityIndex = 0; EntityIndex < Scene.Entities.Num(); ++EntityIndex)
         {
@@ -360,6 +361,7 @@ FAkUGCValidationResult FAkUGCDocumentValidator::Validate(const FAkUGCProjectDocu
                 SceneEntityIds.Add(Entity.EntityId);
                 EntityIndexById.Add(Entity.EntityId, EntityIndex);
                 ParentByEntity.Add(Entity.EntityId, Entity.ParentEntityId);
+                PrefabIdByEntityId.Add(Entity.EntityId, Entity.PrefabId);
             }
 
             if (Entity.PrefabId.IsNone())
@@ -404,6 +406,82 @@ FAkUGCValidationResult FAkUGCDocumentValidator::Validate(const FAkUGCProjectDocu
                         Result.AddError(PropertyPath + TEXT(".rotatorValue"), TEXT("Rotator field must be finite."));
                     }
                 }
+            }
+        }
+
+        const FString RulesetPath = ScenePath + TEXT(".ruleset");
+        if (Scene.Ruleset.Waves.Num() > AkUGCTowerDefenseRulesetLimits::RequiredWaveCount)
+        {
+            Result.AddError(
+                RulesetPath + TEXT(".waves"),
+                FString::Printf(
+                    TEXT("Tower defense ruleset supports at most %d waves."),
+                    AkUGCTowerDefenseRulesetLimits::RequiredWaveCount));
+        }
+        if (!FMath::IsFinite(Scene.Ruleset.WaveIntervalSeconds)
+            || Scene.Ruleset.WaveIntervalSeconds < 0.0
+            || Scene.Ruleset.WaveIntervalSeconds > AkUGCTowerDefenseRulesetLimits::MaxWaveIntervalSeconds)
+        {
+            Result.AddError(
+                RulesetPath + TEXT(".waveIntervalSeconds"),
+                TEXT("Wave interval must be finite and from 0 to 3600 seconds."));
+        }
+        switch (Scene.Ruleset.DefeatCondition)
+        {
+        case EAkUGCTowerDefenseDefeatCondition::BaseHealthDepleted:
+            break;
+        default:
+            Result.AddError(RulesetPath + TEXT(".defeatCondition"), TEXT("Defeat condition is not supported."));
+            break;
+        }
+        switch (Scene.Ruleset.VictoryCondition)
+        {
+        case EAkUGCTowerDefenseVictoryCondition::AllWavesCleared:
+            break;
+        default:
+            Result.AddError(RulesetPath + TEXT(".victoryCondition"), TEXT("Victory condition is not supported."));
+            break;
+        }
+        TSet<FGuid> WaveIds;
+        for (int32 WaveIndex = 0; WaveIndex < Scene.Ruleset.Waves.Num(); ++WaveIndex)
+        {
+            const FAkUGCTowerDefenseWave& Wave = Scene.Ruleset.Waves[WaveIndex];
+            const FString WavePath = FString::Printf(TEXT("%s.waves[%d]"), *RulesetPath, WaveIndex);
+            if (!Wave.WaveId.IsValid())
+            {
+                Result.AddError(WavePath + TEXT(".waveId"), TEXT("Wave ID must be a valid GUID."));
+            }
+            else if (WaveIds.Contains(Wave.WaveId))
+            {
+                Result.AddError(WavePath + TEXT(".waveId"), TEXT("Wave ID must be unique in the Ruleset."));
+            }
+            else
+            {
+                WaveIds.Add(Wave.WaveId);
+            }
+            if (!Wave.SpawnPointEntityId.IsValid())
+            {
+                Result.AddError(WavePath + TEXT(".spawnPointEntityId"), TEXT("Wave Spawn Point ID must be a valid GUID."));
+            }
+            else if (!SceneEntityIds.Contains(Wave.SpawnPointEntityId))
+            {
+                Result.AddError(
+                    WavePath + TEXT(".spawnPointEntityId"),
+                    TEXT("Wave Spawn Point must exist in the same scene."));
+            }
+            else if (PrefabIdByEntityId.FindRef(Wave.SpawnPointEntityId) != TEXT("official.gameplay.enemy_spawn"))
+            {
+                Result.AddError(
+                    WavePath + TEXT(".spawnPointEntityId"),
+                    TEXT("Wave Spawn Point must reference official.gameplay.enemy_spawn."));
+            }
+            if (!FMath::IsFinite(Wave.StartDelaySeconds)
+                || Wave.StartDelaySeconds < 0.0
+                || Wave.StartDelaySeconds > AkUGCTowerDefenseRulesetLimits::MaxStartDelaySeconds)
+            {
+                Result.AddError(
+                    WavePath + TEXT(".startDelaySeconds"),
+                    TEXT("Wave start delay must be finite and from 0 to 3600 seconds."));
             }
         }
 

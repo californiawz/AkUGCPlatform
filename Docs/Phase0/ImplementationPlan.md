@@ -262,7 +262,17 @@ Basic Tower 能稳定选择目标、按攻击间隔造成伤害并移除死亡�
 1. `功能：新增运行时生命与伤害模型`
 2. `功能：新增基础塔确定性攻击`
 
-## P4：三波状态机、WaveStart 与胜负
+## P4：三波状态机、WaveStart 与胜负（进行中）
+
+### 状态
+
+- Project Document 已升级至 V4，并在 Scene 中新增塔防 Ruleset。
+- 每个 Wave 使用稳定 WaveId、SpawnPointEntityId 和 StartDelaySeconds；数组顺序定义波次顺序。
+- enemyPrefab、enemyCount 和 spawnInterval 继续由被引用 enemy_spawn 组件提供，作为该刷怪点唯一配置真源，不在 Wave 中重复存储。
+- 编辑态允许 0 至 3 波；完整三波要求将在独立 Playable Validator 中作为 Preview/PlayAuthority 门禁。
+- V3→V4 为旧 Scene 补齐空 Ruleset，不根据旧刷怪点猜测波次映射。
+- JSON 严格拒绝重复字段、非 canonical Ruleset 字段和非法枚举表示。
+- 下一提交新增 Ruleset Command、Undo/Redo 与删除引用保护。
 
 ### 目标
 
@@ -273,7 +283,7 @@ Basic Tower 能稳定选择目标、按攻击间隔造成伤害并移除死亡�
 升级 Project Document 至 V4，引入 Ruleset：
 
 - 三波配置。
-- 每波 Spawn Point、Enemy Prefab、Count、Interval、Start Delay。
+- 每波保存 WaveId、Spawn Point 和 Start Delay；Enemy Prefab、Count、Interval 从被引用的 enemy_spawn 配置解析。
 - 波次间隔。
 - 基地失败条件与第三波胜利条件。
 

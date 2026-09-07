@@ -6,7 +6,14 @@
 namespace AkUGCSchema
 {
     inline constexpr int32 OldestSupportedProjectDocumentVersion = 0;
-    inline constexpr int32 CurrentProjectDocumentVersion = 3;
+    inline constexpr int32 CurrentProjectDocumentVersion = 4;
+}
+
+namespace AkUGCTowerDefenseRulesetLimits
+{
+    inline constexpr int32 RequiredWaveCount = 3;
+    inline constexpr double MaxStartDelaySeconds = 3600.0;
+    inline constexpr double MaxWaveIntervalSeconds = 3600.0;
 }
 
 namespace AkUGCLogicLimits
@@ -157,6 +164,51 @@ struct AKUGCCORE_API FAkUGCLogicGraph
     TArray<FAkUGCLogicConnection> Connections;
 };
 
+UENUM(BlueprintType)
+enum class EAkUGCTowerDefenseDefeatCondition : uint8
+{
+    BaseHealthDepleted
+};
+
+UENUM(BlueprintType)
+enum class EAkUGCTowerDefenseVictoryCondition : uint8
+{
+    AllWavesCleared
+};
+
+USTRUCT(BlueprintType)
+struct AKUGCCORE_API FAkUGCTowerDefenseWave
+{
+    GENERATED_BODY()
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Ruleset")
+    FGuid WaveId;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Ruleset")
+    FGuid SpawnPointEntityId;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Ruleset", meta = (ClampMin = "0.0", ClampMax = "3600.0"))
+    double StartDelaySeconds = 0.0;
+};
+
+USTRUCT(BlueprintType)
+struct AKUGCCORE_API FAkUGCTowerDefenseRuleset
+{
+    GENERATED_BODY()
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Ruleset")
+    TArray<FAkUGCTowerDefenseWave> Waves;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Ruleset", meta = (ClampMin = "0.0", ClampMax = "3600.0"))
+    double WaveIntervalSeconds = 5.0;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Ruleset")
+    EAkUGCTowerDefenseDefeatCondition DefeatCondition = EAkUGCTowerDefenseDefeatCondition::BaseHealthDepleted;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Ruleset")
+    EAkUGCTowerDefenseVictoryCondition VictoryCondition = EAkUGCTowerDefenseVictoryCondition::AllWavesCleared;
+};
+
 USTRUCT(BlueprintType)
 struct AKUGCCORE_API FAkUGCSceneDocument
 {
@@ -173,6 +225,9 @@ struct AKUGCCORE_API FAkUGCSceneDocument
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Logic")
     FAkUGCLogicGraph LogicGraph;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Ruleset")
+    FAkUGCTowerDefenseRuleset Ruleset;
 };
 
 USTRUCT(BlueprintType)

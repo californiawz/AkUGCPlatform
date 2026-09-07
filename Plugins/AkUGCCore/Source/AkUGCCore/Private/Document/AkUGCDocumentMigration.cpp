@@ -292,6 +292,45 @@ FAkUGCDocumentMigrationResult FAkUGCDocumentMigrator::Migrate(
         }
     }
 
+    TArray<TSharedPtr<FJsonObject>> ScenesToInitializeRuleset;
+    TArray<TSharedPtr<FJsonObject>> RulesetScenes;
+    if (!ReadObjectArray(RootObject, TEXT("scenes"), TEXT("scenes"), RulesetScenes, ErrorPath, ErrorMessage))
+    {
+        return Failure(SourceVersion, MoveTemp(ErrorPath), MoveTemp(ErrorMessage));
+    }
+    for (int32 SceneIndex = 0; SceneIndex < RulesetScenes.Num(); ++SceneIndex)
+    {
+        TSharedPtr<FJsonValue> RulesetValue;
+        if (!FindCanonicalField(RulesetScenes[SceneIndex].ToSharedRef(), TEXT("ruleset"), false, RulesetValue, ErrorMessage))
+        {
+            return Failure(
+                SourceVersion,
+                FString::Printf(TEXT("scenes[%d].ruleset"), SceneIndex),
+                MoveTemp(ErrorMessage));
+        }
+        if (!RulesetValue.IsValid())
+        {
+            if (SourceVersion <= 3)
+            {
+                ScenesToInitializeRuleset.Add(RulesetScenes[SceneIndex]);
+            }
+            else
+            {
+                return Failure(
+                    SourceVersion,
+                    FString::Printf(TEXT("scenes[%d].ruleset"), SceneIndex),
+                    TEXT("V4 scene requires a tower defense ruleset object."));
+            }
+        }
+        else if (RulesetValue->Type != EJson::Object || !RulesetValue->AsObject().IsValid())
+        {
+            return Failure(
+                SourceVersion,
+                FString::Printf(TEXT("scenes[%d].ruleset"), SceneIndex),
+                TEXT("Tower defense ruleset must be an object."));
+        }
+    }
+
     int32 WorkingVersion = SourceVersion;
     if (WorkingVersion == 0)
     {
@@ -321,6 +360,21 @@ FAkUGCDocumentMigrationResult FAkUGCDocumentMigrator::Migrate(
         Manifest->SetNumberField(TEXT("schemaVersion"), 3);
         Result.AppliedSteps.Add(TEXT("ProjectDocumentV2ToV3"));
         WorkingVersion = 3;
+    }
+    if (WorkingVersion == 3)
+    {
+        for (const TSharedPtr<FJsonObject>& Scene : ScenesToInitializeRuleset)
+        {
+            TSharedRef<FJsonObject> Ruleset = MakeShared<FJsonObject>();
+            Ruleset->SetArrayField(TEXT("waves"), TArray<TSharedPtr<FJsonValue>>{});
+            Ruleset->SetNumberField(TEXT("waveIntervalSeconds"), 5.0);
+            Ruleset->SetStringField(TEXT("defeatCondition"), TEXT("BaseHealthDepleted"));
+            Ruleset->SetStringField(TEXT("victoryCondition"), TEXT("AllWavesCleared"));
+            Scene->SetObjectField(TEXT("ruleset"), Ruleset);
+        }
+        Manifest->SetNumberField(TEXT("schemaVersion"), 4);
+        Result.AppliedSteps.Add(TEXT("ProjectDocumentV3ToV4"));
+        WorkingVersion = 4;
     }
 
     if (WorkingVersion != AkUGCSchema::CurrentProjectDocumentVersion)

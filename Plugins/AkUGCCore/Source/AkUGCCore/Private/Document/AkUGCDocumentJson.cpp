@@ -152,6 +152,220 @@ namespace
         }
         return true;
     }
+
+    struct FJsonContainerFields
+    {
+        bool bIsObject = false;
+        TSet<FString> Fields;
+    };
+
+    bool ValidateNoDuplicateJsonFields(const FString& Json, FString& OutError)
+    {
+        const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Json);
+        TArray<FJsonContainerFields> Containers;
+        EJsonNotation Notation;
+        while (Reader->ReadNext(Notation))
+        {
+            if (Notation == EJsonNotation::Error)
+            {
+                OutError = Reader->GetErrorMessage();
+                return false;
+            }
+
+            const FString& Identifier = Reader->GetIdentifier();
+            if (!Containers.IsEmpty() && Containers.Last().bIsObject)
+            {
+                if (Containers.Last().Fields.Contains(Identifier))
+                {
+                    OutError = FString::Printf(TEXT("JSON field '%s' is duplicated."), *Identifier);
+                    return false;
+                }
+                Containers.Last().Fields.Add(Identifier);
+            }
+
+            if (Notation == EJsonNotation::ObjectStart)
+            {
+                FJsonContainerFields& Container = Containers.AddDefaulted_GetRef();
+                Container.bIsObject = true;
+            }
+            else if (Notation == EJsonNotation::ArrayStart)
+            {
+                Containers.AddDefaulted();
+            }
+            else if (Notation == EJsonNotation::ObjectEnd || Notation == EJsonNotation::ArrayEnd)
+            {
+                if (Containers.IsEmpty())
+                {
+                    OutError = TEXT("JSON container structure is invalid.");
+                    return false;
+                }
+                Containers.Pop();
+            }
+        }
+        if (!Reader->GetErrorMessage().IsEmpty())
+        {
+            OutError = Reader->GetErrorMessage();
+            return false;
+        }
+        return Containers.IsEmpty();
+    }
+
+    bool ValidateExactFields(
+        const TSharedRef<FJsonObject>& Object,
+        const TSet<FString>& ExpectedFields,
+        const FString& Path,
+        FString& OutError)
+    {
+        for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Object->Values)
+        {
+            bool bExactMatch = false;
+            FString CanonicalField;
+            for (const FString& Field : ExpectedFields)
+            {
+                if (Field.Equals(Pair.Key, ESearchCase::CaseSensitive))
+                {
+                    bExactMatch = true;
+                    break;
+                }
+                if (Field.Equals(Pair.Key, ESearchCase::IgnoreCase))
+                {
+                    CanonicalField = Field;
+                }
+            }
+            if (bExactMatch)
+            {
+                continue;
+            }
+            OutError = !CanonicalField.IsEmpty()
+                ? FString::Printf(TEXT("%s.%s: Field must use canonical casing '%s'."), *Path, *Pair.Key, *CanonicalField)
+                : FString::Printf(TEXT("%s.%s: Field is not supported."), *Path, *Pair.Key);
+            return false;
+        }
+        for (const FString& Field : ExpectedFields)
+        {
+            bool bFoundExact = false;
+            for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Object->Values)
+            {
+                if (Pair.Key.Equals(Field, ESearchCase::CaseSensitive))
+                {
+                    bFoundExact = true;
+                    break;
+                }
+            }
+            if (!bFoundExact)
+            {
+                OutError = FString::Printf(TEXT("%s.%s: Field is required."), *Path, *Field);
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool ValidateCurrentRulesetJson(const TSharedRef<FJsonObject>& RootObject, FString& OutError)
+    {
+        const TArray<TSharedPtr<FJsonValue>>* Scenes = nullptr;
+        if (!RootObject->TryGetArrayField(TEXT("scenes"), Scenes) || !Scenes)
+        {
+            OutError = TEXT("scenes: Field must be an array.");
+            return false;
+        }
+
+        const TSet<FString> RulesetFields = {
+            TEXT("waves"),
+            TEXT("waveIntervalSeconds"),
+            TEXT("defeatCondition"),
+            TEXT("victoryCondition")};
+        const TSet<FString> WaveFields = {
+            TEXT("waveId"),
+            TEXT("spawnPointEntityId"),
+            TEXT("startDelaySeconds")};
+
+        for (int32 SceneIndex = 0; SceneIndex < Scenes->Num(); ++SceneIndex)
+        {
+            if (!(*Scenes)[SceneIndex].IsValid() || (*Scenes)[SceneIndex]->Type != EJson::Object)
+            {
+                OutError = FString::Printf(TEXT("scenes[%d]: Scene must be an object."), SceneIndex);
+                return false;
+            }
+            const TSharedPtr<FJsonObject> Scene = (*Scenes)[SceneIndex]->AsObject();
+            const TSharedPtr<FJsonObject>* Ruleset = nullptr;
+            const FString RulesetPath = FString::Printf(TEXT("scenes[%d].ruleset"), SceneIndex);
+            if (!Scene.IsValid()
+                || !Scene->TryGetObjectField(TEXT("ruleset"), Ruleset)
+                || !Ruleset
+                || !Ruleset->IsValid())
+            {
+                OutError = RulesetPath + TEXT(": Ruleset must be an object.");
+                return false;
+            }
+            if (!ValidateExactFields(Ruleset->ToSharedRef(), RulesetFields, RulesetPath, OutError))
+            {
+                return false;
+            }
+
+            const TArray<TSharedPtr<FJsonValue>>* Waves = nullptr;
+            if (!(*Ruleset)->TryGetArrayField(TEXT("waves"), Waves) || !Waves)
+            {
+                OutError = RulesetPath + TEXT(".waves: Field must be an array.");
+                return false;
+            }
+            double WaveIntervalSeconds = 0.0;
+            if (!(*Ruleset)->TryGetNumberField(TEXT("waveIntervalSeconds"), WaveIntervalSeconds)
+                || !FMath::IsFinite(WaveIntervalSeconds))
+            {
+                OutError = RulesetPath + TEXT(".waveIntervalSeconds: Field must be a finite number.");
+                return false;
+            }
+            FString DefeatCondition;
+            if (!(*Ruleset)->TryGetStringField(TEXT("defeatCondition"), DefeatCondition)
+                || DefeatCondition != TEXT("BaseHealthDepleted"))
+            {
+                OutError = RulesetPath + TEXT(".defeatCondition: Expected 'BaseHealthDepleted'.");
+                return false;
+            }
+            FString VictoryCondition;
+            if (!(*Ruleset)->TryGetStringField(TEXT("victoryCondition"), VictoryCondition)
+                || VictoryCondition != TEXT("AllWavesCleared"))
+            {
+                OutError = RulesetPath + TEXT(".victoryCondition: Expected 'AllWavesCleared'.");
+                return false;
+            }
+
+            for (int32 WaveIndex = 0; WaveIndex < Waves->Num(); ++WaveIndex)
+            {
+                if (!(*Waves)[WaveIndex].IsValid() || (*Waves)[WaveIndex]->Type != EJson::Object)
+                {
+                    OutError = FString::Printf(TEXT("%s.waves[%d]: Wave must be an object."), *RulesetPath, WaveIndex);
+                    return false;
+                }
+                const TSharedPtr<FJsonObject> Wave = (*Waves)[WaveIndex]->AsObject();
+                const FString WavePath = FString::Printf(TEXT("%s.waves[%d]"), *RulesetPath, WaveIndex);
+                if (!Wave.IsValid() || !ValidateExactFields(Wave.ToSharedRef(), WaveFields, WavePath, OutError))
+                {
+                    return false;
+                }
+                FString GuidValue;
+                if (!Wave->TryGetStringField(TEXT("waveId"), GuidValue))
+                {
+                    OutError = WavePath + TEXT(".waveId: Field must be a GUID string.");
+                    return false;
+                }
+                if (!Wave->TryGetStringField(TEXT("spawnPointEntityId"), GuidValue))
+                {
+                    OutError = WavePath + TEXT(".spawnPointEntityId: Field must be a GUID string.");
+                    return false;
+                }
+                double StartDelaySeconds = 0.0;
+                if (!Wave->TryGetNumberField(TEXT("startDelaySeconds"), StartDelaySeconds)
+                    || !FMath::IsFinite(StartDelaySeconds))
+                {
+                    OutError = WavePath + TEXT(".startDelaySeconds: Field must be a finite number.");
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
 }
 
 bool FAkUGCDocumentJson::Serialize(
@@ -216,6 +430,18 @@ bool FAkUGCDocumentJson::Deserialize(
         *OutMigration = FAkUGCDocumentMigrationResult{};
     }
 
+    FString DuplicateFieldError;
+    if (!ValidateNoDuplicateJsonFields(Json, DuplicateFieldError))
+    {
+        if (OutError)
+        {
+            *OutError = DuplicateFieldError.IsEmpty()
+                ? TEXT("Failed to validate UGC project document JSON fields.")
+                : MoveTemp(DuplicateFieldError);
+        }
+        return false;
+    }
+
     TSharedPtr<FJsonObject> RootObject;
     const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Json);
     if (!FJsonSerializer::Deserialize(Reader, RootObject) || !RootObject.IsValid())
@@ -249,6 +475,16 @@ bool FAkUGCDocumentJson::Deserialize(
         if (OutError)
         {
             *OutError = MoveTemp(IntegerValidationError);
+        }
+        return false;
+    }
+
+    FString RulesetValidationError;
+    if (!ValidateCurrentRulesetJson(RootObject.ToSharedRef(), RulesetValidationError))
+    {
+        if (OutError)
+        {
+            *OutError = MoveTemp(RulesetValidationError);
         }
         return false;
     }
