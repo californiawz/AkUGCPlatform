@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Gameplay/AkUGCTowerDefensePath.h"
 
 struct FAkUGCCommand;
 struct FAkUGCCommandTransaction;
@@ -38,11 +39,12 @@ public:
     bool RemoveEntity(const FGuid& EntityId);
     bool NotifyActorDeletedExternally(const FGuid& EntityId, const AActor* Actor);
     void Unload();
-    void CancelLogicExecution();
+    void CancelLogicExecution(const FGuid& ExecutionOwnerId);
 
     AActor* FindActor(const FGuid& EntityId) const;
     int32 Num() const;
     FGuid GetActiveSceneId() const;
+    const FAkUGCTowerDefensePath& GetTowerDefensePath() const;
 
     static FName GetCurrentPlatformVariant();
 
@@ -51,12 +53,15 @@ private:
 
     bool ApplyTransaction(
         const FAkUGCCommandTransaction& Transaction,
+        const FAkUGCSceneDocument& ResultScene,
         const FAkUGCPrefabRegistry& Registry,
         FString* OutError = nullptr);
     bool RunGameStartLogic(
         const FAkUGCSceneDocument& Scene,
         const FAkUGCPrefabRegistry& Registry,
         const TWeakPtr<bool, ESPMode::ThreadSafe>& SessionLifetime,
+        const FGuid& ExecutionOwnerId,
+        bool bRequireAuthority,
         FString* OutError = nullptr);
     bool BuildLogicSpawnPlan(
         const FAkUGCLogicSpawnEffect& SpawnEffect,
@@ -92,6 +97,8 @@ private:
     TWeakObjectPtr<UWorld> World;
     TSharedRef<bool, ESPMode::ThreadSafe> LifetimeToken = MakeShared<bool, ESPMode::ThreadSafe>(true);
     FGuid ActiveSceneId;
+    FGuid LogicExecutionOwnerId;
+    FAkUGCTowerDefensePath TowerDefensePath;
     TMap<FGuid, TWeakObjectPtr<AActor>> Actors;
     TSet<FGuid> ExternallyDeletedEntityIds;
 };

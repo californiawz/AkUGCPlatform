@@ -6,6 +6,8 @@
 
 首个垂直切片：三波合作塔防。
 
+详细实施顺序、当前基线、阶段任务和验收门禁见 [`ImplementationPlan.md`](ImplementationPlan.md)。
+
 ## 六周范围
 
 | 周 | 交付 |

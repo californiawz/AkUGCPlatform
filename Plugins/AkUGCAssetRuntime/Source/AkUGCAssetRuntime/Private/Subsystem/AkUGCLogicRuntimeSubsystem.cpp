@@ -5,6 +5,35 @@
 
 FAkUGCLogicRuntimeResult UAkUGCLogicRuntimeSubsystem::RunGameStart(const FAkUGCLogicGraph& LogicGraph)
 {
+    const UWorld* World = GetWorld();
+    if (!World || World->GetNetMode() == NM_Client)
+    {
+        return MakeCurrentResult(
+            false,
+            TEXT("logicRuntime.authority"),
+            TEXT("Manual Game Start execution requires a standalone or authoritative world."));
+    }
+    return RunGameStartForOwner(ManualExecutionOwnerId, LogicGraph);
+}
+
+FAkUGCLogicRuntimeResult UAkUGCLogicRuntimeSubsystem::RunGameStartForOwner(
+    const FGuid& ExecutionOwnerId,
+    const FAkUGCLogicGraph& LogicGraph)
+{
+    if (!ExecutionOwnerId.IsValid())
+    {
+        return MakeCurrentResult(
+            false,
+            TEXT("logicRuntime.executionOwnerId"),
+            TEXT("Logic execution owner ID must be valid."));
+    }
+    if (ActiveExecutionOwnerId.IsValid() && ActiveExecutionOwnerId != ExecutionOwnerId)
+    {
+        return MakeCurrentResult(
+            false,
+            TEXT("logicRuntime.executionOwnerId"),
+            TEXT("Logic runtime is already owned by another session."));
+    }
     if (bIsRunning)
     {
         return MakeCurrentResult(
@@ -12,6 +41,7 @@ FAkUGCLogicRuntimeResult UAkUGCLogicRuntimeSubsystem::RunGameStart(const FAkUGCL
             TEXT("logicRuntime.reentrantExecution"),
             TEXT("Logic runtime does not allow reentrant execution."));
     }
+    ActiveExecutionOwnerId = ExecutionOwnerId;
     TGuardValue<bool> RunningGuard(bIsRunning, true);
     ClearExecutionState(false);
 
@@ -182,6 +212,16 @@ FAkUGCLogicRuntimeResult UAkUGCLogicRuntimeSubsystem::AdvanceLogicTime(double De
 
 void UAkUGCLogicRuntimeSubsystem::ResetLogicRuntime()
 {
+    ResetLogicRuntimeForOwner(ManualExecutionOwnerId);
+}
+
+void UAkUGCLogicRuntimeSubsystem::ResetLogicRuntimeForOwner(const FGuid& ExecutionOwnerId)
+{
+    if (!ExecutionOwnerId.IsValid()
+        || (ActiveExecutionOwnerId.IsValid() && ActiveExecutionOwnerId != ExecutionOwnerId))
+    {
+        return;
+    }
     if (bIsRunning)
     {
         bResetRequested = true;
@@ -200,19 +240,42 @@ TArray<FAkUGCLogicRuntimeSpawn> UAkUGCLogicRuntimeSubsystem::GetSpawnedEntities(
     return SpawnedEntities;
 }
 
-void UAkUGCLogicRuntimeSubsystem::SetSpawnHandlers(
+bool UAkUGCLogicRuntimeSubsystem::SetSpawnHandlers(
+    const FGuid& ExecutionOwnerId,
     TFunction<bool(const FAkUGCLogicSpawnEffect&, FAkUGCLogicSpawnPlan&, FString&)> InSpawnPlanHandler,
     TFunction<bool(const FAkUGCLogicSpawnEffect&, FGuid&, FString&)> InSpawnHandler,
-    TFunction<bool()> InSpawnHandlerIsValid)
+    TFunction<bool()> InSpawnHandlerIsValid,
+    FString* OutError)
 {
+    if (!ExecutionOwnerId.IsValid())
+    {
+        if (OutError)
+        {
+            *OutError = TEXT("Logic execution owner ID must be valid.");
+        }
+        return false;
+    }
+    if (ActiveExecutionOwnerId.IsValid() && ActiveExecutionOwnerId != ExecutionOwnerId)
+    {
+        if (OutError)
+        {
+            *OutError = TEXT("Logic runtime is already owned by another session.");
+        }
+        return false;
+    }
     if (bIsRunning)
     {
-        bResetRequested = true;
-        return;
+        if (OutError)
+        {
+            *OutError = TEXT("Logic runtime handlers cannot change during execution.");
+        }
+        return false;
     }
+    ActiveExecutionOwnerId = ExecutionOwnerId;
     SpawnPlanHandler = MoveTemp(InSpawnPlanHandler);
     SpawnHandler = MoveTemp(InSpawnHandler);
     SpawnHandlerIsValid = MoveTemp(InSpawnHandlerIsValid);
+    return true;
 }
 
 void UAkUGCLogicRuntimeSubsystem::Tick(float DeltaTime)
@@ -417,5 +480,6 @@ void UAkUGCLogicRuntimeSubsystem::ClearExecutionState(bool bClearSpawnHandler)
         SpawnPlanHandler = {};
         SpawnHandler = {};
         SpawnHandlerIsValid = {};
+        ActiveExecutionOwnerId.Invalidate();
     }
 }

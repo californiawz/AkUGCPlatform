@@ -7,6 +7,7 @@
 #include "Engine/World.h"
 #include "Entity/AkUGCEntityBindingComponent.h"
 #include "Entity/AkUGCRuntimeEntityActor.h"
+#include "Gameplay/AkUGCTowerDefensePath.h"
 #include "Logic/AkUGCLogicRunner.h"
 #include "Prefab/AkUGCPrefabRegistry.h"
 #include "Subsystem/AkUGCLogicRuntimeSubsystem.h"
@@ -48,9 +49,15 @@ bool FAkUGCSceneRuntime::LoadScene(
     {
         return false;
     }
+    const FAkUGCTowerDefensePathBuildResult PathResult = FAkUGCTowerDefensePathBuilder::Build(Scene);
+    if (!PathResult.bSucceeded)
+    {
+        return Fail(OutError, FString::Printf(TEXT("%s: %s"), *PathResult.ErrorPath, *PathResult.ErrorMessage));
+    }
 
     Unload();
     ActiveSceneId = Scene.SceneId;
+    TowerDefensePath = PathResult.Path;
 
     for (const FAkUGCEntityRecord& Entity : Scene.Entities)
     {
@@ -74,19 +81,28 @@ bool FAkUGCSceneRuntime::RunGameStartLogic(
     const FAkUGCSceneDocument& Scene,
     const FAkUGCPrefabRegistry& Registry,
     const TWeakPtr<bool, ESPMode::ThreadSafe>& SessionLifetime,
+    const FGuid& ExecutionOwnerId,
+    bool bRequireAuthority,
     FString* OutError)
 {
     UWorld* RuntimeWorld = World.Get();
-    if (RuntimeWorld
-        && RuntimeWorld->WorldType != EWorldType::Game
+    if (!RuntimeWorld)
+    {
+        return Fail(OutError, TEXT("Logic execution requires a valid runtime world."));
+    }
+    if (RuntimeWorld->WorldType != EWorldType::Game
         && RuntimeWorld->WorldType != EWorldType::PIE
         && RuntimeWorld->WorldType != EWorldType::GamePreview)
     {
-        return true;
+        return Fail(OutError, TEXT("Logic execution requires a Game, PIE, or GamePreview world."));
     }
-    if (RuntimeWorld && RuntimeWorld->GetNetMode() == NM_Client)
+    if (bRequireAuthority && RuntimeWorld->GetNetMode() == NM_Client)
     {
-        return true;
+        return Fail(OutError, TEXT("PlayAuthority session cannot execute in a client world."));
+    }
+    if (!bRequireAuthority && RuntimeWorld->GetNetMode() == NM_DedicatedServer)
+    {
+        return Fail(OutError, TEXT("Preview session cannot execute in a dedicated server world."));
     }
 
     for (const FAkUGCLogicNode& Node : Scene.LogicGraph.Nodes)
@@ -107,7 +123,9 @@ bool FAkUGCSceneRuntime::RunGameStartLogic(
         return Fail(OutError, TEXT("Logic Runtime subsystem is not available for the scene world."));
     }
     const TWeakPtr<bool, ESPMode::ThreadSafe> WeakLifetime = LifetimeToken;
-    LogicRuntime->SetSpawnHandlers(
+    FString HandlerError;
+    if (!LogicRuntime->SetSpawnHandlers(
+        ExecutionOwnerId,
         [this, &Registry](
             const FAkUGCLogicSpawnEffect& SpawnEffect,
             FAkUGCLogicSpawnPlan& OutPlan,
@@ -130,12 +148,23 @@ bool FAkUGCSceneRuntime::RunGameStartLogic(
                 && *RuntimeLifetime
                 && ActiveSession.IsValid()
                 && *ActiveSession;
-        });
+        },
+        &HandlerError))
+    {
+        return Fail(OutError, MoveTemp(HandlerError));
+    }
 
-    const FAkUGCLogicRuntimeResult Result = LogicRuntime->RunGameStart(Scene.LogicGraph);
-    return Result.bSucceeded
-        ? true
-        : Fail(OutError, FString::Printf(TEXT("%s: %s"), *Result.ErrorPath, *Result.ErrorMessage));
+    LogicExecutionOwnerId = ExecutionOwnerId;
+    const FAkUGCLogicRuntimeResult Result = LogicRuntime->RunGameStartForOwner(
+        ExecutionOwnerId,
+        Scene.LogicGraph);
+    if (!Result.bSucceeded)
+    {
+        LogicRuntime->ResetLogicRuntimeForOwner(ExecutionOwnerId);
+        LogicExecutionOwnerId.Invalidate();
+        return Fail(OutError, FString::Printf(TEXT("%s: %s"), *Result.ErrorPath, *Result.ErrorMessage));
+    }
+    return true;
 }
 
 bool FAkUGCSceneRuntime::BuildLogicSpawnPlan(
@@ -269,6 +298,11 @@ bool FAkUGCSceneRuntime::SynchronizeScene(
     {
         return false;
     }
+    const FAkUGCTowerDefensePathBuildResult PathResult = FAkUGCTowerDefensePathBuilder::Build(Scene);
+    if (!PathResult.bSucceeded)
+    {
+        return Fail(OutError, FString::Printf(TEXT("%s: %s"), *PathResult.ErrorPath, *PathResult.ErrorMessage));
+    }
     if (ActiveSceneId != Scene.SceneId)
     {
         return LoadScene(Scene, Registry, OutError);
@@ -321,17 +355,32 @@ bool FAkUGCSceneRuntime::SynchronizeScene(
         }
     }
 
-    return AttachParents(Scene, OutError);
+    if (!AttachParents(Scene, OutError))
+    {
+        return false;
+    }
+    TowerDefensePath = PathResult.Path;
+    return true;
 }
 
 bool FAkUGCSceneRuntime::ApplyTransaction(
     const FAkUGCCommandTransaction& Transaction,
+    const FAkUGCSceneDocument& ResultScene,
     const FAkUGCPrefabRegistry& Registry,
     FString* OutError)
 {
     if (!ActiveSceneId.IsValid())
     {
         return Fail(OutError, TEXT("Runtime scene is not initialized."));
+    }
+    if (ResultScene.SceneId != ActiveSceneId)
+    {
+        return Fail(OutError, TEXT("Result scene does not match the active runtime scene."));
+    }
+    const FAkUGCTowerDefensePathBuildResult PathResult = FAkUGCTowerDefensePathBuilder::Build(ResultScene);
+    if (!PathResult.bSucceeded)
+    {
+        return Fail(OutError, FString::Printf(TEXT("%s: %s"), *PathResult.ErrorPath, *PathResult.ErrorMessage));
     }
 
     TSet<FGuid> AttachmentUpdates;
@@ -373,7 +422,12 @@ bool FAkUGCSceneRuntime::ApplyTransaction(
         }
     }
 
-    return RefreshAttachments(AttachmentUpdates, OutError);
+    if (!RefreshAttachments(AttachmentUpdates, OutError))
+    {
+        return false;
+    }
+    TowerDefensePath = PathResult.Path;
+    return true;
 }
 
 bool FAkUGCSceneRuntime::ApplyEntity(
@@ -440,20 +494,25 @@ bool FAkUGCSceneRuntime::NotifyActorDeletedExternally(const FGuid& EntityId, con
     return true;
 }
 
-void FAkUGCSceneRuntime::CancelLogicExecution()
+void FAkUGCSceneRuntime::CancelLogicExecution(const FGuid& ExecutionOwnerId)
 {
+    if (!ExecutionOwnerId.IsValid() || LogicExecutionOwnerId != ExecutionOwnerId)
+    {
+        return;
+    }
     if (UWorld* RuntimeWorld = World.Get())
     {
         if (UAkUGCLogicRuntimeSubsystem* LogicRuntime = RuntimeWorld->GetSubsystem<UAkUGCLogicRuntimeSubsystem>())
         {
-            LogicRuntime->ResetLogicRuntime();
+            LogicRuntime->ResetLogicRuntimeForOwner(ExecutionOwnerId);
         }
     }
+    LogicExecutionOwnerId.Invalidate();
 }
 
 void FAkUGCSceneRuntime::Unload()
 {
-    CancelLogicExecution();
+    CancelLogicExecution(LogicExecutionOwnerId);
 
     for (TPair<FGuid, TWeakObjectPtr<AActor>>& Pair : Actors)
     {
@@ -464,6 +523,7 @@ void FAkUGCSceneRuntime::Unload()
     }
     Actors.Reset();
     ExternallyDeletedEntityIds.Reset();
+    TowerDefensePath = FAkUGCTowerDefensePath{};
     ActiveSceneId.Invalidate();
 }
 
@@ -481,6 +541,11 @@ int32 FAkUGCSceneRuntime::Num() const
 FGuid FAkUGCSceneRuntime::GetActiveSceneId() const
 {
     return ActiveSceneId;
+}
+
+const FAkUGCTowerDefensePath& FAkUGCSceneRuntime::GetTowerDefensePath() const
+{
+    return TowerDefensePath;
 }
 
 FName FAkUGCSceneRuntime::GetCurrentPlatformVariant()

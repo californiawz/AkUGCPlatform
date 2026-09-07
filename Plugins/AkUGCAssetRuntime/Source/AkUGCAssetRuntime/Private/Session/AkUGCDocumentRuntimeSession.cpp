@@ -8,9 +8,25 @@ FAkUGCDocumentRuntimeSession::FAkUGCDocumentRuntimeSession(
     const FAkUGCPrefabRegistry& InRegistry,
     FGuid InSceneId,
     int32 MaxHistoryEntries)
+    : FAkUGCDocumentRuntimeSession(
+        InRuntime,
+        InRegistry,
+        InSceneId,
+        EAkUGCRuntimeSessionMode::Edit,
+        MaxHistoryEntries)
+{
+}
+
+FAkUGCDocumentRuntimeSession::FAkUGCDocumentRuntimeSession(
+    FAkUGCSceneRuntime& InRuntime,
+    const FAkUGCPrefabRegistry& InRegistry,
+    FGuid InSceneId,
+    EAkUGCRuntimeSessionMode InMode,
+    int32 MaxHistoryEntries)
     : Runtime(InRuntime)
     , Registry(InRegistry)
     , SceneId(InSceneId)
+    , Mode(InMode)
     , History(MaxHistoryEntries)
 {
 }
@@ -18,7 +34,7 @@ FAkUGCDocumentRuntimeSession::FAkUGCDocumentRuntimeSession(
 FAkUGCDocumentRuntimeSession::~FAkUGCDocumentRuntimeSession()
 {
     *LifetimeToken = false;
-    Runtime.CancelLogicExecution();
+    Runtime.CancelLogicExecution(ExecutionOwnerId);
 }
 
 FAkUGCCommandExecutionResult FAkUGCDocumentRuntimeSession::Initialize(FAkUGCProjectDocument& Document)
@@ -29,12 +45,45 @@ FAkUGCCommandExecutionResult FAkUGCDocumentRuntimeSession::Initialize(FAkUGCProj
         return FAkUGCCommandExecutionResult::Failure(TEXT("session.sceneId"), TEXT("Session scene does not exist in the document."));
     }
 
+    if (Runtime.LogicExecutionOwnerId.IsValid()
+        && Runtime.LogicExecutionOwnerId != ExecutionOwnerId)
+    {
+        return FAkUGCCommandExecutionResult::Failure(
+            TEXT("session.executionOwnerId"),
+            TEXT("Scene runtime is already bound to another Logic session."));
+    }
+
+    const bool bRunGameStart = Mode == EAkUGCRuntimeSessionMode::Preview
+        || Mode == EAkUGCRuntimeSessionMode::PlayAuthority;
+    const bool bRequiresTowerDefensePath = bRunGameStart
+        && Scene->LogicGraph.Nodes.ContainsByPredicate([](const FAkUGCLogicNode& Node)
+        {
+            return Node.Type == EAkUGCLogicNodeType::Spawn;
+        });
+    if (bRequiresTowerDefensePath)
+    {
+        const FAkUGCTowerDefensePathBuildResult PathResult = FAkUGCTowerDefensePathBuilder::Build(*Scene, true);
+        if (!PathResult.bSucceeded)
+        {
+            return FAkUGCCommandExecutionResult::Failure(
+                TEXT("runtime.path.") + PathResult.ErrorPath,
+                PathResult.ErrorMessage);
+        }
+    }
+
     FString Error;
     if (!Runtime.LoadScene(*Scene, Registry, &Error))
     {
         return FAkUGCCommandExecutionResult::Failure(TEXT("runtime.initialize"), MoveTemp(Error));
     }
-    if (!Runtime.RunGameStartLogic(*Scene, Registry, LifetimeToken, &Error))
+    if (bRunGameStart
+        && !Runtime.RunGameStartLogic(
+            *Scene,
+            Registry,
+            LifetimeToken,
+            ExecutionOwnerId,
+            Mode == EAkUGCRuntimeSessionMode::PlayAuthority,
+            &Error))
     {
         Runtime.Unload();
         return FAkUGCCommandExecutionResult::Failure(TEXT("runtime.logic.gameStart"), MoveTemp(Error));
@@ -104,7 +153,7 @@ FAkUGCCommandExecutionResult FAkUGCDocumentRuntimeSession::Project(
     }
 
     FString ProjectionError;
-    if (Runtime.ApplyTransaction(AppliedTransaction, Registry, &ProjectionError))
+    if (Runtime.ApplyTransaction(AppliedTransaction, *AfterScene, Registry, &ProjectionError))
     {
         return FAkUGCCommandExecutionResult::Success();
     }

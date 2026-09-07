@@ -52,6 +52,62 @@ namespace
         }
         return true;
     }
+
+    FAkUGCValue* FindPathOrder(FAkUGCEntityRecord& Entity)
+    {
+        FAkUGCComponentRecord* Component = Entity.Components.FindByPredicate([](const FAkUGCComponentRecord& Candidate)
+        {
+            return Candidate.TypeId == TEXT("tower_defense.path_node");
+        });
+        return Component ? Component->Properties.Find(TEXT("order")) : nullptr;
+    }
+
+    bool AssignNextPathOrder(
+        FAkUGCEntityRecord& Entity,
+        const FAkUGCSceneDocument& Scene,
+        FString& OutError)
+    {
+        if (Entity.PrefabId != TEXT("official.gameplay.path_node"))
+        {
+            return true;
+        }
+
+        FAkUGCValue* NewOrder = FindPathOrder(Entity);
+        if (!NewOrder || NewOrder->Type != EAkUGCValueType::Integer)
+        {
+            OutError = TEXT("Path node prefab does not provide an Integer order property.");
+            return false;
+        }
+
+        TSet<int64> UsedOrders;
+        for (const FAkUGCEntityRecord& Existing : Scene.Entities)
+        {
+            if (Existing.PrefabId != TEXT("official.gameplay.path_node"))
+            {
+                continue;
+            }
+            const FAkUGCComponentRecord* Component = Existing.Components.FindByPredicate([](const FAkUGCComponentRecord& Candidate)
+            {
+                return Candidate.TypeId == TEXT("tower_defense.path_node");
+            });
+            const FAkUGCValue* Order = Component ? Component->Properties.Find(TEXT("order")) : nullptr;
+            if (Order && Order->Type == EAkUGCValueType::Integer)
+            {
+                UsedOrders.Add(Order->IntegerValue);
+            }
+        }
+
+        for (int64 CandidateOrder = 0; CandidateOrder <= 10000; ++CandidateOrder)
+        {
+            if (!UsedOrders.Contains(CandidateOrder))
+            {
+                NewOrder->IntegerValue = CandidateOrder;
+                return true;
+            }
+        }
+        OutError = TEXT("No free path node order remains in the supported range 0 to 10000.");
+        return false;
+    }
 }
 
 FAkUGCRuntimeCommandService::FAkUGCRuntimeCommandService(
@@ -80,6 +136,13 @@ FAkUGCCommandExecutionResult FAkUGCRuntimeCommandService::PlacePrefab(
     {
         OutEntityId.Invalidate();
         return Failure(TEXT("commandService.prefabId"), MoveTemp(Error));
+    }
+    const FAkUGCSceneDocument* Scene = FindScene();
+    if (!Scene || !AssignNextPathOrder(Entity, *Scene, Error))
+    {
+        OutEntityId.Invalidate();
+        return Failure(TEXT("commandService.pathOrder"),
+            Scene ? MoveTemp(Error) : TEXT("Active scene does not exist."));
     }
 
     FAkUGCCommand Command;
@@ -217,10 +280,38 @@ FAkUGCCommandExecutionResult FAkUGCRuntimeCommandService::DuplicateEntity(
     Command.Transform = Source->Transform;
     Command.Transform.AddToTranslation(WorldOffset);
 
+    TOptional<FAkUGCValue> PathOrder;
+    if (Source->PrefabId == TEXT("official.gameplay.path_node"))
+    {
+        const FAkUGCSceneDocument* Scene = FindScene();
+        FAkUGCEntityRecord Duplicate = *Source;
+        Duplicate.EntityId = OutEntityId;
+        Duplicate.Transform = Command.Transform;
+        FString Error;
+        if (!Scene || !AssignNextPathOrder(Duplicate, *Scene, Error))
+        {
+            OutEntityId.Invalidate();
+            return Failure(TEXT("commandService.pathOrder"),
+                Scene ? MoveTemp(Error) : TEXT("Active scene does not exist."));
+        }
+        PathOrder = *FindPathOrder(Duplicate);
+    }
+
     FAkUGCCommandTransaction Transaction;
     Transaction.TransactionId = FGuid::NewGuid();
     Transaction.Label = TEXT("Duplicate entity");
     Transaction.Commands.Add(MoveTemp(Command));
+    if (PathOrder.IsSet())
+    {
+        FAkUGCCommand& SetOrder = Transaction.Commands.AddDefaulted_GetRef();
+        SetOrder.CommandId = FGuid::NewGuid();
+        SetOrder.Type = EAkUGCCommandType::SetProperty;
+        SetOrder.SceneId = SceneId;
+        SetOrder.EntityId = OutEntityId;
+        SetOrder.ComponentTypeId = TEXT("tower_defense.path_node");
+        SetOrder.PropertyId = TEXT("order");
+        SetOrder.PropertyValue = PathOrder.GetValue();
+    }
     FAkUGCCommandExecutionResult Result = Execute(MoveTemp(Transaction));
     if (!Result.bSucceeded)
     {

@@ -107,11 +107,16 @@ public:
     UFUNCTION(BlueprintCallable, Category = "UGC|Logic")
     FAkUGCLogicRuntimeResult RunGameStart(const FAkUGCLogicGraph& LogicGraph);
 
-    UFUNCTION(BlueprintCallable, Category = "UGC|Logic")
+    FAkUGCLogicRuntimeResult RunGameStartForOwner(
+        const FGuid& ExecutionOwnerId,
+        const FAkUGCLogicGraph& LogicGraph);
+
     FAkUGCLogicRuntimeResult AdvanceLogicTime(double DeltaSeconds);
 
     UFUNCTION(BlueprintCallable, Category = "UGC|Logic")
     void ResetLogicRuntime();
+
+    void ResetLogicRuntimeForOwner(const FGuid& ExecutionOwnerId);
 
     UFUNCTION(BlueprintPure, Category = "UGC|Logic")
     TArray<FAkUGCLogicRuntimeMessage> GetEmittedMessages() const;
@@ -119,10 +124,12 @@ public:
     UFUNCTION(BlueprintPure, Category = "UGC|Logic")
     TArray<FAkUGCLogicRuntimeSpawn> GetSpawnedEntities() const;
 
-    void SetSpawnHandlers(
+    bool SetSpawnHandlers(
+        const FGuid& ExecutionOwnerId,
         TFunction<bool(const FAkUGCLogicSpawnEffect&, FAkUGCLogicSpawnPlan&, FString&)> InSpawnPlanHandler,
         TFunction<bool(const FAkUGCLogicSpawnEffect&, FGuid&, FString&)> InSpawnHandler,
-        TFunction<bool()> InSpawnHandlerIsValid = {});
+        TFunction<bool()> InSpawnHandlerIsValid,
+        FString* OutError = nullptr);
 
     virtual void Tick(float DeltaTime) override;
     virtual TStatId GetStatId() const override;
@@ -147,6 +154,8 @@ private:
     TFunction<bool()> SpawnHandlerIsValid;
     int32 TotalExecutedInstructionCount = 0;
     int32 ReservedSpawnCount = 0;
+    FGuid ActiveExecutionOwnerId;
+    FGuid ManualExecutionOwnerId = FGuid::NewGuid();
     bool bIsRunning = false;
     bool bResetRequested = false;
 };

@@ -4,6 +4,7 @@
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "Subsystem/AkUGCAppEditorSubsystem.h"
+#include "Subsystem/AkUGCLogicRuntimeSubsystem.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -47,6 +48,31 @@ bool FAkUGCAppEditorSubsystemWorkflowTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("App creates tower defense project"), Subsystem->NewTowerDefenseProject().bSucceeded);
     TestTrue(TEXT("App project is open"), Subsystem->HasOpenProject());
     TestEqual(TEXT("App exposes official prefabs"), Subsystem->GetAvailablePrefabIds().Num(), 11);
+
+    FAkUGCProjectDocument LogicDocument = Subsystem->GetDocument();
+    FAkUGCLogicNode GameStart;
+    GameStart.NodeId = FGuid::NewGuid();
+    GameStart.Type = EAkUGCLogicNodeType::GameStart;
+    FAkUGCLogicNode Message;
+    Message.NodeId = FGuid::NewGuid();
+    Message.Type = EAkUGCLogicNodeType::Message;
+    Message.Message = TEXT("Must not run while editing");
+    FAkUGCLogicConnection LogicConnection;
+    LogicConnection.SourceNodeId = GameStart.NodeId;
+    LogicConnection.TargetNodeId = Message.NodeId;
+    LogicDocument.Scenes[0].LogicGraph.Nodes = {GameStart, Message};
+    LogicDocument.Scenes[0].LogicGraph.Connections = {LogicConnection};
+    FString EditModeJson;
+    FString EditModeError;
+    TestTrue(TEXT("App edit-mode logic fixture serializes"),
+        FAkUGCDocumentJson::Serialize(LogicDocument, EditModeJson, &EditModeError));
+    UAkUGCLogicRuntimeSubsystem* LogicRuntime = World->GetSubsystem<UAkUGCLogicRuntimeSubsystem>();
+    TestNotNull(TEXT("Logic Runtime subsystem exists beside App Editor"), LogicRuntime);
+    TestTrue(TEXT("App loads project containing Game Start logic"), Subsystem->LoadProjectJson(EditModeJson).bSucceeded);
+    if (LogicRuntime)
+    {
+        TestTrue(TEXT("App Edit session does not execute Game Start"), LogicRuntime->GetEmittedMessages().IsEmpty());
+    }
 
     FGuid EnemyId;
     const FAkUGCAppEditResult PlaceResult = Subsystem->PlacePrefab(

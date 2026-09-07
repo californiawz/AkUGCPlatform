@@ -546,7 +546,8 @@ bool UAkUGCEditorSubsystem::OpenDocument(FAkUGCProjectDocument&& NewDocument, FS
     TUniquePtr<FAkUGCDocumentRuntimeSession> NewSession = MakeUnique<FAkUGCDocumentRuntimeSession>(
         *NewRuntime,
         *PrefabRegistry,
-        NewSceneId);
+        NewSceneId,
+        EAkUGCRuntimeSessionMode::Edit);
 
     TGuardValue<bool> ApplyingGuard(bApplyingUGCTransaction, true);
     const FAkUGCCommandExecutionResult Result = NewSession->Initialize(NewDocument);

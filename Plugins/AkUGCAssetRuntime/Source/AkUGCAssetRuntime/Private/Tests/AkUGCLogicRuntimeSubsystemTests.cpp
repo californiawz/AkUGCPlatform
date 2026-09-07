@@ -91,10 +91,67 @@ bool FAkUGCLogicRuntimeSubsystemTest::RunTest(const FString& Parameters)
     {
         FAkUGCSceneRuntime SceneRuntime(World);
         FAkUGCDocumentRuntimeSession Session(SceneRuntime, Registry, Scene.SceneId);
-        TestTrue(TEXT("Scene session initialization runs Game Start"), Session.Initialize(Document).bSucceeded);
-        TestEqual(TEXT("Automatic Game Start emits the scene message"), Subsystem->GetEmittedMessages().Num(), 1);
+        TestTrue(TEXT("Default Edit session initializes"), Session.Initialize(Document).bSucceeded);
+        TestTrue(TEXT("Edit session does not execute Game Start"), Subsystem->GetEmittedMessages().IsEmpty());
+    }
+    {
+        FAkUGCSceneRuntime SceneRuntime(World);
+        FAkUGCDocumentRuntimeSession Session(
+            SceneRuntime,
+            Registry,
+            Scene.SceneId,
+            EAkUGCRuntimeSessionMode::PlayClient);
+        TestTrue(TEXT("Play Client session initializes"), Session.Initialize(Document).bSucceeded);
+        TestTrue(TEXT("Play Client session does not execute Game Start"), Subsystem->GetEmittedMessages().IsEmpty());
+    }
+    {
+        FAkUGCSceneRuntime SceneRuntime(World);
+        FAkUGCDocumentRuntimeSession Session(
+            SceneRuntime,
+            Registry,
+            Scene.SceneId,
+            EAkUGCRuntimeSessionMode::Preview);
+        TestTrue(TEXT("Preview session runs Game Start"), Session.Initialize(Document).bSucceeded);
+        TestEqual(TEXT("Preview emits the scene message"), Subsystem->GetEmittedMessages().Num(), 1);
+    }
+    {
+        FAkUGCSceneRuntime SceneRuntime(World);
+        FAkUGCDocumentRuntimeSession Session(
+            SceneRuntime,
+            Registry,
+            Scene.SceneId,
+            EAkUGCRuntimeSessionMode::PlayAuthority);
+        TestTrue(TEXT("Play Authority session runs Game Start"), Session.Initialize(Document).bSucceeded);
+        TestEqual(TEXT("Play Authority emits the scene message"), Subsystem->GetEmittedMessages().Num(), 1);
     }
     TestTrue(TEXT("Scene unload clears Logic Runtime messages"), Subsystem->GetEmittedMessages().IsEmpty());
+
+    UWorld* EditorWorld = NewObject<UWorld>(GetTransientPackage(), NAME_None, RF_Transient);
+    EditorWorld->WorldType = EWorldType::Editor;
+    FWorldContext& EditorWorldContext = GEngine->CreateNewWorldContext(EditorWorld->WorldType);
+    EditorWorldContext.SetCurrentWorld(EditorWorld);
+    EditorWorld->InitializeNewWorld(UWorld::InitializationValues()
+        .InitializeScenes(false)
+        .AllowAudioPlayback(false)
+        .RequiresHitProxies(false)
+        .CreatePhysicsScene(false)
+        .CreateNavigation(false)
+        .CreateAISystem(false)
+        .ShouldSimulatePhysics(false)
+        .EnableTraceCollision(false)
+        .SetTransactional(false));
+    {
+        FAkUGCSceneRuntime PreviewRuntime(EditorWorld);
+        FAkUGCDocumentRuntimeSession PreviewSession(
+            PreviewRuntime,
+            Registry,
+            Scene.SceneId,
+            EAkUGCRuntimeSessionMode::Preview);
+        TestFalse(TEXT("Preview session explicitly rejects an Editor world"),
+            PreviewSession.Initialize(Document).bSucceeded);
+    }
+    GEngine->DestroyWorldContext(EditorWorld);
+    EditorWorld->DestroyWorld(false);
 
     Graph.Nodes[0].Message.Reset();
     TestFalse(TEXT("World subsystem rejects invalid graph"), Subsystem->RunGameStart(Graph).bSucceeded);
@@ -179,6 +236,25 @@ bool FAkUGCLogicRuntimeTimerSpawnTest::RunTest(const FString& Parameters)
     SpawnConfig->Properties.FindChecked(TEXT("spawnInterval")).NumberValue = 0.25;
     Scene.Entities.Add(SpawnPoint);
 
+    FAkUGCEntityRecord FirstPathNode;
+    FAkUGCEntityRecord SecondPathNode;
+    TestTrue(TEXT("First gameplay path node is created"), Registry.CreateEntityRecord(
+        TEXT("official.gameplay.path_node"),
+        FGuid::NewGuid(),
+        FTransform(FVector(500.0, 50.0, 0.0)),
+        FirstPathNode,
+        &Error));
+    TestTrue(TEXT("Second gameplay path node is created"), Registry.CreateEntityRecord(
+        TEXT("official.gameplay.path_node"),
+        FGuid::NewGuid(),
+        FTransform(FVector(1000.0, 50.0, 0.0)),
+        SecondPathNode,
+        &Error));
+    FirstPathNode.Components[0].Properties.FindChecked(TEXT("order")).IntegerValue = 0;
+    SecondPathNode.Components[0].Properties.FindChecked(TEXT("order")).IntegerValue = 1;
+    Scene.Entities.Add(FirstPathNode);
+    Scene.Entities.Add(SecondPathNode);
+
     FAkUGCLogicNode Start;
     Start.NodeId = FGuid::NewGuid();
     Start.Type = EAkUGCLogicNodeType::GameStart;
@@ -202,15 +278,50 @@ bool FAkUGCLogicRuntimeTimerSpawnTest::RunTest(const FString& Parameters)
     Scene.LogicGraph.Connections = {TimerToSpawn, StartToTimer};
 
     {
+        FAkUGCProjectDocument MissingPathDocument = Document;
+        MissingPathDocument.Scenes[0].Entities.RemoveAll([](const FAkUGCEntityRecord& Entity)
+        {
+            return Entity.PrefabId == TEXT("official.gameplay.path_node");
+        });
+        FAkUGCSceneRuntime MissingPathRuntime(World);
+        FAkUGCDocumentRuntimeSession MissingPathSession(
+            MissingPathRuntime,
+            Registry,
+            Scene.SceneId,
+            EAkUGCRuntimeSessionMode::PlayAuthority);
+        TestFalse(TEXT("Play Authority rejects Spawn gameplay without a usable path"),
+            MissingPathSession.Initialize(MissingPathDocument).bSucceeded);
+    }
+
+    {
         FAkUGCSceneRuntime Runtime(World);
-        FAkUGCDocumentRuntimeSession Session(Runtime, Registry, Scene.SceneId);
+        FAkUGCDocumentRuntimeSession Session(
+            Runtime,
+            Registry,
+            Scene.SceneId,
+            EAkUGCRuntimeSessionMode::PlayAuthority);
         TestTrue(TEXT("Timer Spawn scene initializes"), Session.Initialize(Document).bSucceeded);
-        TestEqual(TEXT("Only authored Spawn Point exists initially"), Runtime.Num(), 1);
-        TestTrue(TEXT("Half delay advances successfully"), Subsystem->AdvanceLogicTime(0.5).bSucceeded);
-        TestEqual(TEXT("Enemy is not spawned before Timer expires"), Runtime.Num(), 1);
+        TestEqual(TEXT("Three authored gameplay actors exist initially"), Runtime.Num(), 3);
+        {
+            FAkUGCSceneRuntime EditRuntime(World);
+            FAkUGCDocumentRuntimeSession EditSession(EditRuntime, Registry, Scene.SceneId);
+            TestTrue(TEXT("Concurrent Edit session initializes"), EditSession.Initialize(Document).bSucceeded);
+        }
+        {
+            FAkUGCSceneRuntime ConflictingRuntime(World);
+            FAkUGCDocumentRuntimeSession ConflictingSession(
+                ConflictingRuntime,
+                Registry,
+                Scene.SceneId,
+                EAkUGCRuntimeSessionMode::PlayAuthority);
+            TestFalse(TEXT("Second authority session cannot steal Logic ownership"),
+                ConflictingSession.Initialize(Document).bSucceeded);
+        }
+        TestTrue(TEXT("Other session teardown does not cancel authority Timer"), Subsystem->AdvanceLogicTime(0.5).bSucceeded);
+        TestEqual(TEXT("Enemy is not spawned before Timer expires"), Runtime.Num(), 3);
         TestTrue(TEXT("Remaining delay advances successfully"), Subsystem->AdvanceLogicTime(0.5).bSucceeded);
-        TestEqual(TEXT("Timer spawns one Basic Enemy"), Runtime.Num(), 2);
-        TestEqual(TEXT("Logic Spawn does not modify authored Document"), Document.Scenes[0].Entities.Num(), 1);
+        TestEqual(TEXT("Timer spawns one Basic Enemy"), Runtime.Num(), 4);
+        TestEqual(TEXT("Logic Spawn does not modify authored Document"), Document.Scenes[0].Entities.Num(), 3);
         TestEqual(TEXT("Spawn result is observable"), Subsystem->GetSpawnedEntities().Num(), 1);
         if (Subsystem->GetSpawnedEntities().Num() == 1)
         {
@@ -229,31 +340,39 @@ bool FAkUGCLogicRuntimeTimerSpawnTest::RunTest(const FString& Parameters)
             }
         }
         TestTrue(TEXT("First batch interval advances"), Subsystem->AdvanceLogicTime(0.25).bSucceeded);
-        TestEqual(TEXT("Second configured enemy spawns"), Runtime.Num(), 3);
+        TestEqual(TEXT("Second configured enemy spawns"), Runtime.Num(), 5);
         TestTrue(TEXT("Second batch interval advances"), Subsystem->AdvanceLogicTime(0.25).bSucceeded);
-        TestEqual(TEXT("Third configured enemy spawns"), Runtime.Num(), 4);
+        TestEqual(TEXT("Third configured enemy spawns"), Runtime.Num(), 6);
         TestEqual(TEXT("All configured spawns are observable"), Subsystem->GetSpawnedEntities().Num(), 3);
         TestTrue(TEXT("Extra time does not over-spawn"), Subsystem->AdvanceLogicTime(1.0).bSucceeded);
-        TestEqual(TEXT("Batch stops at configured enemyCount"), Runtime.Num(), 4);
-        TestEqual(TEXT("Batch still leaves authored Document unchanged"), Document.Scenes[0].Entities.Num(), 1);
+        TestEqual(TEXT("Batch stops at configured enemyCount"), Runtime.Num(), 6);
+        TestEqual(TEXT("Batch still leaves authored Document unchanged"), Document.Scenes[0].Entities.Num(), 3);
     }
 
     {
         FAkUGCSceneRuntime Runtime(World);
         {
-            FAkUGCDocumentRuntimeSession Session(Runtime, Registry, Scene.SceneId);
+            FAkUGCDocumentRuntimeSession Session(
+                Runtime,
+                Registry,
+                Scene.SceneId,
+                EAkUGCRuntimeSessionMode::PlayAuthority);
             TestTrue(TEXT("Cancellation fixture initializes"), Session.Initialize(Document).bSucceeded);
-            TestEqual(TEXT("Cancellation fixture waits at Timer"), Runtime.Num(), 1);
+            TestEqual(TEXT("Cancellation fixture waits at Timer"), Runtime.Num(), 3);
         }
         TestTrue(TEXT("Advancing after Session destruction is harmless"), Subsystem->AdvanceLogicTime(1.0).bSucceeded);
-        TestEqual(TEXT("Session destruction cancels Timer and Spawn Batch"), Runtime.Num(), 1);
+        TestEqual(TEXT("Session destruction cancels Timer and Spawn Batch"), Runtime.Num(), 3);
     }
     {
         FAkUGCSceneRuntime Runtime(World);
-        FAkUGCDocumentRuntimeSession Session(Runtime, Registry, Scene.SceneId);
+        FAkUGCDocumentRuntimeSession Session(
+            Runtime,
+            Registry,
+            Scene.SceneId,
+            EAkUGCRuntimeSessionMode::PlayAuthority);
         TestTrue(TEXT("Large delta fixture initializes"), Session.Initialize(Document).bSucceeded);
         TestTrue(TEXT("Large delta advances Timer and all batch intervals"), Subsystem->AdvanceLogicTime(1.5).bSucceeded);
-        TestEqual(TEXT("Large delta deterministically catches up all configured enemies"), Runtime.Num(), 4);
+        TestEqual(TEXT("Large delta deterministically catches up all configured enemies"), Runtime.Num(), 6);
         TestEqual(TEXT("Large delta records all configured enemies"), Subsystem->GetSpawnedEntities().Num(), 3);
     }
 

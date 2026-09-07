@@ -658,7 +658,8 @@ bool UAkUGCAppEditorSubsystem::OpenDocument(
     TUniquePtr<FAkUGCDocumentRuntimeSession> NewSession = MakeUnique<FAkUGCDocumentRuntimeSession>(
         *NewRuntime,
         *PrefabRegistry,
-        NewSceneId);
+        NewSceneId,
+        EAkUGCRuntimeSessionMode::Edit);
     const FAkUGCCommandExecutionResult Result = NewSession->Initialize(NewDocument);
     if (!Result.bSucceeded)
     {
@@ -669,7 +670,8 @@ bool UAkUGCAppEditorSubsystem::OpenDocument(
             Session = MakeUnique<FAkUGCDocumentRuntimeSession>(
                 *Runtime,
                 *PrefabRegistry,
-                PreviousSceneId);
+                PreviousSceneId,
+                EAkUGCRuntimeSessionMode::Edit);
             const FAkUGCCommandExecutionResult RestoreResult = Session->Initialize(Document);
             if (RestoreResult.bSucceeded)
             {

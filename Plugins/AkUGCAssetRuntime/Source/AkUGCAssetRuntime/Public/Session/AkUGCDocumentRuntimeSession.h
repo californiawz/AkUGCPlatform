@@ -5,6 +5,14 @@
 
 class FAkUGCPrefabRegistry;
 
+enum class EAkUGCRuntimeSessionMode : uint8
+{
+    Edit,
+    Preview,
+    PlayAuthority,
+    PlayClient
+};
+
 class AKUGCASSETRUNTIME_API FAkUGCDocumentRuntimeSession
 {
 public:
@@ -13,7 +21,19 @@ public:
         const FAkUGCPrefabRegistry& InRegistry,
         FGuid InSceneId,
         int32 MaxHistoryEntries = 100);
+
+    FAkUGCDocumentRuntimeSession(
+        FAkUGCSceneRuntime& InRuntime,
+        const FAkUGCPrefabRegistry& InRegistry,
+        FGuid InSceneId,
+        EAkUGCRuntimeSessionMode InMode,
+        int32 MaxHistoryEntries = 100);
     ~FAkUGCDocumentRuntimeSession();
+
+    FAkUGCDocumentRuntimeSession(const FAkUGCDocumentRuntimeSession&) = delete;
+    FAkUGCDocumentRuntimeSession& operator=(const FAkUGCDocumentRuntimeSession&) = delete;
+    FAkUGCDocumentRuntimeSession(FAkUGCDocumentRuntimeSession&&) = delete;
+    FAkUGCDocumentRuntimeSession& operator=(FAkUGCDocumentRuntimeSession&&) = delete;
 
     FAkUGCCommandExecutionResult Initialize(FAkUGCProjectDocument& Document);
 
@@ -39,6 +59,8 @@ private:
     FAkUGCSceneRuntime& Runtime;
     const FAkUGCPrefabRegistry& Registry;
     FGuid SceneId;
+    FGuid ExecutionOwnerId = FGuid::NewGuid();
+    EAkUGCRuntimeSessionMode Mode = EAkUGCRuntimeSessionMode::Edit;
     TSharedRef<bool, ESPMode::ThreadSafe> LifetimeToken = MakeShared<bool, ESPMode::ThreadSafe>(true);
     FAkUGCCommandHistory History;
 };
