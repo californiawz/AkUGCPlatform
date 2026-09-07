@@ -58,9 +58,19 @@ bool FAkUGCLogicRuntimeSubsystemTest::RunTest(const FString& Parameters)
     FAkUGCLogicConnection Connection;
     Connection.SourceNodeId = Start.NodeId;
     Connection.TargetNodeId = Message.NodeId;
+    FAkUGCLogicNode WaveStart;
+    WaveStart.NodeId = FGuid::NewGuid();
+    WaveStart.Type = EAkUGCLogicNodeType::WaveStart;
+    FAkUGCLogicNode WaveMessage;
+    WaveMessage.NodeId = FGuid::NewGuid();
+    WaveMessage.Type = EAkUGCLogicNodeType::Message;
+    WaveMessage.Message = TEXT("Wave runtime ready");
+    FAkUGCLogicConnection WaveConnection;
+    WaveConnection.SourceNodeId = WaveStart.NodeId;
+    WaveConnection.TargetNodeId = WaveMessage.NodeId;
     FAkUGCLogicGraph Graph;
-    Graph.Nodes = {Message, Start};
-    Graph.Connections.Add(Connection);
+    Graph.Nodes = {WaveMessage, Message, WaveStart, Start};
+    Graph.Connections = {WaveConnection, Connection};
 
     const FAkUGCLogicRuntimeResult RunResult = Subsystem->RunGameStart(Graph);
     TestTrue(TEXT("World subsystem runs Game Start graph"), RunResult.bSucceeded);
@@ -75,6 +85,16 @@ bool FAkUGCLogicRuntimeSubsystemTest::RunTest(const FString& Parameters)
             Subsystem->GetEmittedMessages()[0].SourceNodeId,
             Message.NodeId);
     }
+    const FAkUGCLogicRuntimeResult WaveRunResult = Subsystem->RunWaveStart(1);
+    TestTrue(TEXT("World subsystem runs Wave Start graph"), WaveRunResult.bSucceeded);
+    TestEqual(TEXT("Wave Start appends one isolated message"), Subsystem->GetEmittedMessages().Num(), 2);
+    if (Subsystem->GetEmittedMessages().Num() == 2)
+    {
+        TestEqual(TEXT("Wave Start runtime message is observable"),
+            Subsystem->GetEmittedMessages()[1].Message,
+            FString(TEXT("Wave runtime ready")));
+    }
+    TestFalse(TEXT("World subsystem rejects invalid Wave index"), Subsystem->RunWaveStart(3).bSucceeded);
 
     Subsystem->ResetLogicRuntime();
     TestTrue(TEXT("Reset clears emitted messages"), Subsystem->GetEmittedMessages().IsEmpty());

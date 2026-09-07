@@ -8,6 +8,7 @@ UENUM(BlueprintType)
 enum class EAkUGCLogicOpcode : uint8
 {
     GameStart,
+    WaveStart,
     Message,
     Timer,
     Spawn
@@ -50,6 +51,9 @@ struct AKUGCCORE_API FAkUGCLogicProgram
 
     UPROPERTY(BlueprintReadOnly, Category = "UGC|Logic")
     int32 GameStartEntryIndex = INDEX_NONE;
+
+    UPROPERTY(BlueprintReadOnly, Category = "UGC|Logic")
+    int32 WaveStartEntryIndex = INDEX_NONE;
 };
 
 struct AKUGCCORE_API FAkUGCLogicCompileResult

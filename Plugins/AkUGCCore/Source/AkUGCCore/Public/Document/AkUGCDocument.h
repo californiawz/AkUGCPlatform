@@ -112,6 +112,7 @@ UENUM(BlueprintType)
 enum class EAkUGCLogicNodeType : uint8
 {
     GameStart,
+    WaveStart,
     Message,
     Timer,
     Spawn

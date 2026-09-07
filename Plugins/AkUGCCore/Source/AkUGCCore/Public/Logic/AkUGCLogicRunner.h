@@ -40,6 +40,10 @@ public:
     static FAkUGCLogicRunResult RunGameStart(
         const FAkUGCLogicProgram& Program,
         int32 MaxExecutedInstructions = AkUGCLogicLimits::MaxExecutedInstructions);
+    static FAkUGCLogicRunResult RunWaveStart(
+        const FAkUGCLogicProgram& Program,
+        int32 WaveIndex,
+        int32 MaxExecutedInstructions = AkUGCLogicLimits::MaxExecutedInstructions);
 
     static FAkUGCLogicRunResult RunFromInstructions(
         const FAkUGCLogicProgram& Program,

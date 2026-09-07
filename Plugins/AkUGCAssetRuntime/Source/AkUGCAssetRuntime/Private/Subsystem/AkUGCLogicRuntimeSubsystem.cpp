@@ -74,6 +74,55 @@ FAkUGCLogicRuntimeResult UAkUGCLogicRuntimeSubsystem::RunGameStartForOwner(
     return MakeCurrentResult(true);
 }
 
+FAkUGCLogicRuntimeResult UAkUGCLogicRuntimeSubsystem::RunWaveStart(int32 WaveIndex)
+{
+    return RunWaveStartForOwner(ManualExecutionOwnerId, WaveIndex);
+}
+
+FAkUGCLogicRuntimeResult UAkUGCLogicRuntimeSubsystem::RunWaveStartForOwner(
+    const FGuid& ExecutionOwnerId,
+    int32 WaveIndex)
+{
+    if (!ExecutionOwnerId.IsValid() || ActiveExecutionOwnerId != ExecutionOwnerId)
+    {
+        return MakeCurrentResult(
+            false,
+            TEXT("logicRuntime.executionOwnerId"),
+            TEXT("Wave Start requires the active Logic execution owner."));
+    }
+    if (bIsRunning)
+    {
+        return MakeCurrentResult(
+            false,
+            TEXT("logicRuntime.reentrantExecution"),
+            TEXT("Logic runtime does not allow reentrant execution."));
+    }
+
+    TGuardValue<bool> RunningGuard(bIsRunning, true);
+    const int32 RemainingBudget = AkUGCLogicLimits::MaxExecutedInstructions - TotalExecutedInstructionCount;
+    const FAkUGCLogicRunResult RunResult = FAkUGCLogicRunner::RunWaveStart(
+        ActiveProgram,
+        WaveIndex,
+        RemainingBudget);
+    FString ErrorPath;
+    FString ErrorMessage;
+    if (!ApplyRunResult(RunResult, ErrorPath, ErrorMessage))
+    {
+        const FAkUGCLogicRuntimeResult FailureResult = MakeCurrentResult(
+            false,
+            MoveTemp(ErrorPath),
+            MoveTemp(ErrorMessage));
+        if (bResetRequested)
+        {
+            ClearExecutionState(true);
+            bResetRequested = false;
+        }
+        return FailureResult;
+    }
+    OnWaveStart.Broadcast(WaveIndex);
+    return MakeCurrentResult(true);
+}
+
 FAkUGCLogicRuntimeResult UAkUGCLogicRuntimeSubsystem::AdvanceLogicTime(double DeltaSeconds)
 {
     if (!FMath::IsFinite(DeltaSeconds) || DeltaSeconds < 0.0)

@@ -20,6 +20,7 @@ namespace
         }
 
         int32 GameStartCount = 0;
+        int32 WaveStartCount = 0;
         int32 TotalSuccessorCount = 0;
         TSet<FGuid> SourceNodeIds;
         for (int32 InstructionIndex = 0; InstructionIndex < Program.Instructions.Num(); ++InstructionIndex)
@@ -36,6 +37,9 @@ namespace
             {
             case EAkUGCLogicOpcode::GameStart:
                 ++GameStartCount;
+                break;
+            case EAkUGCLogicOpcode::WaveStart:
+                ++WaveStartCount;
                 break;
             case EAkUGCLogicOpcode::Message:
                 if (Instruction.Operand.TrimStartAndEnd().IsEmpty()
@@ -106,19 +110,30 @@ namespace
                 OutMessage = TEXT("Game Start instruction requires an entry index.");
                 return false;
             }
-            return true;
         }
-        if (!Program.Instructions.IsValidIndex(Program.GameStartEntryIndex))
-        {
-            OutPath = TEXT("logicProgram.gameStartEntryIndex");
-            OutMessage = TEXT("Game Start entry index is outside the instruction range.");
-            return false;
-        }
-        if (GameStartCount != 1
+        else if (!Program.Instructions.IsValidIndex(Program.GameStartEntryIndex)
+            || GameStartCount != 1
             || Program.Instructions[Program.GameStartEntryIndex].Opcode != EAkUGCLogicOpcode::GameStart)
         {
             OutPath = TEXT("logicProgram.gameStartEntryIndex");
             OutMessage = TEXT("Game Start entry must reference the only Game Start instruction.");
+            return false;
+        }
+        if (Program.WaveStartEntryIndex == INDEX_NONE)
+        {
+            if (WaveStartCount != 0)
+            {
+                OutPath = TEXT("logicProgram.waveStartEntryIndex");
+                OutMessage = TEXT("Wave Start instruction requires an entry index.");
+                return false;
+            }
+        }
+        else if (!Program.Instructions.IsValidIndex(Program.WaveStartEntryIndex)
+            || WaveStartCount != 1
+            || Program.Instructions[Program.WaveStartEntryIndex].Opcode != EAkUGCLogicOpcode::WaveStart)
+        {
+            OutPath = TEXT("logicProgram.waveStartEntryIndex");
+            OutMessage = TEXT("Wave Start entry must reference the only Wave Start instruction.");
             return false;
         }
         return true;
@@ -142,6 +157,30 @@ FAkUGCLogicRunResult FAkUGCLogicRunner::RunGameStart(
         return Result;
     }
     return RunFromInstructions(Program, {Program.GameStartEntryIndex}, MaxExecutedInstructions);
+}
+
+FAkUGCLogicRunResult FAkUGCLogicRunner::RunWaveStart(
+    const FAkUGCLogicProgram& Program,
+    int32 WaveIndex,
+    int32 MaxExecutedInstructions)
+{
+    if (WaveIndex < 0 || WaveIndex >= AkUGCTowerDefenseRulesetLimits::RequiredWaveCount)
+    {
+        return Failure(TEXT("logicProgram.waveIndex"), TEXT("Wave index is outside the supported range."));
+    }
+    FString ErrorPath;
+    FString ErrorMessage;
+    if (!ValidateProgram(Program, ErrorPath, ErrorMessage))
+    {
+        return Failure(MoveTemp(ErrorPath), MoveTemp(ErrorMessage));
+    }
+    if (Program.WaveStartEntryIndex == INDEX_NONE)
+    {
+        FAkUGCLogicRunResult Result;
+        Result.bSucceeded = true;
+        return Result;
+    }
+    return RunFromInstructions(Program, {Program.WaveStartEntryIndex}, MaxExecutedInstructions);
 }
 
 FAkUGCLogicRunResult FAkUGCLogicRunner::RunFromInstructions(
@@ -197,6 +236,7 @@ FAkUGCLogicRunResult FAkUGCLogicRunner::RunFromInstructions(
             Result.SpawnEffects.Add({Instruction.SourceNodeId, Instruction.SpawnPrefabId, Instruction.SpawnAtEntityId});
             break;
         case EAkUGCLogicOpcode::GameStart:
+        case EAkUGCLogicOpcode::WaveStart:
             break;
         default:
             return Failure(TEXT("logicProgram.opcode"), TEXT("Logic opcode is not supported."));

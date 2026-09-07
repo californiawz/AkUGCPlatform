@@ -87,7 +87,9 @@ FAkUGCValidationResult FAkUGCDocumentValidator::ValidateLogicGraph(
     TSet<FGuid> NodeIds;
     TMap<FGuid, EAkUGCLogicNodeType> NodeTypes;
     FGuid GameStartId;
+    FGuid WaveStartId;
     int32 GameStartCount = 0;
+    int32 WaveStartCount = 0;
 
     for (int32 NodeIndex = 0; NodeIndex < LogicGraph.Nodes.Num(); ++NodeIndex)
     {
@@ -119,6 +121,18 @@ FAkUGCValidationResult FAkUGCDocumentValidator::ValidateLogicGraph(
             if (Node.DelaySeconds != 0.0 || !Node.SpawnPrefabId.IsNone() || Node.SpawnAtEntityId.IsValid())
             {
                 Result.AddError(NodePath, TEXT("Game Start node contains parameters for another node type."));
+            }
+            break;
+
+        case EAkUGCLogicNodeType::WaveStart:
+            ++WaveStartCount;
+            WaveStartId = Node.NodeId;
+            if (!Node.Message.IsEmpty()
+                || Node.DelaySeconds != 0.0
+                || !Node.SpawnPrefabId.IsNone()
+                || Node.SpawnAtEntityId.IsValid())
+            {
+                Result.AddError(NodePath, TEXT("Wave Start node contains parameters for another node type."));
             }
             break;
 
@@ -177,6 +191,10 @@ FAkUGCValidationResult FAkUGCDocumentValidator::ValidateLogicGraph(
     {
         Result.AddError(Path + TEXT(".nodes"), TEXT("Logic graph can contain at most one Game Start node."));
     }
+    if (WaveStartCount > 1)
+    {
+        Result.AddError(Path + TEXT(".nodes"), TEXT("Logic graph can contain at most one Wave Start node."));
+    }
 
     TSet<FString> ConnectionKeys;
     TMultiMap<FGuid, FGuid> TargetsBySource;
@@ -220,9 +238,10 @@ FAkUGCValidationResult FAkUGCDocumentValidator::ValidateLogicGraph(
 
     for (const TPair<FGuid, EAkUGCLogicNodeType>& Pair : NodeTypes)
     {
-        if (Pair.Value == EAkUGCLogicNodeType::GameStart && IncomingCounts.FindRef(Pair.Key) > 0)
+        if ((Pair.Value == EAkUGCLogicNodeType::GameStart || Pair.Value == EAkUGCLogicNodeType::WaveStart)
+            && IncomingCounts.FindRef(Pair.Key) > 0)
         {
-            Result.AddError(Path + TEXT(".connections"), TEXT("Game Start node cannot have incoming connections."));
+            Result.AddError(Path + TEXT(".connections"), TEXT("Logic event node cannot have incoming connections."));
         }
         if ((Pair.Value == EAkUGCLogicNodeType::Message || Pair.Value == EAkUGCLogicNodeType::Spawn)
             && OutgoingCounts.FindRef(Pair.Key) > 0)
@@ -245,9 +264,11 @@ FAkUGCValidationResult FAkUGCDocumentValidator::ValidateLogicGraph(
         }
     }
 
-    if (Result.IsValid() && GameStartCount == 1)
+    const auto ValidateEntryBudget = [&Result, &TargetsBySource, &Path](
+        const FGuid& EntryNodeId,
+        const TCHAR* EventName)
     {
-        TArray<FGuid> PendingNodes = {GameStartId};
+        TArray<FGuid> PendingNodes = {EntryNodeId};
         int32 ReadIndex = 0;
         while (ReadIndex < PendingNodes.Num()
             && ReadIndex <= AkUGCLogicLimits::MaxExecutedInstructions)
@@ -262,9 +283,18 @@ FAkUGCValidationResult FAkUGCDocumentValidator::ValidateLogicGraph(
             Result.AddError(
                 Path + TEXT(".connections"),
                 FString::Printf(
-                    TEXT("Game Start execution exceeds the instruction budget of %d."),
+                    TEXT("%s execution exceeds the instruction budget of %d."),
+                    EventName,
                     AkUGCLogicLimits::MaxExecutedInstructions));
         }
+    };
+    if (Result.IsValid() && GameStartCount == 1)
+    {
+        ValidateEntryBudget(GameStartId, TEXT("Game Start"));
+    }
+    if (Result.IsValid() && WaveStartCount == 1)
+    {
+        ValidateEntryBudget(WaveStartId, TEXT("Wave Start"));
     }
     return Result;
 }

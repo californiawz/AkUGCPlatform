@@ -61,6 +61,9 @@ FAkUGCLogicCompileResult FAkUGCLogicCompiler::Compile(const FAkUGCLogicGraph& Lo
         case EAkUGCLogicNodeType::GameStart:
             Instruction.Opcode = EAkUGCLogicOpcode::GameStart;
             break;
+        case EAkUGCLogicNodeType::WaveStart:
+            Instruction.Opcode = EAkUGCLogicOpcode::WaveStart;
+            break;
         case EAkUGCLogicNodeType::Message:
             Instruction.Opcode = EAkUGCLogicOpcode::Message;
             break;
@@ -113,6 +116,10 @@ FAkUGCLogicCompileResult FAkUGCLogicCompiler::Compile(const FAkUGCLogicGraph& Lo
         if (Instruction.Opcode == EAkUGCLogicOpcode::GameStart)
         {
             Result.Program.GameStartEntryIndex = InstructionIndex;
+        }
+        else if (Instruction.Opcode == EAkUGCLogicOpcode::WaveStart)
+        {
+            Result.Program.WaveStartEntryIndex = InstructionIndex;
         }
     }
     for (const FAkUGCLogicConnection& Connection : LogicGraph.Connections)

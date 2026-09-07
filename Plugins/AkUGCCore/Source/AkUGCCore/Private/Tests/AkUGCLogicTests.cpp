@@ -140,26 +140,53 @@ bool FAkUGCLogicRunnerTest::RunTest(const FString& Parameters)
     ConnectedMessage.NodeId = FGuid(3, 0, 0, 0);
     ConnectedMessage.Type = EAkUGCLogicNodeType::Message;
     ConnectedMessage.Message = TEXT("Game started");
+    FAkUGCLogicNode WaveStart;
+    WaveStart.NodeId = FGuid(4, 0, 0, 0);
+    WaveStart.Type = EAkUGCLogicNodeType::WaveStart;
+    FAkUGCLogicNode WaveMessage;
+    WaveMessage.NodeId = FGuid(5, 0, 0, 0);
+    WaveMessage.Type = EAkUGCLogicNodeType::Message;
+    WaveMessage.Message = TEXT("Wave started");
 
     FAkUGCLogicGraph Graph;
-    Graph.Nodes = {ConnectedMessage, Start, IsolatedMessage};
+    Graph.Nodes = {WaveMessage, ConnectedMessage, WaveStart, Start, IsolatedMessage};
     FAkUGCLogicConnection Connection;
     Connection.SourceNodeId = Start.NodeId;
     Connection.TargetNodeId = ConnectedMessage.NodeId;
     Graph.Connections.Add(Connection);
+    FAkUGCLogicConnection WaveConnection;
+    WaveConnection.SourceNodeId = WaveStart.NodeId;
+    WaveConnection.TargetNodeId = WaveMessage.NodeId;
+    Graph.Connections.Add(WaveConnection);
 
     const FAkUGCLogicCompileResult CompileResult = FAkUGCLogicCompiler::Compile(Graph);
     TestTrue(TEXT("Runtime graph compiles"), CompileResult.bSucceeded);
     TestTrue(TEXT("Game Start entry is recorded"), CompileResult.Program.GameStartEntryIndex != INDEX_NONE);
+    TestTrue(TEXT("Wave Start entry is recorded"), CompileResult.Program.WaveStartEntryIndex != INDEX_NONE);
     const FAkUGCLogicRunResult RunResult = FAkUGCLogicRunner::RunGameStart(CompileResult.Program);
     TestTrue(TEXT("Game Start execution succeeds"), RunResult.bSucceeded);
-    TestEqual(TEXT("Only reachable instructions execute"), RunResult.ExecutedInstructionCount, 2);
-    TestEqual(TEXT("Only reachable message is emitted"), RunResult.Messages.Num(), 1);
+    TestEqual(TEXT("Only Game Start branch executes"), RunResult.ExecutedInstructionCount, 2);
+    TestEqual(TEXT("Only Game Start message is emitted"), RunResult.Messages.Num(), 1);
     if (RunResult.Messages.Num() == 1)
     {
         TestEqual(TEXT("Connected message text is emitted"), RunResult.Messages[0].Message, FString(TEXT("Game started")));
         TestEqual(TEXT("Connected message source is preserved"), RunResult.Messages[0].SourceNodeId, ConnectedMessage.NodeId);
     }
+
+    const FAkUGCLogicRunResult WaveRunResult = FAkUGCLogicRunner::RunWaveStart(CompileResult.Program, 1);
+    TestTrue(TEXT("Wave Start execution succeeds"), WaveRunResult.bSucceeded);
+    TestEqual(TEXT("Only Wave Start branch executes"), WaveRunResult.ExecutedInstructionCount, 2);
+    TestEqual(TEXT("Wave Start emits its message"), WaveRunResult.Messages.Num(), 1);
+    if (WaveRunResult.Messages.Num() == 1)
+    {
+        TestEqual(TEXT("Wave Start message is isolated"), WaveRunResult.Messages[0].Message, FString(TEXT("Wave started")));
+    }
+    TestFalse(TEXT("Negative Wave index is rejected"),
+        FAkUGCLogicRunner::RunWaveStart(CompileResult.Program, -1).bSucceeded);
+    TestFalse(TEXT("Wave index above Ruleset range is rejected"),
+        FAkUGCLogicRunner::RunWaveStart(
+            CompileResult.Program,
+            AkUGCTowerDefenseRulesetLimits::RequiredWaveCount).bSucceeded);
 
     TestFalse(TEXT("Execution budget is enforced"),
         FAkUGCLogicRunner::RunGameStart(CompileResult.Program, 1).bSucceeded);

@@ -277,7 +277,9 @@ Basic Tower 能稳定选择目标、按攻击间隔造成伤害并移除死亡�
 - 删除被 Wave 引用的 Spawn Point 会被拒绝；同一事务先删除 Wave 后可安全删除实体。
 - 已新增完整三波 Playable Validator；Preview/PlayAuthority 会校验 Wave 数量、Spawn 配置、Enemy 能力和总敌人预算。
 - Edit 继续允许 0 至 3 波中间态，PlayClient 不在本地启动权威玩法。
-- 下一提交新增 WaveStart Logic 事件入口。
+- 已新增 WaveStart Logic 事件入口、独立 IR 入口和按 WaveIndex 触发的 Runner/Runtime API。
+- GameStart 与 WaveStart 分支独立执行，并分别受图校验、IR 校验、重入和指令预算保护。
+- 下一提交实现三波权威状态机。
 
 ### 目标
 

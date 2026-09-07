@@ -149,6 +149,11 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(
     FName,
     PrefabId);
 
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(
+    FAkUGCLogicWaveStartDelegate,
+    int32,
+    WaveIndex);
+
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(
     FAkUGCLogicGoalReachedDelegate,
     FGuid,
@@ -211,6 +216,9 @@ public:
     FAkUGCLogicSpawnDelegate OnSpawn;
 
     UPROPERTY(BlueprintAssignable, Category = "UGC|Logic")
+    FAkUGCLogicWaveStartDelegate OnWaveStart;
+
+    UPROPERTY(BlueprintAssignable, Category = "UGC|Logic")
     FAkUGCLogicGoalReachedDelegate OnGoalReached;
 
     UPROPERTY(BlueprintAssignable, Category = "UGC|Gameplay")
@@ -225,6 +233,13 @@ public:
     FAkUGCLogicRuntimeResult RunGameStartForOwner(
         const FGuid& ExecutionOwnerId,
         const FAkUGCLogicGraph& LogicGraph);
+
+    UFUNCTION(BlueprintCallable, Category = "UGC|Logic")
+    FAkUGCLogicRuntimeResult RunWaveStart(int32 WaveIndex);
+
+    FAkUGCLogicRuntimeResult RunWaveStartForOwner(
+        const FGuid& ExecutionOwnerId,
+        int32 WaveIndex);
 
     FAkUGCLogicRuntimeResult AdvanceLogicTime(double DeltaSeconds);
 
