@@ -66,6 +66,7 @@ struct AKUGCASSETRUNTIME_API FAkUGCTowerDefenseWaveRuntimeConfig
 struct AKUGCASSETRUNTIME_API FAkUGCTowerDefenseRulesetRuntimeConfig
 {
     TArray<FAkUGCTowerDefenseWaveRuntimeConfig> Waves;
+    FGuid BaseEntityId;
     double WaveIntervalSeconds = 0.0;
     EAkUGCTowerDefenseDefeatCondition DefeatCondition = EAkUGCTowerDefenseDefeatCondition::BaseHealthDepleted;
     EAkUGCTowerDefenseVictoryCondition VictoryCondition = EAkUGCTowerDefenseVictoryCondition::AllWavesCleared;

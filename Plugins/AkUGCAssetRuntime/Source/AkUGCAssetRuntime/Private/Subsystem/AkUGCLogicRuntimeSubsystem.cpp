@@ -166,6 +166,10 @@ FAkUGCLogicRuntimeResult UAkUGCLogicRuntimeSubsystem::AdvanceLogicTime(double De
             TEXT("Logic runtime does not allow reentrant execution."));
     }
     TGuardValue<bool> RunningGuard(bIsRunning, true);
+    if (WaveState.Result != EAkUGCTowerDefenseMatchResult::InProgress)
+    {
+        return MakeCurrentResult(true);
+    }
 
     double RemainingDelta = DeltaSeconds;
     while (true)
@@ -174,10 +178,14 @@ FAkUGCLogicRuntimeResult UAkUGCLogicRuntimeSubsystem::AdvanceLogicTime(double De
         {
             const FAkUGCLogicRuntimeResult FailureResult = MakeCurrentResult(
                 false,
-                TEXT("logicRuntime.cancelled"),
-                TEXT("Logic execution was cancelled during a wave state callback."));
+                TEXT("logicRuntime.waveState"),
+                TEXT("Wave state validation failed or execution was cancelled during a callback."));
             ClearExecutionState(true);
             return FailureResult;
+        }
+        if (WaveState.Result != EAkUGCTowerDefenseMatchResult::InProgress)
+        {
+            return MakeCurrentResult(true);
         }
         const bool bHasWaveBoundary = WaveState.State == EAkUGCWaveRuntimeState::WaitingToStart
             || WaveState.State == EAkUGCWaveRuntimeState::BetweenWaves;
@@ -557,6 +565,10 @@ bool UAkUGCLogicRuntimeSubsystem::IsTickable() const
     {
         return false;
     }
+    if (WaveState.Result != EAkUGCTowerDefenseMatchResult::InProgress)
+    {
+        return false;
+    }
     return !PendingDelays.IsEmpty()
         || !PendingSpawnBatches.IsEmpty()
         || WaveState.State == EAkUGCWaveRuntimeState::WaitingToStart
@@ -588,6 +600,24 @@ bool UAkUGCLogicRuntimeSubsystem::SetWaveState(
 
 bool UAkUGCLogicRuntimeSubsystem::RefreshWaveStateTransitions()
 {
+    if (WaveState.Result != EAkUGCTowerDefenseMatchResult::InProgress)
+    {
+        return true;
+    }
+    if (WaveConfig.DefeatCondition == EAkUGCTowerDefenseDefeatCondition::BaseHealthDepleted
+        && WaveConfig.BaseEntityId.IsValid()
+        && RuntimeHealthHandler)
+    {
+        FAkUGCRuntimeHealth BaseHealth;
+        if (RuntimeHealthHandler(WaveConfig.BaseEntityId, BaseHealth) && BaseHealth.Current <= 0.0)
+        {
+            WaveState.Result = EAkUGCTowerDefenseMatchResult::Defeat;
+            PendingDelays.Reset();
+            PendingSpawnBatches.Reset();
+            OnMatchEnded.Broadcast(WaveState.Result);
+            return !bResetRequested && (!RuntimeHandlerIsValid || RuntimeHandlerIsValid());
+        }
+    }
     if (WaveState.State != EAkUGCWaveRuntimeState::WaitingForEnemies)
     {
         return true;
@@ -605,7 +635,17 @@ bool UAkUGCLogicRuntimeSubsystem::RefreshWaveStateTransitions()
     const int32 NextWaveIndex = WaveState.CurrentWaveIndex + 1;
     if (!WaveConfig.Waves.IsValidIndex(NextWaveIndex))
     {
-        return SetWaveState(EAkUGCWaveRuntimeState::Completed);
+        if (!SetWaveState(EAkUGCWaveRuntimeState::Completed))
+        {
+            return false;
+        }
+        if (WaveConfig.VictoryCondition == EAkUGCTowerDefenseVictoryCondition::AllWavesCleared)
+        {
+            WaveState.Result = EAkUGCTowerDefenseMatchResult::Victory;
+            OnMatchEnded.Broadcast(WaveState.Result);
+            return !bResetRequested && (!RuntimeHandlerIsValid || RuntimeHandlerIsValid());
+        }
+        return true;
     }
     WaveState.CurrentWaveIndex = NextWaveIndex;
     WaveState.CurrentWaveId = WaveConfig.Waves[NextWaveIndex].WaveId;

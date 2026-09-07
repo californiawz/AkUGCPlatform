@@ -668,6 +668,7 @@ bool FAkUGCSceneRuntime::BuildTowerDefenseRulesetRuntimeConfig(
     FString& OutError) const
 {
     OutConfig = FAkUGCTowerDefenseRulesetRuntimeConfig{};
+    OutConfig.BaseEntityId = TowerDefenseBaseEntityId;
     OutConfig.WaveIntervalSeconds = Scene.Ruleset.WaveIntervalSeconds;
     OutConfig.DefeatCondition = Scene.Ruleset.DefeatCondition;
     OutConfig.VictoryCondition = Scene.Ruleset.VictoryCondition;

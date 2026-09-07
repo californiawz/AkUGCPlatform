@@ -215,6 +215,14 @@ enum class EAkUGCWaveRuntimeState : uint8
     Completed
 };
 
+UENUM(BlueprintType)
+enum class EAkUGCTowerDefenseMatchResult : uint8
+{
+    InProgress,
+    Victory,
+    Defeat
+};
+
 USTRUCT(BlueprintType)
 struct AKUGCASSETRUNTIME_API FAkUGCWaveRuntimeSnapshot
 {
@@ -222,6 +230,9 @@ struct AKUGCASSETRUNTIME_API FAkUGCWaveRuntimeSnapshot
 
     UPROPERTY(BlueprintReadOnly, Category = "UGC|Wave")
     EAkUGCWaveRuntimeState State = EAkUGCWaveRuntimeState::Inactive;
+
+    UPROPERTY(BlueprintReadOnly, Category = "UGC|Wave")
+    EAkUGCTowerDefenseMatchResult Result = EAkUGCTowerDefenseMatchResult::InProgress;
 
     UPROPERTY(BlueprintReadOnly, Category = "UGC|Wave")
     int32 CurrentWaveIndex = INDEX_NONE;
@@ -243,6 +254,11 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(
     int32,
     WaveIndex);
 
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(
+    FAkUGCMatchEndedDelegate,
+    EAkUGCTowerDefenseMatchResult,
+    Result);
+
 UCLASS()
 class AKUGCASSETRUNTIME_API UAkUGCLogicRuntimeSubsystem : public UTickableWorldSubsystem
 {
@@ -260,6 +276,9 @@ public:
 
     UPROPERTY(BlueprintAssignable, Category = "UGC|Wave")
     FAkUGCWaveStateChangedDelegate OnWaveStateChanged;
+
+    UPROPERTY(BlueprintAssignable, Category = "UGC|Wave")
+    FAkUGCMatchEndedDelegate OnMatchEnded;
 
     UPROPERTY(BlueprintAssignable, Category = "UGC|Logic")
     FAkUGCLogicGoalReachedDelegate OnGoalReached;

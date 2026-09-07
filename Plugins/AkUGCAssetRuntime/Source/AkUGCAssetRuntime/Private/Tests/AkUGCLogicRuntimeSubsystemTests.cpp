@@ -854,7 +854,8 @@ bool FAkUGCLogicRuntimeTimerSpawnTest::RunTest(const FString& Parameters)
         }
         WaveScene.Entities.Add(WaveTower);
 
-        FAkUGCSceneRuntime Runtime(World);
+        {
+            FAkUGCSceneRuntime Runtime(World);
         FAkUGCDocumentRuntimeSession Session(
             Runtime,
             Registry,
@@ -867,12 +868,54 @@ bool FAkUGCLogicRuntimeTimerSpawnTest::RunTest(const FString& Parameters)
         TestTrue(TEXT("Large delta advances all three waves"), Subsystem->AdvanceLogicTime(2.0).bSucceeded);
         const FAkUGCWaveRuntimeSnapshot WaveState = Subsystem->GetWaveRuntimeState();
         TestEqual(TEXT("Three-wave state machine completes"), WaveState.State, EAkUGCWaveRuntimeState::Completed);
+        TestEqual(TEXT("All waves cleared produces Victory"), WaveState.Result, EAkUGCTowerDefenseMatchResult::Victory);
         TestEqual(TEXT("Final Wave index is observable"), WaveState.CurrentWaveIndex, 2);
         TestEqual(TEXT("Each wave triggers WaveStart Logic"), Subsystem->GetEmittedMessages().Num(), 3);
         TestEqual(TEXT("Each wave spawns one enemy"), Subsystem->GetSpawnedEntities().Num(), 3);
         TestEqual(TEXT("All wave enemies are defeated"), Runtime.GetActiveEnemyMovementCount(), 0);
         TestEqual(TEXT("Wave enemies produce three deaths"), Subsystem->GetDeathEvents().Num(), 3);
         TestEqual(TEXT("Wave state machine preserves Base health"), Runtime.GetBaseCurrentHealth(), 25.0);
+        TestTrue(TEXT("Advancing after Victory is harmless"), Subsystem->AdvanceLogicTime(10.0).bSucceeded);
+        TestEqual(TEXT("Victory remains stable"),
+            Subsystem->GetWaveRuntimeState().Result,
+            EAkUGCTowerDefenseMatchResult::Victory);
+    }
+    {
+        FAkUGCProjectDocument DefeatDocument = WaveDocument;
+        FAkUGCSceneDocument& DefeatScene = DefeatDocument.Scenes[0];
+        DefeatScene.Entities.RemoveAll([](const FAkUGCEntityRecord& Entity)
+        {
+            return Entity.PrefabId == TEXT("official.tower.basic");
+        });
+        FAkUGCEntityRecord* DefeatBase = DefeatScene.Entities.FindByPredicate([BaseEntityId](const FAkUGCEntityRecord& Entity)
+        {
+            return Entity.EntityId == BaseEntityId;
+        });
+        if (DefeatBase)
+        {
+            DefeatBase->Components[0].Properties.FindChecked(TEXT("maxHealth")).NumberValue = 5.0;
+        }
+
+        FAkUGCSceneRuntime Runtime(World);
+        FAkUGCDocumentRuntimeSession Session(
+            Runtime,
+            Registry,
+            Scene.SceneId,
+            EAkUGCRuntimeSessionMode::PlayAuthority);
+        TestTrue(TEXT("Defeat state machine initializes"), Session.Initialize(DefeatDocument).bSucceeded);
+        TestTrue(TEXT("Large delta reaches Base defeat"), Subsystem->AdvanceLogicTime(5.0).bSucceeded);
+        const FAkUGCWaveRuntimeSnapshot DefeatState = Subsystem->GetWaveRuntimeState();
+        TestEqual(TEXT("Base depletion produces Defeat"), DefeatState.Result, EAkUGCTowerDefenseMatchResult::Defeat);
+        TestEqual(TEXT("Defeat stops before later waves"), DefeatState.CurrentWaveIndex, 0);
+        TestEqual(TEXT("Only first wave triggers before Defeat"), Subsystem->GetEmittedMessages().Num(), 1);
+        TestEqual(TEXT("Only first wave enemy spawns before Defeat"), Subsystem->GetSpawnedEntities().Num(), 1);
+        TestEqual(TEXT("Defeat clamps Base health to zero"), Runtime.GetBaseCurrentHealth(), 0.0);
+        TestTrue(TEXT("Advancing after Defeat is harmless"), Subsystem->AdvanceLogicTime(10.0).bSucceeded);
+        TestEqual(TEXT("Defeat remains stable"),
+            Subsystem->GetWaveRuntimeState().Result,
+            EAkUGCTowerDefenseMatchResult::Defeat);
+        TestEqual(TEXT("No later wave spawns after Defeat"), Subsystem->GetSpawnedEntities().Num(), 1);
+    }
     }
 
     GEngine->DestroyWorldContext(World);

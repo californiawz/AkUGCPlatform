@@ -262,7 +262,7 @@ Basic Tower 能稳定选择目标、按攻击间隔造成伤害并移除死亡�
 1. `功能：新增运行时生命与伤害模型`
 2. `功能：新增基础塔确定性攻击`
 
-## P4：三波状态机、WaveStart 与胜负（进行中）
+## P4：三波状态机、WaveStart 与胜负（已完成）
 
 ### 状态
 
@@ -282,7 +282,8 @@ Basic Tower 能稳定选择目标、按攻击间隔造成伤害并移除死亡�
 - 已实现三波权威状态机，按 StartDelay、WaveInterval、Spawning、WaitingForEnemies 和 Completed 状态推进。
 - 状态机在 Session 初始化时快照 Ruleset 与 enemy_spawn 配置，直接复用既有 Spawn 批次和统一时间线，不生成临时 Logic 节点。
 - 大 Delta 可跨越波次延迟、生成间隔、战斗和波间隔；状态及当前 Wave 可由 Blueprint 查询。
-- 下一提交实现塔防 Victory/Defeat 互斥判定。
+- 已实现 Base 生命归零 Defeat 与三波清空 Victory，结果互斥、只触发一次并在终局后冻结推进。
+- Blueprint 可查询比赛结果并监听 OnMatchEnded。
 
 ### 目标
 
