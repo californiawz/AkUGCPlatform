@@ -69,21 +69,24 @@ Phase 0 的目标是证明同一份 UGC Project Document 能够被 Desktop Creat
 - Logic Runtime 按 Session Owner 隔离；其他 Edit 会话的加载和析构不会取消当前玩法执行。
 - Preview 与 PlayAuthority 会校验 World/Authority 契约，不兼容时明确失败。
 
+#### 多人复制
+
+- 已新增 AAkUGCGameMode/AAkUGCGameState，GameMode 在服务器权威端托管 PlayAuthority 会话并投影可复制状态。
+- GameState 复制波次快照、基地生命、活跃敌人数和胜负状态，并暴露 OnRep 委托。
+- AAkUGCRuntimeEntityActor 复制 EntityId/PrefabId 作为跨端稳定复制标识；权威端 Destroy 同步销毁客户端实体。
+- Client 侧 Spawn/Movement/Damage/Wave 状态机入口均有 NM_Client 拒绝保护。
+
 #### 当前验证基线
 
 - AkUGCPlatformEditor Win64 Development 编译成功。
 - AkUGCPlatformClient Win64 Development 编译成功。
 - AkUGCPlatformServer Win64 Development 编译成功。
-- 41 项 AkUGC 自动化测试全部通过，零自动化警告。
+- 49 项 AkUGC 自动化测试全部通过，零自动化警告。
 
 ### 2.2 尚未完成
 
-- 正式 Player/Dedicated Server 项目加载入口尚未接入 PlayAuthority/PlayClient；当前模式基础设施和测试已完成。
-- 敌人没有沿 path_node 移动。
-- Goal、基地伤害、运行时生命、塔攻击和死亡未实现。
-- WaveStart、三波状态机和胜负未实现。
+- 正式 Player/Dedicated Server 项目加载入口（Logic Pack）尚未接入；GameMode 权威会话托管与复制契约已完成。
 - Creator/App 尚不能编辑 Logic。
-- Runtime Entity 和塔防状态尚无完整多人复制契约。
 - Logic Pack、依赖、哈希、签名和可信加载未实现。
 - Lua 5.3.4 独立沙箱未实现。
 - Android 真机、Dedicated Server 联机和跨平台一致性验收未完成。
@@ -325,7 +328,16 @@ WaitingToStart
 3. `功能：实现三波权威状态机`
 4. `功能：实现塔防胜负判定`
 
-## P5：多人合作与状态复制
+## P5：多人合作与状态复制（已完成）
+
+### 状态
+
+- 已新增 AAkUGCGameMode/AAkUGCGameState，GameMode 在服务器权威端托管 PlayAuthority 会话。
+- 已复制当前波次快照、波次状态、基地生命、活跃敌人数和胜负状态（ReplicatedUsing + OnRep 委托）。
+- 已定义 Runtime Entity 稳定复制标识（AAkUGCRuntimeEntityActor 复制 EntityId/PrefabId）与销毁协议（权威端 Destroy 同步客户端）。
+- Client 侧 Spawn/Movement/Damage/Wave 状态机入口均有 NM_Client 拒绝保护，且 GameMode 仅存在于 Server。
+- Join-in-progress 由 GameState 复制与 Runtime Entity Actor 复制天然支持（新连接初始复制恢复完整状态）。
+- 正式玩法加载入口（Logic Pack）由 P8 接入，当前 Document 由调用方注入。
 
 ### 目标
 
@@ -508,16 +520,29 @@ P10 Android/DS 一致性验收
 
 ## 6. 近期提交计划
 
-1. `重构：区分 UGC 编辑会话与玩法运行会话`（已提交）
-2. `功能：构建并校验塔防路径`（已提交）
-3. `功能：驱动敌人沿路径确定性移动`（已提交，待远端同步）
-4. `功能：结算敌人到达目标与基地伤害`（已开发，待提交）
-5. `功能：新增运行时生命与伤害模型`
-6. `功能：新增基础塔确定性攻击`
-7. `功能：新增 V4 塔防 Ruleset 与迁移`
-8. `功能：新增 WaveStart Logic 事件入口`
-9. `功能：实现三波权威状态机`
-10. `功能：实现塔防胜负判定`
+P0–P5 已全部提交（塔防规则闭环 + 多人复制契约完成）。
+
+已提交：
+
+1. `重构：区分 UGC 编辑会话与玩法运行会话`（P0）
+2. `功能：构建并校验塔防路径`（P1）
+3. `功能：驱动敌人沿路径确定性移动`（P1）
+4. `功能：结算敌人到达目标与基地伤害`（P2）
+5. `功能：新增运行时生命与伤害模型`（P3）
+6. `功能：新增基础塔确定性攻击`（P3）
+7. `功能：新增 V4 塔防 Ruleset 与迁移`（P4）
+8. `功能：新增 WaveStart Logic 事件入口`（P4）
+9. `功能：实现三波权威状态机`（P4）
+10. `功能：实现塔防胜负判定`（P4）
+11. `功能：新增 UGC GameState 可复制状态与 GameMode`（P5）
+12. `功能：GameMode 托管权威会话并投影可复制状态`（P5）
+13. `功能：Runtime Entity 稳定复制标识与销毁协议`（P5）
+
+待推进（P6 起）：
+
+- Logic Node 参数修改命令（P6）
+- Creator Studio Logic 列表编辑器（P6）
+- Trigger Graph 可视化画布（P6）
 
 每个提交完成后执行：
 
