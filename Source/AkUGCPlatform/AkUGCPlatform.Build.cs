@@ -10,7 +10,9 @@ public class AkUGCPlatform : ModuleRules
         {
             "Core",
             "CoreUObject",
-            "Engine"
+            "Engine",
+            "AkUGCCore",
+            "AkUGCAssetRuntime"
         });
     }
 }
