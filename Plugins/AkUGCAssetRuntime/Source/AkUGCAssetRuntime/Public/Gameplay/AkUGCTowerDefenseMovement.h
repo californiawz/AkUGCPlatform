@@ -11,6 +11,15 @@ struct AKUGCASSETRUNTIME_API FAkUGCTowerDefenseEnemyMovement
     int32 NextPathNodeIndex = 0;
 };
 
+struct AKUGCASSETRUNTIME_API FAkUGCTowerDefenseBasicTowerAttack
+{
+    FGuid EntityId;
+    double AttackRange = 0.0;
+    double AttackInterval = 0.0;
+    double AttackDamage = 0.0;
+    double RemainingAttackSeconds = 0.0;
+};
+
 struct AKUGCASSETRUNTIME_API FAkUGCRuntimeHealth
 {
     double Maximum = 0.0;

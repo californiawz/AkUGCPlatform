@@ -442,19 +442,16 @@ bool FAkUGCLogicRuntimeTimerSpawnTest::RunTest(const FString& Parameters)
         TestEqual(TEXT("No enemy movement remains after reaching path end"), Runtime.GetActiveEnemyMovementCount(), 0);
         TestEqual(TEXT("Three enemies clamp Base health to zero"), Runtime.GetBaseCurrentHealth(), 0.0);
         double TotalAppliedDamage = 0.0;
-        FGuid PreviousGoalReachedEntityId;
-        for (const FAkUGCLogicRuntimeGoalReached& GoalReached : Subsystem->GetGoalReachedEntities())
+        const TArray<FAkUGCLogicRuntimeGoalReached> GoalReachedEntities = Subsystem->GetGoalReachedEntities();
+        for (int32 GoalReachedIndex = 0; GoalReachedIndex < GoalReachedEntities.Num(); ++GoalReachedIndex)
         {
+            const FAkUGCLogicRuntimeGoalReached& GoalReached = GoalReachedEntities[GoalReachedIndex];
             TestEqual(TEXT("GoalReached identifies authored Goal"), GoalReached.GoalEntityId, GoalEntityId);
             TestEqual(TEXT("GoalReached identifies authored Base"), GoalReached.BaseEntityId, BaseEntityId);
             TestEqual(TEXT("GoalReached preserves Spawn source node"), GoalReached.SourceNodeId, Spawn.NodeId);
-            if (PreviousGoalReachedEntityId.IsValid())
-            {
-                TestTrue(TEXT("Simultaneous GoalReached events use stable EntityId order"),
-                    PreviousGoalReachedEntityId.ToString(EGuidFormats::Digits)
-                        < GoalReached.EntityId.ToString(EGuidFormats::Digits));
-            }
-            PreviousGoalReachedEntityId = GoalReached.EntityId;
+            TestEqual(TEXT("Staggered enemies reach Goal in Spawn order"),
+                GoalReached.EntityId,
+                Subsystem->GetSpawnedEntities()[GoalReachedIndex].EntityId);
             TotalAppliedDamage += GoalReached.DamageApplied;
         }
         TestEqual(TEXT("Applied damage is clamped to remaining Base health"), TotalAppliedDamage, 25.0);
@@ -545,6 +542,102 @@ bool FAkUGCLogicRuntimeTimerSpawnTest::RunTest(const FString& Parameters)
             TestEqual(TEXT("Dead dynamic enemy leaves active movement"), Runtime.GetActiveEnemyMovementCount(), 2);
             TestFalse(TEXT("Repeated damage cannot re-kill a removed enemy"),
                 Runtime.ApplyRuntimeDamage(BaseEntityId, EnemyEntityId, 1.0, Damage, Error));
+        }
+    }
+    {
+        FAkUGCProjectDocument TowerDocument = Document;
+        FAkUGCSceneDocument& TowerScene = TowerDocument.Scenes[0];
+        FAkUGCComponentRecord* TowerSpawnConfig = TowerScene.Entities[0].Components.FindByPredicate([](const FAkUGCComponentRecord& Component)
+        {
+            return Component.TypeId == TEXT("tower_defense.spawn");
+        });
+        TestNotNull(TEXT("Tower fixture finds Spawn configuration"), TowerSpawnConfig);
+        if (TowerSpawnConfig)
+        {
+            TowerSpawnConfig->Properties.FindChecked(TEXT("enemyCount")).IntegerValue = 2;
+        }
+
+        const FGuid TowerEntityId = FGuid::NewGuid();
+        FAkUGCEntityRecord TowerEntity;
+        TestTrue(TEXT("Basic Tower record is created"), Registry.CreateEntityRecord(
+            TEXT("official.tower.basic"),
+            TowerEntityId,
+            FTransform(FVector(600.0, 50.0, 0.0)),
+            TowerEntity,
+            &Error));
+        FAkUGCComponentRecord* TowerConfig = TowerEntity.Components.FindByPredicate([](const FAkUGCComponentRecord& Component)
+        {
+            return Component.TypeId == TEXT("tower_defense.tower");
+        });
+        TestNotNull(TEXT("Basic Tower exposes attack configuration"), TowerConfig);
+        if (TowerConfig)
+        {
+            TowerConfig->Properties.FindChecked(TEXT("attackRange")).NumberValue = 1000.0;
+            TowerConfig->Properties.FindChecked(TEXT("attackInterval")).NumberValue = 0.5;
+            TowerConfig->Properties.FindChecked(TEXT("attackDamage")).NumberValue = 60.0;
+        }
+        TowerScene.Entities.Add(TowerEntity);
+
+        FAkUGCEntityRecord SupportTowerEntity = TowerEntity;
+        SupportTowerEntity.EntityId = FGuid::NewGuid();
+        SupportTowerEntity.Transform.SetLocation(FVector(650.0, 50.0, 0.0));
+        FAkUGCComponentRecord* SupportTowerConfig = SupportTowerEntity.Components.FindByPredicate([](const FAkUGCComponentRecord& Component)
+        {
+            return Component.TypeId == TEXT("tower_defense.tower");
+        });
+        if (SupportTowerConfig)
+        {
+            SupportTowerConfig->Properties.FindChecked(TEXT("attackDamage")).NumberValue = 0.0;
+        }
+        TowerScene.Entities.Add(SupportTowerEntity);
+
+        {
+            FAkUGCSceneRuntime Runtime(World);
+            FAkUGCDocumentRuntimeSession Session(
+                Runtime,
+                Registry,
+                Scene.SceneId,
+                EAkUGCRuntimeSessionMode::PlayAuthority);
+            TestTrue(TEXT("Basic Tower gameplay initializes"), Session.Initialize(TowerDocument).bSucceeded);
+            TestTrue(TEXT("Large delta advances deterministic tower attacks"), Subsystem->AdvanceLogicTime(3.0).bSucceeded);
+            TestEqual(TEXT("Tower kills both configured enemies"), Runtime.GetActiveEnemyMovementCount(), 0);
+            TestEqual(TEXT("Tower produces four deterministic damage events"), Subsystem->GetDamageEvents().Num(), 4);
+            TestEqual(TEXT("Tower produces one death per enemy"), Subsystem->GetDeathEvents().Num(), 2);
+            TestEqual(TEXT("Tower kills enemies before GoalReached"), Subsystem->GetGoalReachedEntities().Num(), 0);
+            TestEqual(TEXT("Tower defense leaves Base health unchanged"), Runtime.GetBaseCurrentHealth(), 25.0);
+            const TArray<FAkUGCLogicRuntimeSpawn> TowerSpawns = Subsystem->GetSpawnedEntities();
+            const TArray<FAkUGCLogicRuntimeDamage> TowerDamageEvents = Subsystem->GetDamageEvents();
+            for (const FAkUGCLogicRuntimeDamage& Damage : TowerDamageEvents)
+            {
+                TestEqual(TEXT("Tower damage records source EntityId"), Damage.SourceEntityId, TowerEntityId);
+            }
+            if (TowerSpawns.Num() == 2 && TowerDamageEvents.Num() == 4)
+            {
+                TestEqual(TEXT("Tower targets enemy closest to Goal first"), TowerDamageEvents[0].TargetEntityId, TowerSpawns[0].EntityId);
+                TestEqual(TEXT("Tower finishes first target before retargeting"), TowerDamageEvents[1].TargetEntityId, TowerSpawns[0].EntityId);
+                TestEqual(TEXT("Tower retargets the remaining enemy"), TowerDamageEvents[2].TargetEntityId, TowerSpawns[1].EntityId);
+                TestEqual(TEXT("Tower finishes the remaining enemy"), TowerDamageEvents[3].TargetEntityId, TowerSpawns[1].EntityId);
+            }
+            TestEqual(TEXT("Dead enemies are removed while authored Towers remain"), Runtime.Num(), 7);
+        }
+        {
+            FAkUGCSceneRuntime Runtime(World);
+            FAkUGCDocumentRuntimeSession Session(
+                Runtime,
+                Registry,
+                Scene.SceneId,
+                EAkUGCRuntimeSessionMode::PlayAuthority);
+            TestTrue(TEXT("Small delta tower gameplay initializes"), Session.Initialize(TowerDocument).bSucceeded);
+            for (int32 StepIndex = 0; StepIndex < 12; ++StepIndex)
+            {
+                TestTrue(TEXT("Small delta advances deterministic tower attacks"),
+                    Subsystem->AdvanceLogicTime(0.25).bSucceeded);
+            }
+            TestEqual(TEXT("Small deltas match large delta enemy result"), Runtime.GetActiveEnemyMovementCount(), 0);
+            TestEqual(TEXT("Small deltas match large delta damage count"), Subsystem->GetDamageEvents().Num(), 4);
+            TestEqual(TEXT("Small deltas match large delta death count"), Subsystem->GetDeathEvents().Num(), 2);
+            TestEqual(TEXT("Small deltas match large delta Goal result"), Subsystem->GetGoalReachedEntities().Num(), 0);
+            TestEqual(TEXT("Small deltas match large delta Base health"), Runtime.GetBaseCurrentHealth(), 25.0);
         }
     }
 

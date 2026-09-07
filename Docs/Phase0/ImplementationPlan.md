@@ -225,7 +225,7 @@ Phase 0 的目标是证明同一份 UGC Project Document 能够被 Desktop Creat
 
 `功能：结算敌人到达目标与基地伤害`
 
-## P3：基础塔攻击、伤害与死亡（进行中）
+## P3：基础塔攻击、伤害与死亡（已完成）
 
 ### 状态
 
@@ -233,8 +233,12 @@ Phase 0 的目标是证明同一份 UGC Project Document 能够被 Desktop Creat
 - Base 和动态 Basic Enemy 会从 core.health.maxHealth 初始化生命，且不写回作者 Document。
 - 已新增统一权威 ApplyDamage，支持伤害钳制、一次性死亡和动态敌人清理。
 - 已向 Blueprint 暴露生命快照、Damage/Death 事件及历史查询。
-- 已提供敌人剩余路径距离查询，供确定性目标选择使用。
-- 下一提交实现 Basic Tower 的稳定目标选择和按攻击间隔造成伤害。
+- Basic Tower 会严格读取 attackRange、attackInterval 和 attackDamage。
+- 塔按剩余路径距离优先、EntityId 作为 Tie-break 稳定选择范围内目标。
+- 多塔按 EntityId 稳定顺序攻击，并在前一座塔击杀后重新选择目标。
+- 移动、攻击和 Goal 到达共用确定性时间线，大 Delta 与小步进结果一致。
+- Gameplay 事件按内部时间边界逐次发布，并有每次推进 10000 切片预算。
+- 无活跃敌人时攻击冷却暂停，Session reset 清除全部攻击状态。
 
 ### 目标
 

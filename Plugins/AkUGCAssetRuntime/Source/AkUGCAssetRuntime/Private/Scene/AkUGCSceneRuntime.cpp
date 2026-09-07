@@ -140,9 +140,19 @@ bool FAkUGCSceneRuntime::RunGameStartLogic(
         {
             return SpawnLogicPrefab(SpawnEffect, Registry, OutEntityId, OutSpawnError);
         },
-        [this](double DeltaSeconds, FAkUGCTowerDefenseGameplayEvents& OutEvents, FString& OutMovementError)
+        [this](
+            double DeltaSeconds,
+            double& OutAdvancedSeconds,
+            bool& OutProcessedBoundary,
+            FAkUGCTowerDefenseGameplayEvents& OutEvents,
+            FString& OutMovementError)
         {
-            return AdvanceTowerDefenseMovement(DeltaSeconds, OutEvents, OutMovementError);
+            return AdvanceTowerDefenseMovement(
+                DeltaSeconds,
+                OutAdvancedSeconds,
+                OutProcessedBoundary,
+                OutEvents,
+                OutMovementError);
         },
         [this](const FGuid& EntityId, FAkUGCRuntimeHealth& OutHealth)
         {
@@ -262,11 +272,20 @@ bool FAkUGCSceneRuntime::InitializeTowerDefenseGameplay(
     ResetTowerDefenseGameplay();
     TowerDefenseBaseEntityId = Base->EntityId;
     TowerDefenseGoalEntityId = Goal->EntityId;
-    FString HealthError;
-    if (!InitializeRuntimeHealth(*Base, HealthError))
+    FString GameplayError;
+    if (!InitializeRuntimeHealth(*Base, GameplayError))
     {
         ResetTowerDefenseGameplay();
-        return Fail(OutError, HealthError);
+        return Fail(OutError, GameplayError);
+    }
+    for (const FAkUGCEntityRecord& Entity : Scene.Entities)
+    {
+        if (Entity.PrefabId == TEXT("official.tower.basic")
+            && !RegisterBasicTowerAttack(Entity, GameplayError))
+        {
+            ResetTowerDefenseGameplay();
+            return Fail(OutError, GameplayError);
+        }
     }
     return true;
 }
@@ -284,6 +303,7 @@ void FAkUGCSceneRuntime::ResetTowerDefenseGameplay()
     TowerDefenseGoalEntityId.Invalidate();
     RuntimeHealthByEntityId.Reset();
     DeadEntityIds.Reset();
+    BasicTowerAttacks.Reset();
 }
 
 bool FAkUGCSceneRuntime::BuildLogicSpawnPlan(
@@ -462,6 +482,113 @@ bool FAkUGCSceneRuntime::InitializeRuntimeHealth(
     RuntimeHealthByEntityId.Add(Entity.EntityId, Health);
     DeadEntityIds.Remove(Entity.EntityId);
     return true;
+}
+
+bool FAkUGCSceneRuntime::RegisterBasicTowerAttack(
+    const FAkUGCEntityRecord& Entity,
+    FString& OutError)
+{
+    const FAkUGCComponentRecord* TowerComponent = nullptr;
+    int32 TowerComponentCount = 0;
+    for (const FAkUGCComponentRecord& Component : Entity.Components)
+    {
+        if (Component.TypeId == TEXT("tower_defense.tower"))
+        {
+            TowerComponent = &Component;
+            ++TowerComponentCount;
+        }
+    }
+    if (TowerComponentCount != 1)
+    {
+        OutError = TEXT("Basic Tower requires exactly one tower_defense.tower component.");
+        return false;
+    }
+
+    const FAkUGCValue* AttackRange = TowerComponent->Properties.Find(TEXT("attackRange"));
+    const FAkUGCValue* AttackInterval = TowerComponent->Properties.Find(TEXT("attackInterval"));
+    const FAkUGCValue* AttackDamage = TowerComponent->Properties.Find(TEXT("attackDamage"));
+    if (!AttackRange
+        || AttackRange->Type != EAkUGCValueType::Number
+        || !FMath::IsFinite(AttackRange->NumberValue)
+        || AttackRange->NumberValue < 10.0
+        || AttackRange->NumberValue > 10000.0)
+    {
+        OutError = TEXT("Basic Tower attackRange must be a Number from 10 to 10000.");
+        return false;
+    }
+    if (!AttackInterval
+        || AttackInterval->Type != EAkUGCValueType::Number
+        || !FMath::IsFinite(AttackInterval->NumberValue)
+        || AttackInterval->NumberValue < 0.05
+        || AttackInterval->NumberValue > 60.0)
+    {
+        OutError = TEXT("Basic Tower attackInterval must be a Number from 0.05 to 60 seconds.");
+        return false;
+    }
+    if (!AttackDamage
+        || AttackDamage->Type != EAkUGCValueType::Number
+        || !FMath::IsFinite(AttackDamage->NumberValue)
+        || AttackDamage->NumberValue < 0.0
+        || AttackDamage->NumberValue > 100000.0)
+    {
+        OutError = TEXT("Basic Tower attackDamage must be a Number from 0 to 100000.");
+        return false;
+    }
+    if (!FindActor(Entity.EntityId))
+    {
+        OutError = TEXT("Basic Tower does not have a runtime Actor.");
+        return false;
+    }
+
+    FAkUGCTowerDefenseBasicTowerAttack Attack;
+    Attack.EntityId = Entity.EntityId;
+    Attack.AttackRange = AttackRange->NumberValue;
+    Attack.AttackInterval = AttackInterval->NumberValue;
+    Attack.AttackDamage = AttackDamage->NumberValue;
+    Attack.RemainingAttackSeconds = Attack.AttackInterval;
+    BasicTowerAttacks.Add(Entity.EntityId, MoveTemp(Attack));
+    return true;
+}
+
+bool FAkUGCSceneRuntime::SelectBasicTowerTarget(
+    const FAkUGCTowerDefenseBasicTowerAttack& Tower,
+    FGuid& OutTargetEntityId) const
+{
+    OutTargetEntityId.Invalidate();
+    const AActor* TowerActor = FindActor(Tower.EntityId);
+    if (!TowerActor)
+    {
+        return false;
+    }
+
+    double BestRemainingDistance = TNumericLimits<double>::Max();
+    TArray<FGuid> EnemyEntityIds;
+    EnemyMovements.GetKeys(EnemyEntityIds);
+    EnemyEntityIds.Sort([](const FGuid& Left, const FGuid& Right)
+    {
+        return Left.ToString(EGuidFormats::Digits) < Right.ToString(EGuidFormats::Digits);
+    });
+    for (const FGuid& EnemyEntityId : EnemyEntityIds)
+    {
+        const AActor* EnemyActor = FindActor(EnemyEntityId);
+        const FAkUGCRuntimeHealth* Health = RuntimeHealthByEntityId.Find(EnemyEntityId);
+        double RemainingDistance = 0.0;
+        if (!EnemyActor
+            || !Health
+            || Health->Current <= 0.0
+            || FVector::DistSquared(TowerActor->GetActorLocation(), EnemyActor->GetActorLocation())
+                > FMath::Square(Tower.AttackRange)
+            || !GetEnemyRemainingPathDistance(EnemyEntityId, RemainingDistance))
+        {
+            continue;
+        }
+        if (!OutTargetEntityId.IsValid() || RemainingDistance < BestRemainingDistance)
+        {
+            OutTargetEntityId = EnemyEntityId;
+            BestRemainingDistance = RemainingDistance;
+        }
+    }
+    return OutTargetEntityId.IsValid();
 }
 
 bool FAkUGCSceneRuntime::RegisterEnemyMovement(
@@ -702,6 +829,7 @@ bool FAkUGCSceneRuntime::RemoveEntity(const FGuid& EntityId)
     }
     Actors.Remove(EntityId);
     ExternallyDeletedEntityIds.Remove(EntityId);
+    BasicTowerAttacks.Remove(EntityId);
     EnemyMovements.Remove(EntityId);
     RuntimeSpawnedEntityIds.Remove(EntityId);
     RuntimeHealthByEntityId.Remove(EntityId);
@@ -719,6 +847,7 @@ bool FAkUGCSceneRuntime::NotifyActorDeletedExternally(const FGuid& EntityId, con
 
     Actors.Remove(EntityId);
     ExternallyDeletedEntityIds.Add(EntityId);
+    BasicTowerAttacks.Remove(EntityId);
     EnemyMovements.Remove(EntityId);
     RuntimeSpawnedEntityIds.Remove(EntityId);
     RuntimeHealthByEntityId.Remove(EntityId);
@@ -911,28 +1040,32 @@ const TArray<FAkUGCTowerDefenseGoalReached>& FAkUGCSceneRuntime::GetGoalReachedE
 
 bool FAkUGCSceneRuntime::AdvanceTowerDefenseMovement(
     double DeltaSeconds,
+    double& OutAdvancedSeconds,
+    bool& OutProcessedBoundary,
     FAkUGCTowerDefenseGameplayEvents& OutEvents,
     FString& OutError)
 {
+    OutAdvancedSeconds = 0.0;
+    OutProcessedBoundary = false;
     OutEvents = FAkUGCTowerDefenseGameplayEvents{};
     const UWorld* RuntimeWorld = World.Get();
     if (!RuntimeWorld || RuntimeWorld->GetNetMode() == NM_Client)
     {
-        OutError = TEXT("Enemy movement requires an authoritative runtime world.");
+        OutError = TEXT("Tower defense gameplay requires an authoritative runtime world.");
         return false;
     }
     if (!FMath::IsFinite(DeltaSeconds) || DeltaSeconds < 0.0)
     {
-        OutError = TEXT("Enemy movement delta must be finite and non-negative.");
+        OutError = TEXT("Tower defense gameplay delta must be finite and non-negative.");
         return false;
     }
-    if (DeltaSeconds == 0.0 || EnemyMovements.IsEmpty())
+    if (EnemyMovements.IsEmpty())
     {
         return true;
     }
     if (TowerDefensePath.Num() < 2)
     {
-        OutError = TEXT("Active enemy movement requires at least two path nodes.");
+        OutError = TEXT("Active tower defense gameplay requires at least two path nodes.");
         return false;
     }
     const FAkUGCRuntimeHealth* BaseHealth = RuntimeHealthByEntityId.Find(TowerDefenseBaseEntityId);
@@ -943,88 +1076,158 @@ bool FAkUGCSceneRuntime::AdvanceTowerDefenseMovement(
         || !FindActor(TowerDefenseBaseEntityId)
         || !FindActor(TowerDefenseGoalEntityId))
     {
-        OutError = TEXT("Active enemy movement requires initialized Base and Goal runtime state.");
+        OutError = TEXT("Active tower defense gameplay requires initialized Base and Goal runtime state.");
         return false;
     }
 
-    TArray<FGuid> EntityIds;
-    EnemyMovements.GetKeys(EntityIds);
-    EntityIds.Sort([](const FGuid& Left, const FGuid& Right)
+    TArray<FGuid> TowerEntityIds;
+    BasicTowerAttacks.GetKeys(TowerEntityIds);
+    TowerEntityIds.Sort([](const FGuid& Left, const FGuid& Right)
     {
         return Left.ToString(EGuidFormats::Digits) < Right.ToString(EGuidFormats::Digits);
     });
-
-    for (const FGuid& EntityId : EntityIds)
+    for (const FGuid& TowerEntityId : TowerEntityIds)
     {
-        if (!EnemyMovements.Contains(EntityId) || !FindActor(EntityId))
+        if (!FindActor(TowerEntityId))
         {
-            OutError = FString::Printf(TEXT("Active enemy '%s' is missing from the runtime scene."), *EntityId.ToString());
+            OutError = FString::Printf(TEXT("Basic Tower '%s' is missing from the runtime scene."), *TowerEntityId.ToString());
             return false;
         }
     }
 
-    TArray<FGuid> ReachedEntityIds;
-    for (const FGuid& EntityId : EntityIds)
+    TArray<FGuid> EnemyEntityIds;
+    EnemyMovements.GetKeys(EnemyEntityIds);
+    EnemyEntityIds.Sort([](const FGuid& Left, const FGuid& Right)
     {
-        FAkUGCTowerDefenseEnemyMovement& Movement = EnemyMovements.FindChecked(EntityId);
-        AActor* Actor = FindActor(EntityId);
-        double RemainingDistance = Movement.MoveSpeed * DeltaSeconds;
+        return Left.ToString(EGuidFormats::Digits) < Right.ToString(EGuidFormats::Digits);
+    });
+
+    double NextGoalSeconds = TNumericLimits<double>::Max();
+    for (const FGuid& EnemyEntityId : EnemyEntityIds)
+    {
+        const FAkUGCTowerDefenseEnemyMovement* Movement = EnemyMovements.Find(EnemyEntityId);
+        double RemainingPathDistance = 0.0;
+        if (!Movement
+            || !FindActor(EnemyEntityId)
+            || !RuntimeHealthByEntityId.Contains(EnemyEntityId)
+            || !GetEnemyRemainingPathDistance(EnemyEntityId, RemainingPathDistance))
+        {
+            OutError = FString::Printf(TEXT("Active enemy '%s' has invalid runtime state."), *EnemyEntityId.ToString());
+            return false;
+        }
+        NextGoalSeconds = FMath::Min(NextGoalSeconds, RemainingPathDistance / Movement->MoveSpeed);
+    }
+
+    double NextAttackSeconds = TNumericLimits<double>::Max();
+    for (const FGuid& TowerEntityId : TowerEntityIds)
+    {
+        NextAttackSeconds = FMath::Min(
+            NextAttackSeconds,
+            BasicTowerAttacks.FindChecked(TowerEntityId).RemainingAttackSeconds);
+    }
+    const double TimeSlice = FMath::Min3(DeltaSeconds, NextGoalSeconds, NextAttackSeconds);
+    if (!FMath::IsFinite(TimeSlice) || TimeSlice < 0.0)
+    {
+        OutError = TEXT("Tower defense gameplay produced an invalid time slice.");
+        return false;
+    }
+    OutAdvancedSeconds = TimeSlice;
+
+    for (const FGuid& EnemyEntityId : EnemyEntityIds)
+    {
+        FAkUGCTowerDefenseEnemyMovement& Movement = EnemyMovements.FindChecked(EnemyEntityId);
+        AActor* EnemyActor = FindActor(EnemyEntityId);
+        double RemainingMovementDistance = Movement.MoveSpeed * TimeSlice;
         while (Movement.NextPathNodeIndex < TowerDefensePath.Num())
         {
             const FVector Target = TowerDefensePath.Nodes[Movement.NextPathNodeIndex].Location;
-            const FVector Current = Actor->GetActorLocation();
+            const FVector Current = EnemyActor->GetActorLocation();
             const double DistanceToTarget = FVector::Distance(Current, Target);
             if (DistanceToTarget <= UE_KINDA_SMALL_NUMBER)
             {
-                Actor->SetActorLocation(Target, false, nullptr, ETeleportType::TeleportPhysics);
+                EnemyActor->SetActorLocation(Target, false, nullptr, ETeleportType::TeleportPhysics);
                 ++Movement.NextPathNodeIndex;
                 continue;
             }
-            if (RemainingDistance < DistanceToTarget)
+            if (RemainingMovementDistance < DistanceToTarget)
             {
-                Actor->SetActorLocation(
-                    Current + (Target - Current).GetSafeNormal() * RemainingDistance,
+                EnemyActor->SetActorLocation(
+                    Current + (Target - Current).GetSafeNormal() * RemainingMovementDistance,
                     false,
                     nullptr,
                     ETeleportType::TeleportPhysics);
-                RemainingDistance = 0.0;
                 break;
             }
-
-            Actor->SetActorLocation(Target, false, nullptr, ETeleportType::TeleportPhysics);
-            RemainingDistance -= DistanceToTarget;
+            EnemyActor->SetActorLocation(Target, false, nullptr, ETeleportType::TeleportPhysics);
+            RemainingMovementDistance -= DistanceToTarget;
             ++Movement.NextPathNodeIndex;
         }
+    }
+    for (const FGuid& TowerEntityId : TowerEntityIds)
+    {
+        FAkUGCTowerDefenseBasicTowerAttack& Tower = BasicTowerAttacks.FindChecked(TowerEntityId);
+        Tower.RemainingAttackSeconds = FMath::Max(0.0, Tower.RemainingAttackSeconds - TimeSlice);
+    }
 
-        if (Movement.NextPathNodeIndex >= TowerDefensePath.Num())
+    for (const FGuid& TowerEntityId : TowerEntityIds)
+    {
+        FAkUGCTowerDefenseBasicTowerAttack& Tower = BasicTowerAttacks.FindChecked(TowerEntityId);
+        if (Tower.RemainingAttackSeconds > 0.0 || EnemyMovements.IsEmpty())
+        {
+            continue;
+        }
+        Tower.RemainingAttackSeconds = Tower.AttackInterval;
+
+        FGuid TargetEntityId;
+        if (Tower.AttackDamage > 0.0 && SelectBasicTowerTarget(Tower, TargetEntityId))
         {
             FAkUGCRuntimeDamage Damage;
             if (!ApplyRuntimeDamage(
-                EntityId,
-                TowerDefenseBaseEntityId,
-                Movement.GoalDamage,
+                Tower.EntityId,
+                TargetEntityId,
+                Tower.AttackDamage,
                 Damage,
                 OutError))
             {
                 return false;
             }
             OutEvents.DamageEvents.Add(Damage);
-
-            FAkUGCTowerDefenseGoalReached Reached;
-            Reached.SourceNodeId = Movement.SourceNodeId;
-            Reached.EntityId = EntityId;
-            Reached.GoalEntityId = TowerDefenseGoalEntityId;
-            Reached.BaseEntityId = TowerDefenseBaseEntityId;
-            Reached.DamageApplied = Damage.AppliedDamage;
-            Reached.BaseHealthAfterDamage = Damage.HealthAfterDamage;
-            GoalReachedEvents.Add(Reached);
-            OutEvents.GoalReachedEvents.Add(Reached);
-            ReachedEntityIds.Add(EntityId);
         }
+        OutProcessedBoundary = true;
+        return true;
     }
-    for (const FGuid& EntityId : ReachedEntityIds)
+
+    for (const FGuid& EnemyEntityId : EnemyEntityIds)
     {
-        RemoveEntity(EntityId);
+        const FAkUGCTowerDefenseEnemyMovement* Movement = EnemyMovements.Find(EnemyEntityId);
+        if (!Movement || Movement->NextPathNodeIndex < TowerDefensePath.Num())
+        {
+            continue;
+        }
+        FAkUGCRuntimeDamage Damage;
+        if (!ApplyRuntimeDamage(
+            EnemyEntityId,
+            TowerDefenseBaseEntityId,
+            Movement->GoalDamage,
+            Damage,
+            OutError))
+        {
+            return false;
+        }
+        OutEvents.DamageEvents.Add(Damage);
+
+        FAkUGCTowerDefenseGoalReached Reached;
+        Reached.SourceNodeId = Movement->SourceNodeId;
+        Reached.EntityId = EnemyEntityId;
+        Reached.GoalEntityId = TowerDefenseGoalEntityId;
+        Reached.BaseEntityId = TowerDefenseBaseEntityId;
+        Reached.DamageApplied = Damage.AppliedDamage;
+        Reached.BaseHealthAfterDamage = Damage.HealthAfterDamage;
+        GoalReachedEvents.Add(Reached);
+        OutEvents.GoalReachedEvents.Add(Reached);
+        RemoveEntity(EnemyEntityId);
+        OutProcessedBoundary = true;
+        return true;
     }
     return true;
 }

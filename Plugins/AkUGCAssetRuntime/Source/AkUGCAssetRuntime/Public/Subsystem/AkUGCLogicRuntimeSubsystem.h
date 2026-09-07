@@ -255,7 +255,7 @@ public:
         const FGuid& ExecutionOwnerId,
         TFunction<bool(const FAkUGCLogicSpawnEffect&, FAkUGCLogicSpawnPlan&, FString&)> InSpawnPlanHandler,
         TFunction<bool(const FAkUGCLogicSpawnEffect&, FGuid&, FString&)> InSpawnHandler,
-        TFunction<bool(double, FAkUGCTowerDefenseGameplayEvents&, FString&)> InAdvanceGameplayTimeHandler,
+        TFunction<bool(double, double&, bool&, FAkUGCTowerDefenseGameplayEvents&, FString&)> InAdvanceGameplayTimeHandler,
         TFunction<bool(const FGuid&, FAkUGCRuntimeHealth&)> InRuntimeHealthHandler,
         TFunction<bool()> InHasGameplayTimeWorkHandler,
         TFunction<void()> InResetGameplayHandler,
@@ -286,7 +286,7 @@ private:
     TArray<FAkUGCLogicRuntimeDeath> DeathEvents;
     TFunction<bool(const FAkUGCLogicSpawnEffect&, FAkUGCLogicSpawnPlan&, FString&)> SpawnPlanHandler;
     TFunction<bool(const FAkUGCLogicSpawnEffect&, FGuid&, FString&)> SpawnHandler;
-    TFunction<bool(double, FAkUGCTowerDefenseGameplayEvents&, FString&)> AdvanceGameplayTimeHandler;
+    TFunction<bool(double, double&, bool&, FAkUGCTowerDefenseGameplayEvents&, FString&)> AdvanceGameplayTimeHandler;
     TFunction<bool(const FGuid&, FAkUGCRuntimeHealth&)> RuntimeHealthHandler;
     TFunction<bool()> HasGameplayTimeWorkHandler;
     TFunction<void()> ResetGameplayHandler;

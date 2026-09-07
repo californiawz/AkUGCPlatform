@@ -62,6 +62,8 @@ public:
     const TArray<FAkUGCTowerDefenseGoalReached>& GetGoalReachedEvents() const;
     bool AdvanceTowerDefenseMovement(
         double DeltaSeconds,
+        double& OutAdvancedSeconds,
+        bool& OutProcessedBoundary,
         FAkUGCTowerDefenseGameplayEvents& OutEvents,
         FString& OutError);
     bool HasActiveEnemyMovement() const;
@@ -99,6 +101,8 @@ private:
         const FAkUGCEntityRecord& Entity,
         FString& OutError);
     bool InitializeRuntimeHealth(const FAkUGCEntityRecord& Entity, FString& OutError);
+    bool RegisterBasicTowerAttack(const FAkUGCEntityRecord& Entity, FString& OutError);
+    bool SelectBasicTowerTarget(const FAkUGCTowerDefenseBasicTowerAttack& Tower, FGuid& OutTargetEntityId) const;
     bool ValidateTowerDefenseGameplay(
         const FAkUGCSceneDocument& Scene,
         FString* OutError = nullptr) const;
@@ -136,6 +140,7 @@ private:
     FGuid TowerDefenseGoalEntityId;
     TMap<FGuid, FAkUGCRuntimeHealth> RuntimeHealthByEntityId;
     TSet<FGuid> DeadEntityIds;
+    TMap<FGuid, FAkUGCTowerDefenseBasicTowerAttack> BasicTowerAttacks;
     TMap<FGuid, FAkUGCTowerDefenseEnemyMovement> EnemyMovements;
     TSet<FGuid> RuntimeSpawnedEntityIds;
     TArray<FAkUGCTowerDefenseGoalReached> GoalReachedEvents;
