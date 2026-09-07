@@ -272,11 +272,44 @@ TArray<FAkUGCLogicRuntimeGoalReached> UAkUGCLogicRuntimeSubsystem::GetGoalReache
     return GoalReachedEntities;
 }
 
+TArray<FAkUGCLogicRuntimeDamage> UAkUGCLogicRuntimeSubsystem::GetDamageEvents() const
+{
+    return DamageEvents;
+}
+
+TArray<FAkUGCLogicRuntimeDeath> UAkUGCLogicRuntimeSubsystem::GetDeathEvents() const
+{
+    return DeathEvents;
+}
+
+bool UAkUGCLogicRuntimeSubsystem::GetRuntimeHealth(
+    FGuid EntityId,
+    FAkUGCLogicRuntimeHealth& OutHealth) const
+{
+    OutHealth = FAkUGCLogicRuntimeHealth{};
+    if (!RuntimeHealthHandler || (RuntimeHandlerIsValid && !RuntimeHandlerIsValid()))
+    {
+        return false;
+    }
+
+    FAkUGCRuntimeHealth Health;
+    if (!RuntimeHealthHandler(EntityId, Health))
+    {
+        return false;
+    }
+    OutHealth.EntityId = EntityId;
+    OutHealth.Maximum = Health.Maximum;
+    OutHealth.Current = Health.Current;
+    OutHealth.bIsDead = Health.Current <= 0.0;
+    return true;
+}
+
 bool UAkUGCLogicRuntimeSubsystem::SetRuntimeHandlers(
     const FGuid& ExecutionOwnerId,
     TFunction<bool(const FAkUGCLogicSpawnEffect&, FAkUGCLogicSpawnPlan&, FString&)> InSpawnPlanHandler,
     TFunction<bool(const FAkUGCLogicSpawnEffect&, FGuid&, FString&)> InSpawnHandler,
-    TFunction<bool(double, TArray<FAkUGCTowerDefenseGoalReached>&, FString&)> InAdvanceGameplayTimeHandler,
+    TFunction<bool(double, FAkUGCTowerDefenseGameplayEvents&, FString&)> InAdvanceGameplayTimeHandler,
+    TFunction<bool(const FGuid&, FAkUGCRuntimeHealth&)> InRuntimeHealthHandler,
     TFunction<bool()> InHasGameplayTimeWorkHandler,
     TFunction<void()> InResetGameplayHandler,
     TFunction<bool()> InRuntimeHandlerIsValid,
@@ -310,6 +343,7 @@ bool UAkUGCLogicRuntimeSubsystem::SetRuntimeHandlers(
     SpawnPlanHandler = MoveTemp(InSpawnPlanHandler);
     SpawnHandler = MoveTemp(InSpawnHandler);
     AdvanceGameplayTimeHandler = MoveTemp(InAdvanceGameplayTimeHandler);
+    RuntimeHealthHandler = MoveTemp(InRuntimeHealthHandler);
     HasGameplayTimeWorkHandler = MoveTemp(InHasGameplayTimeWorkHandler);
     ResetGameplayHandler = MoveTemp(InResetGameplayHandler);
     RuntimeHandlerIsValid = MoveTemp(InRuntimeHandlerIsValid);
@@ -367,15 +401,50 @@ bool UAkUGCLogicRuntimeSubsystem::AdvanceGameplayTime(
         return false;
     }
 
-    TArray<FAkUGCTowerDefenseGoalReached> ReachedEvents;
+    FAkUGCTowerDefenseGameplayEvents GameplayEvents;
     FString Error;
-    if (!AdvanceGameplayTimeHandler(DeltaSeconds, ReachedEvents, Error))
+    if (!AdvanceGameplayTimeHandler(DeltaSeconds, GameplayEvents, Error))
     {
         OutErrorPath = TEXT("logicRuntime.gameplayTime");
         OutErrorMessage = MoveTemp(Error);
         return false;
     }
-    for (const FAkUGCTowerDefenseGoalReached& Reached : ReachedEvents)
+    for (const FAkUGCRuntimeDamage& Damage : GameplayEvents.DamageEvents)
+    {
+        FAkUGCLogicRuntimeDamage& Event = DamageEvents.AddDefaulted_GetRef();
+        Event.SourceEntityId = Damage.SourceEntityId;
+        Event.TargetEntityId = Damage.TargetEntityId;
+        Event.RequestedDamage = Damage.RequestedDamage;
+        Event.AppliedDamage = Damage.AppliedDamage;
+        Event.HealthAfterDamage = Damage.HealthAfterDamage;
+        Event.bKilled = Damage.bKilled;
+        OnDamage.Broadcast(
+            Event.SourceEntityId,
+            Event.TargetEntityId,
+            Event.AppliedDamage,
+            Event.HealthAfterDamage,
+            Event.bKilled);
+        if (bResetRequested)
+        {
+            OutErrorPath = TEXT("logicRuntime.cancelled");
+            OutErrorMessage = TEXT("Logic execution was cancelled during a damage callback.");
+            return false;
+        }
+        if (Event.bKilled)
+        {
+            FAkUGCLogicRuntimeDeath& Death = DeathEvents.AddDefaulted_GetRef();
+            Death.SourceEntityId = Event.SourceEntityId;
+            Death.EntityId = Event.TargetEntityId;
+            OnDeath.Broadcast(Death.SourceEntityId, Death.EntityId);
+        }
+        if (bResetRequested)
+        {
+            OutErrorPath = TEXT("logicRuntime.cancelled");
+            OutErrorMessage = TEXT("Logic execution was cancelled during a damage callback.");
+            return false;
+        }
+    }
+    for (const FAkUGCTowerDefenseGoalReached& Reached : GameplayEvents.GoalReachedEvents)
     {
         FAkUGCLogicRuntimeGoalReached& Event = GoalReachedEntities.AddDefaulted_GetRef();
         Event.SourceNodeId = Reached.SourceNodeId;
@@ -561,6 +630,8 @@ void UAkUGCLogicRuntimeSubsystem::ClearExecutionState(bool bClearSpawnHandler)
     EmittedMessages.Reset();
     SpawnedEntities.Reset();
     GoalReachedEntities.Reset();
+    DamageEvents.Reset();
+    DeathEvents.Reset();
     TotalExecutedInstructionCount = 0;
     ReservedSpawnCount = 0;
     bResetRequested = false;
@@ -574,6 +645,7 @@ void UAkUGCLogicRuntimeSubsystem::ClearExecutionState(bool bClearSpawnHandler)
         SpawnPlanHandler = {};
         SpawnHandler = {};
         AdvanceGameplayTimeHandler = {};
+        RuntimeHealthHandler = {};
         HasGameplayTimeWorkHandler = {};
         ResetGameplayHandler = {};
         RuntimeHandlerIsValid = {};

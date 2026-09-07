@@ -51,10 +51,18 @@ public:
     double GetBaseMaximumHealth() const;
     FGuid GetTowerDefenseBaseEntityId() const;
     FGuid GetTowerDefenseGoalEntityId() const;
+    bool GetRuntimeHealth(const FGuid& EntityId, FAkUGCRuntimeHealth& OutHealth) const;
+    bool ApplyRuntimeDamage(
+        const FGuid& SourceEntityId,
+        const FGuid& TargetEntityId,
+        double Damage,
+        FAkUGCRuntimeDamage& OutDamage,
+        FString& OutError);
+    bool GetEnemyRemainingPathDistance(const FGuid& EntityId, double& OutDistance) const;
     const TArray<FAkUGCTowerDefenseGoalReached>& GetGoalReachedEvents() const;
     bool AdvanceTowerDefenseMovement(
         double DeltaSeconds,
-        TArray<FAkUGCTowerDefenseGoalReached>& OutGoalReached,
+        FAkUGCTowerDefenseGameplayEvents& OutEvents,
         FString& OutError);
     bool HasActiveEnemyMovement() const;
     void ResetTowerDefenseMovement();
@@ -90,6 +98,7 @@ private:
         const FAkUGCLogicSpawnEffect& SpawnEffect,
         const FAkUGCEntityRecord& Entity,
         FString& OutError);
+    bool InitializeRuntimeHealth(const FAkUGCEntityRecord& Entity, FString& OutError);
     bool ValidateTowerDefenseGameplay(
         const FAkUGCSceneDocument& Scene,
         FString* OutError = nullptr) const;
@@ -125,7 +134,8 @@ private:
     FAkUGCTowerDefensePath TowerDefensePath;
     FGuid TowerDefenseBaseEntityId;
     FGuid TowerDefenseGoalEntityId;
-    FAkUGCTowerDefenseRuntimeHealth BaseHealth;
+    TMap<FGuid, FAkUGCRuntimeHealth> RuntimeHealthByEntityId;
+    TSet<FGuid> DeadEntityIds;
     TMap<FGuid, FAkUGCTowerDefenseEnemyMovement> EnemyMovements;
     TSet<FGuid> RuntimeSpawnedEntityIds;
     TArray<FAkUGCTowerDefenseGoalReached> GoalReachedEvents;

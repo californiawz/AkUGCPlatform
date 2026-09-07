@@ -368,6 +368,10 @@ bool FAkUGCLogicRuntimeTimerSpawnTest::RunTest(const FString& Parameters)
         TestTrue(TEXT("Timer Spawn scene initializes"), Session.Initialize(Document).bSucceeded);
         TestEqual(TEXT("Five authored gameplay actors exist initially"), Runtime.Num(), 5);
         TestEqual(TEXT("Base runtime health initializes from authored maxHealth"), Runtime.GetBaseCurrentHealth(), 25.0);
+        FAkUGCLogicRuntimeHealth BaseHealth;
+        TestTrue(TEXT("Blueprint runtime exposes Base health"), Subsystem->GetRuntimeHealth(BaseEntityId, BaseHealth));
+        TestEqual(TEXT("Blueprint Base health reports authored maximum"), BaseHealth.Maximum, 25.0);
+        TestEqual(TEXT("Blueprint Base health starts full"), BaseHealth.Current, 25.0);
         TestEqual(TEXT("Tower defense Base ID is observable"), Runtime.GetTowerDefenseBaseEntityId(), BaseEntityId);
         TestEqual(TEXT("Tower defense Goal ID is observable"), Runtime.GetTowerDefenseGoalEntityId(), GoalEntityId);
         {
@@ -394,6 +398,16 @@ bool FAkUGCLogicRuntimeTimerSpawnTest::RunTest(const FString& Parameters)
         if (Subsystem->GetSpawnedEntities().Num() == 1)
         {
             const FAkUGCLogicRuntimeSpawn RuntimeSpawn = Subsystem->GetSpawnedEntities()[0];
+            FAkUGCLogicRuntimeHealth EnemyHealth;
+            TestTrue(TEXT("Spawned enemy exposes Runtime Health"),
+                Subsystem->GetRuntimeHealth(RuntimeSpawn.EntityId, EnemyHealth));
+            TestEqual(TEXT("Enemy Runtime Health initializes maximum from core.health"), EnemyHealth.Maximum, 100.0);
+            TestEqual(TEXT("Enemy Runtime Health starts full"), EnemyHealth.Current, 100.0);
+            TestFalse(TEXT("Spawned enemy starts alive"), EnemyHealth.bIsDead);
+            double RemainingPathDistance = 0.0;
+            TestTrue(TEXT("Spawned enemy exposes remaining path distance"),
+                Runtime.GetEnemyRemainingPathDistance(RuntimeSpawn.EntityId, RemainingPathDistance));
+            TestEqual(TEXT("Remaining path distance includes all untraversed segments"), RemainingPathDistance, 750.0);
             AActor* SpawnedActor = Runtime.FindActor(RuntimeSpawn.EntityId);
             TestNotNull(TEXT("Spawned Entity maps to a runtime Actor"), SpawnedActor);
             if (SpawnedActor)
@@ -444,6 +458,14 @@ bool FAkUGCLogicRuntimeTimerSpawnTest::RunTest(const FString& Parameters)
             TotalAppliedDamage += GoalReached.DamageApplied;
         }
         TestEqual(TEXT("Applied damage is clamped to remaining Base health"), TotalAppliedDamage, 25.0);
+        TestEqual(TEXT("Each GoalReached emits a standard damage event"), Subsystem->GetDamageEvents().Num(), 3);
+        TestEqual(TEXT("Base death is emitted exactly once"), Subsystem->GetDeathEvents().Num(), 1);
+        if (Subsystem->GetDeathEvents().Num() == 1)
+        {
+            TestEqual(TEXT("Death event identifies Base"), Subsystem->GetDeathEvents()[0].EntityId, BaseEntityId);
+        }
+        TestTrue(TEXT("Zero-health Base remains queryable"), Subsystem->GetRuntimeHealth(BaseEntityId, BaseHealth));
+        TestTrue(TEXT("Zero-health Base reports dead"), BaseHealth.bIsDead);
         TestEqual(TEXT("Last GoalReached observes zero Base health"),
             Subsystem->GetGoalReachedEntities().Last().BaseHealthAfterDamage,
             0.0);
@@ -454,6 +476,8 @@ bool FAkUGCLogicRuntimeTimerSpawnTest::RunTest(const FString& Parameters)
         }
         TestTrue(TEXT("Extra time does not produce duplicate GoalReached"), Subsystem->AdvanceLogicTime(1.0).bSucceeded);
         TestEqual(TEXT("GoalReached is emitted exactly once per enemy"), Subsystem->GetGoalReachedEntities().Num(), 3);
+        TestEqual(TEXT("Extra time does not produce duplicate damage"), Subsystem->GetDamageEvents().Num(), 3);
+        TestEqual(TEXT("Extra time does not produce duplicate death"), Subsystem->GetDeathEvents().Num(), 1);
         TestEqual(TEXT("Reached enemies leave only authored runtime actors"), Runtime.Num(), 5);
         TestEqual(TEXT("Batch still leaves authored Document unchanged"), Document.Scenes[0].Entities.Num(), 5);
         const FAkUGCEntityRecord* AuthoredBase = Document.Scenes[0].Entities.FindByPredicate([BaseEntityId](const FAkUGCEntityRecord& Entity)
@@ -498,6 +522,30 @@ bool FAkUGCLogicRuntimeTimerSpawnTest::RunTest(const FString& Parameters)
         TestTrue(TEXT("Large delta advances Timer and all batch intervals"), Subsystem->AdvanceLogicTime(1.5).bSucceeded);
         TestEqual(TEXT("Large delta deterministically catches up all configured enemies"), Runtime.Num(), 8);
         TestEqual(TEXT("Large delta records all configured enemies"), Subsystem->GetSpawnedEntities().Num(), 3);
+        if (Subsystem->GetSpawnedEntities().Num() == 3)
+        {
+            const FGuid EnemyEntityId = Subsystem->GetSpawnedEntities()[0].EntityId;
+            FAkUGCRuntimeDamage Damage;
+            TestTrue(TEXT("Partial Runtime Damage succeeds"),
+                Runtime.ApplyRuntimeDamage(BaseEntityId, EnemyEntityId, 40.0, Damage, Error));
+            TestEqual(TEXT("Partial Runtime Damage applies requested amount"), Damage.AppliedDamage, 40.0);
+            TestEqual(TEXT("Partial Runtime Damage leaves expected health"), Damage.HealthAfterDamage, 60.0);
+            TestFalse(TEXT("Partial Runtime Damage does not kill"), Damage.bKilled);
+            FAkUGCRuntimeHealth EnemyHealth;
+            TestTrue(TEXT("Partially damaged enemy remains queryable"), Runtime.GetRuntimeHealth(EnemyEntityId, EnemyHealth));
+            TestEqual(TEXT("Partially damaged enemy retains Runtime Health"), EnemyHealth.Current, 60.0);
+
+            TestTrue(TEXT("Lethal Runtime Damage succeeds"),
+                Runtime.ApplyRuntimeDamage(BaseEntityId, EnemyEntityId, 100.0, Damage, Error));
+            TestEqual(TEXT("Lethal Runtime Damage clamps applied amount"), Damage.AppliedDamage, 60.0);
+            TestEqual(TEXT("Lethal Runtime Damage clamps health to zero"), Damage.HealthAfterDamage, 0.0);
+            TestTrue(TEXT("Lethal Runtime Damage reports death"), Damage.bKilled);
+            TestNull(TEXT("Dead dynamic enemy Actor is removed"), Runtime.FindActor(EnemyEntityId));
+            TestFalse(TEXT("Dead dynamic enemy health is removed"), Runtime.GetRuntimeHealth(EnemyEntityId, EnemyHealth));
+            TestEqual(TEXT("Dead dynamic enemy leaves active movement"), Runtime.GetActiveEnemyMovementCount(), 2);
+            TestFalse(TEXT("Repeated damage cannot re-kill a removed enemy"),
+                Runtime.ApplyRuntimeDamage(BaseEntityId, EnemyEntityId, 1.0, Damage, Error));
+        }
     }
 
     GEngine->DestroyWorldContext(World);

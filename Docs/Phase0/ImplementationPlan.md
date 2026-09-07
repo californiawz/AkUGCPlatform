@@ -225,7 +225,16 @@ Phase 0 的目标是证明同一份 UGC Project Document 能够被 Desktop Creat
 
 `功能：结算敌人到达目标与基地伤害`
 
-## P3：基础塔攻击、伤害与死亡
+## P3：基础塔攻击、伤害与死亡（进行中）
+
+### 状态
+
+- 已将 Base 专用生命泛化为按 EntityId 索引的 Runtime Health。
+- Base 和动态 Basic Enemy 会从 core.health.maxHealth 初始化生命，且不写回作者 Document。
+- 已新增统一权威 ApplyDamage，支持伤害钳制、一次性死亡和动态敌人清理。
+- 已向 Blueprint 暴露生命快照、Damage/Death 事件及历史查询。
+- 已提供敌人剩余路径距离查询，供确定性目标选择使用。
+- 下一提交实现 Basic Tower 的稳定目标选择和按攻击间隔造成伤害。
 
 ### 目标
 

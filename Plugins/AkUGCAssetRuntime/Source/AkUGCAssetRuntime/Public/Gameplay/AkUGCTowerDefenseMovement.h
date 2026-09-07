@@ -11,6 +11,22 @@ struct AKUGCASSETRUNTIME_API FAkUGCTowerDefenseEnemyMovement
     int32 NextPathNodeIndex = 0;
 };
 
+struct AKUGCASSETRUNTIME_API FAkUGCRuntimeHealth
+{
+    double Maximum = 0.0;
+    double Current = 0.0;
+};
+
+struct AKUGCASSETRUNTIME_API FAkUGCRuntimeDamage
+{
+    FGuid SourceEntityId;
+    FGuid TargetEntityId;
+    double RequestedDamage = 0.0;
+    double AppliedDamage = 0.0;
+    double HealthAfterDamage = 0.0;
+    bool bKilled = false;
+};
+
 struct AKUGCASSETRUNTIME_API FAkUGCTowerDefenseGoalReached
 {
     FGuid SourceNodeId;
@@ -21,8 +37,8 @@ struct AKUGCASSETRUNTIME_API FAkUGCTowerDefenseGoalReached
     double BaseHealthAfterDamage = 0.0;
 };
 
-struct AKUGCASSETRUNTIME_API FAkUGCTowerDefenseRuntimeHealth
+struct AKUGCASSETRUNTIME_API FAkUGCTowerDefenseGameplayEvents
 {
-    double Maximum = 0.0;
-    double Current = 0.0;
+    TArray<FAkUGCRuntimeDamage> DamageEvents;
+    TArray<FAkUGCTowerDefenseGoalReached> GoalReachedEvents;
 };

@@ -22,7 +22,7 @@ namespace
         return FString::Printf(TEXT("entities[%d]"), EntityIndex);
     }
 
-    bool GuidLess(const FGuid& Left, const FGuid& Right)
+    bool PathGuidLess(const FGuid& Left, const FGuid& Right)
     {
         return Left.ToString(EGuidFormats::Digits) < Right.ToString(EGuidFormats::Digits);
     }
@@ -149,7 +149,7 @@ FAkUGCTowerDefensePathBuildResult FAkUGCTowerDefensePathBuilder::Build(
     Candidates.Sort([](const FCandidate& Left, const FCandidate& Right)
     {
         return Left.Node.Order == Right.Node.Order
-            ? GuidLess(Left.Node.EntityId, Right.Node.EntityId)
+            ? PathGuidLess(Left.Node.EntityId, Right.Node.EntityId)
             : Left.Node.Order < Right.Node.Order;
     });
 

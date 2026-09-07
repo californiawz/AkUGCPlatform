@@ -140,9 +140,13 @@ bool FAkUGCSceneRuntime::RunGameStartLogic(
         {
             return SpawnLogicPrefab(SpawnEffect, Registry, OutEntityId, OutSpawnError);
         },
-        [this](double DeltaSeconds, TArray<FAkUGCTowerDefenseGoalReached>& OutReached, FString& OutMovementError)
+        [this](double DeltaSeconds, FAkUGCTowerDefenseGameplayEvents& OutEvents, FString& OutMovementError)
         {
-            return AdvanceTowerDefenseMovement(DeltaSeconds, OutReached, OutMovementError);
+            return AdvanceTowerDefenseMovement(DeltaSeconds, OutEvents, OutMovementError);
+        },
+        [this](const FGuid& EntityId, FAkUGCRuntimeHealth& OutHealth)
+        {
+            return GetRuntimeHealth(EntityId, OutHealth);
         },
         [this]()
         {
@@ -255,17 +259,15 @@ bool FAkUGCSceneRuntime::InitializeTowerDefenseGameplay(
     {
         return Entity.PrefabId == TEXT("official.gameplay.goal");
     });
-    const FAkUGCComponentRecord* HealthComponent = Base->Components.FindByPredicate([](const FAkUGCComponentRecord& Component)
-    {
-        return Component.TypeId == TEXT("core.health");
-    });
-    const double MaximumHealth = HealthComponent->Properties.FindChecked(TEXT("maxHealth")).NumberValue;
-
     ResetTowerDefenseGameplay();
     TowerDefenseBaseEntityId = Base->EntityId;
     TowerDefenseGoalEntityId = Goal->EntityId;
-    BaseHealth.Maximum = MaximumHealth;
-    BaseHealth.Current = MaximumHealth;
+    FString HealthError;
+    if (!InitializeRuntimeHealth(*Base, HealthError))
+    {
+        ResetTowerDefenseGameplay();
+        return Fail(OutError, HealthError);
+    }
     return true;
 }
 
@@ -280,7 +282,8 @@ void FAkUGCSceneRuntime::ResetTowerDefenseGameplay()
     ResetTowerDefenseMovement();
     TowerDefenseBaseEntityId.Invalidate();
     TowerDefenseGoalEntityId.Invalidate();
-    BaseHealth = FAkUGCTowerDefenseRuntimeHealth{};
+    RuntimeHealthByEntityId.Reset();
+    DeadEntityIds.Reset();
 }
 
 bool FAkUGCSceneRuntime::BuildLogicSpawnPlan(
@@ -407,13 +410,57 @@ bool FAkUGCSceneRuntime::SpawnLogicPrefab(
         OutEntityId.Invalidate();
         return false;
     }
-    if (!RegisterEnemyMovement(SpawnEffect, Entity, OutError))
+    if (!RegisterEnemyMovement(SpawnEffect, Entity, OutError)
+        || !InitializeRuntimeHealth(Entity, OutError))
     {
         RemoveEntity(OutEntityId);
         OutEntityId.Invalidate();
         return false;
     }
     RuntimeSpawnedEntityIds.Add(OutEntityId);
+    return true;
+}
+
+bool FAkUGCSceneRuntime::InitializeRuntimeHealth(
+    const FAkUGCEntityRecord& Entity,
+    FString& OutError)
+{
+    const FAkUGCComponentRecord* HealthComponent = nullptr;
+    int32 HealthComponentCount = 0;
+    for (const FAkUGCComponentRecord& Component : Entity.Components)
+    {
+        if (Component.TypeId == TEXT("core.health"))
+        {
+            HealthComponent = &Component;
+            ++HealthComponentCount;
+        }
+    }
+    if (HealthComponentCount == 0)
+    {
+        return true;
+    }
+    if (HealthComponentCount != 1)
+    {
+        OutError = TEXT("Runtime health requires exactly one core.health component.");
+        return false;
+    }
+
+    const FAkUGCValue* MaximumHealth = HealthComponent->Properties.Find(TEXT("maxHealth"));
+    if (!MaximumHealth
+        || MaximumHealth->Type != EAkUGCValueType::Number
+        || !FMath::IsFinite(MaximumHealth->NumberValue)
+        || MaximumHealth->NumberValue < 1.0
+        || MaximumHealth->NumberValue > 100000.0)
+    {
+        OutError = TEXT("Runtime maxHealth must be a Number from 1 to 100000.");
+        return false;
+    }
+
+    FAkUGCRuntimeHealth Health;
+    Health.Maximum = MaximumHealth->NumberValue;
+    Health.Current = MaximumHealth->NumberValue;
+    RuntimeHealthByEntityId.Add(Entity.EntityId, Health);
+    DeadEntityIds.Remove(Entity.EntityId);
     return true;
 }
 
@@ -657,6 +704,8 @@ bool FAkUGCSceneRuntime::RemoveEntity(const FGuid& EntityId)
     ExternallyDeletedEntityIds.Remove(EntityId);
     EnemyMovements.Remove(EntityId);
     RuntimeSpawnedEntityIds.Remove(EntityId);
+    RuntimeHealthByEntityId.Remove(EntityId);
+    DeadEntityIds.Remove(EntityId);
     return true;
 }
 
@@ -672,6 +721,8 @@ bool FAkUGCSceneRuntime::NotifyActorDeletedExternally(const FGuid& EntityId, con
     ExternallyDeletedEntityIds.Add(EntityId);
     EnemyMovements.Remove(EntityId);
     RuntimeSpawnedEntityIds.Remove(EntityId);
+    RuntimeHealthByEntityId.Remove(EntityId);
+    DeadEntityIds.Remove(EntityId);
     return true;
 }
 
@@ -688,6 +739,7 @@ void FAkUGCSceneRuntime::CancelLogicExecution(const FGuid& ExecutionOwnerId)
             LogicRuntime->ResetLogicRuntimeForOwner(ExecutionOwnerId);
         }
     }
+    ResetTowerDefenseGameplay();
     LogicExecutionOwnerId.Invalidate();
 }
 
@@ -737,12 +789,109 @@ int32 FAkUGCSceneRuntime::GetActiveEnemyMovementCount() const
 
 double FAkUGCSceneRuntime::GetBaseCurrentHealth() const
 {
-    return BaseHealth.Current;
+    const FAkUGCRuntimeHealth* Health = RuntimeHealthByEntityId.Find(TowerDefenseBaseEntityId);
+    return Health ? Health->Current : 0.0;
 }
 
 double FAkUGCSceneRuntime::GetBaseMaximumHealth() const
 {
-    return BaseHealth.Maximum;
+    const FAkUGCRuntimeHealth* Health = RuntimeHealthByEntityId.Find(TowerDefenseBaseEntityId);
+    return Health ? Health->Maximum : 0.0;
+}
+
+bool FAkUGCSceneRuntime::GetRuntimeHealth(
+    const FGuid& EntityId,
+    FAkUGCRuntimeHealth& OutHealth) const
+{
+    const FAkUGCRuntimeHealth* Health = RuntimeHealthByEntityId.Find(EntityId);
+    if (!Health)
+    {
+        OutHealth = FAkUGCRuntimeHealth{};
+        return false;
+    }
+    OutHealth = *Health;
+    return true;
+}
+
+bool FAkUGCSceneRuntime::ApplyRuntimeDamage(
+    const FGuid& SourceEntityId,
+    const FGuid& TargetEntityId,
+    double Damage,
+    FAkUGCRuntimeDamage& OutDamage,
+    FString& OutError)
+{
+    OutDamage = FAkUGCRuntimeDamage{};
+    const UWorld* RuntimeWorld = World.Get();
+    if (!RuntimeWorld || RuntimeWorld->GetNetMode() == NM_Client)
+    {
+        OutError = TEXT("Runtime damage requires an authoritative runtime world.");
+        return false;
+    }
+    if (!TargetEntityId.IsValid())
+    {
+        OutError = TEXT("Runtime damage requires a valid target EntityId.");
+        return false;
+    }
+    if (!FMath::IsFinite(Damage) || Damage < 0.0 || Damage > 100000.0)
+    {
+        OutError = TEXT("Runtime damage must be finite and from 0 to 100000.");
+        return false;
+    }
+
+    FAkUGCRuntimeHealth* Health = RuntimeHealthByEntityId.Find(TargetEntityId);
+    if (!Health)
+    {
+        OutError = TEXT("Runtime damage target does not have active health state.");
+        return false;
+    }
+
+    OutDamage.SourceEntityId = SourceEntityId;
+    OutDamage.TargetEntityId = TargetEntityId;
+    OutDamage.RequestedDamage = Damage;
+    OutDamage.HealthAfterDamage = Health->Current;
+    if (DeadEntityIds.Contains(TargetEntityId) || Health->Current <= 0.0)
+    {
+        return true;
+    }
+
+    const double PreviousHealth = Health->Current;
+    Health->Current = FMath::Max(0.0, PreviousHealth - Damage);
+    OutDamage.AppliedDamage = PreviousHealth - Health->Current;
+    OutDamage.HealthAfterDamage = Health->Current;
+    OutDamage.bKilled = Health->Current <= 0.0;
+    if (OutDamage.bKilled)
+    {
+        DeadEntityIds.Add(TargetEntityId);
+        if (RuntimeSpawnedEntityIds.Contains(TargetEntityId))
+        {
+            RemoveEntity(TargetEntityId);
+        }
+    }
+    return true;
+}
+
+bool FAkUGCSceneRuntime::GetEnemyRemainingPathDistance(
+    const FGuid& EntityId,
+    double& OutDistance) const
+{
+    OutDistance = 0.0;
+    const FAkUGCTowerDefenseEnemyMovement* Movement = EnemyMovements.Find(EntityId);
+    const AActor* Actor = FindActor(EntityId);
+    if (!Movement || !Actor || Movement->NextPathNodeIndex >= TowerDefensePath.Num())
+    {
+        return false;
+    }
+
+    OutDistance = FVector::Distance(
+        Actor->GetActorLocation(),
+        TowerDefensePath.Nodes[Movement->NextPathNodeIndex].Location);
+    for (int32 PathIndex = Movement->NextPathNodeIndex; PathIndex + 1 < TowerDefensePath.Num(); ++PathIndex)
+    {
+        OutDistance += FVector::Distance(
+            TowerDefensePath.Nodes[PathIndex].Location,
+            TowerDefensePath.Nodes[PathIndex + 1].Location);
+    }
+    return FMath::IsFinite(OutDistance);
 }
 
 FGuid FAkUGCSceneRuntime::GetTowerDefenseBaseEntityId() const
@@ -762,10 +911,10 @@ const TArray<FAkUGCTowerDefenseGoalReached>& FAkUGCSceneRuntime::GetGoalReachedE
 
 bool FAkUGCSceneRuntime::AdvanceTowerDefenseMovement(
     double DeltaSeconds,
-    TArray<FAkUGCTowerDefenseGoalReached>& OutGoalReached,
+    FAkUGCTowerDefenseGameplayEvents& OutEvents,
     FString& OutError)
 {
-    OutGoalReached.Reset();
+    OutEvents = FAkUGCTowerDefenseGameplayEvents{};
     const UWorld* RuntimeWorld = World.Get();
     if (!RuntimeWorld || RuntimeWorld->GetNetMode() == NM_Client)
     {
@@ -786,9 +935,11 @@ bool FAkUGCSceneRuntime::AdvanceTowerDefenseMovement(
         OutError = TEXT("Active enemy movement requires at least two path nodes.");
         return false;
     }
+    const FAkUGCRuntimeHealth* BaseHealth = RuntimeHealthByEntityId.Find(TowerDefenseBaseEntityId);
     if (!TowerDefenseBaseEntityId.IsValid()
         || !TowerDefenseGoalEntityId.IsValid()
-        || BaseHealth.Maximum <= 0.0
+        || !BaseHealth
+        || BaseHealth->Maximum <= 0.0
         || !FindActor(TowerDefenseBaseEntityId)
         || !FindActor(TowerDefenseGoalEntityId))
     {
@@ -847,18 +998,27 @@ bool FAkUGCSceneRuntime::AdvanceTowerDefenseMovement(
 
         if (Movement.NextPathNodeIndex >= TowerDefensePath.Num())
         {
-            const double PreviousHealth = BaseHealth.Current;
-            BaseHealth.Current = FMath::Max(0.0, BaseHealth.Current - Movement.GoalDamage);
+            FAkUGCRuntimeDamage Damage;
+            if (!ApplyRuntimeDamage(
+                EntityId,
+                TowerDefenseBaseEntityId,
+                Movement.GoalDamage,
+                Damage,
+                OutError))
+            {
+                return false;
+            }
+            OutEvents.DamageEvents.Add(Damage);
 
             FAkUGCTowerDefenseGoalReached Reached;
             Reached.SourceNodeId = Movement.SourceNodeId;
             Reached.EntityId = EntityId;
             Reached.GoalEntityId = TowerDefenseGoalEntityId;
             Reached.BaseEntityId = TowerDefenseBaseEntityId;
-            Reached.DamageApplied = PreviousHealth - BaseHealth.Current;
-            Reached.BaseHealthAfterDamage = BaseHealth.Current;
+            Reached.DamageApplied = Damage.AppliedDamage;
+            Reached.BaseHealthAfterDamage = Damage.HealthAfterDamage;
             GoalReachedEvents.Add(Reached);
-            OutGoalReached.Add(Reached);
+            OutEvents.GoalReachedEvents.Add(Reached);
             ReachedEntityIds.Add(EntityId);
         }
     }

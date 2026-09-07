@@ -62,6 +62,60 @@ struct AKUGCASSETRUNTIME_API FAkUGCLogicRuntimeGoalReached
 };
 
 USTRUCT(BlueprintType)
+struct AKUGCASSETRUNTIME_API FAkUGCLogicRuntimeHealth
+{
+    GENERATED_BODY()
+
+    UPROPERTY(BlueprintReadOnly, Category = "UGC|Gameplay")
+    FGuid EntityId;
+
+    UPROPERTY(BlueprintReadOnly, Category = "UGC|Gameplay")
+    double Maximum = 0.0;
+
+    UPROPERTY(BlueprintReadOnly, Category = "UGC|Gameplay")
+    double Current = 0.0;
+
+    UPROPERTY(BlueprintReadOnly, Category = "UGC|Gameplay")
+    bool bIsDead = false;
+};
+
+USTRUCT(BlueprintType)
+struct AKUGCASSETRUNTIME_API FAkUGCLogicRuntimeDamage
+{
+    GENERATED_BODY()
+
+    UPROPERTY(BlueprintReadOnly, Category = "UGC|Gameplay")
+    FGuid SourceEntityId;
+
+    UPROPERTY(BlueprintReadOnly, Category = "UGC|Gameplay")
+    FGuid TargetEntityId;
+
+    UPROPERTY(BlueprintReadOnly, Category = "UGC|Gameplay")
+    double RequestedDamage = 0.0;
+
+    UPROPERTY(BlueprintReadOnly, Category = "UGC|Gameplay")
+    double AppliedDamage = 0.0;
+
+    UPROPERTY(BlueprintReadOnly, Category = "UGC|Gameplay")
+    double HealthAfterDamage = 0.0;
+
+    UPROPERTY(BlueprintReadOnly, Category = "UGC|Gameplay")
+    bool bKilled = false;
+};
+
+USTRUCT(BlueprintType)
+struct AKUGCASSETRUNTIME_API FAkUGCLogicRuntimeDeath
+{
+    GENERATED_BODY()
+
+    UPROPERTY(BlueprintReadOnly, Category = "UGC|Gameplay")
+    FGuid SourceEntityId;
+
+    UPROPERTY(BlueprintReadOnly, Category = "UGC|Gameplay")
+    FGuid EntityId;
+};
+
+USTRUCT(BlueprintType)
 struct AKUGCASSETRUNTIME_API FAkUGCLogicRuntimeResult
 {
     GENERATED_BODY()
@@ -102,6 +156,26 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(
     FGuid,
     EntityId);
 
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_FiveParams(
+    FAkUGCRuntimeDamageDelegate,
+    FGuid,
+    SourceEntityId,
+    FGuid,
+    TargetEntityId,
+    double,
+    AppliedDamage,
+    double,
+    HealthAfterDamage,
+    bool,
+    bKilled);
+
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(
+    FAkUGCRuntimeDeathDelegate,
+    FGuid,
+    SourceEntityId,
+    FGuid,
+    EntityId);
+
 struct FAkUGCLogicSpawnPlan
 {
     FGuid SourceNodeId;
@@ -139,6 +213,12 @@ public:
     UPROPERTY(BlueprintAssignable, Category = "UGC|Logic")
     FAkUGCLogicGoalReachedDelegate OnGoalReached;
 
+    UPROPERTY(BlueprintAssignable, Category = "UGC|Gameplay")
+    FAkUGCRuntimeDamageDelegate OnDamage;
+
+    UPROPERTY(BlueprintAssignable, Category = "UGC|Gameplay")
+    FAkUGCRuntimeDeathDelegate OnDeath;
+
     UFUNCTION(BlueprintCallable, Category = "UGC|Logic")
     FAkUGCLogicRuntimeResult RunGameStart(const FAkUGCLogicGraph& LogicGraph);
 
@@ -162,11 +242,21 @@ public:
     UFUNCTION(BlueprintPure, Category = "UGC|Logic")
     TArray<FAkUGCLogicRuntimeGoalReached> GetGoalReachedEntities() const;
 
+    UFUNCTION(BlueprintPure, Category = "UGC|Gameplay")
+    TArray<FAkUGCLogicRuntimeDamage> GetDamageEvents() const;
+
+    UFUNCTION(BlueprintPure, Category = "UGC|Gameplay")
+    TArray<FAkUGCLogicRuntimeDeath> GetDeathEvents() const;
+
+    UFUNCTION(BlueprintPure, Category = "UGC|Gameplay")
+    bool GetRuntimeHealth(FGuid EntityId, FAkUGCLogicRuntimeHealth& OutHealth) const;
+
     bool SetRuntimeHandlers(
         const FGuid& ExecutionOwnerId,
         TFunction<bool(const FAkUGCLogicSpawnEffect&, FAkUGCLogicSpawnPlan&, FString&)> InSpawnPlanHandler,
         TFunction<bool(const FAkUGCLogicSpawnEffect&, FGuid&, FString&)> InSpawnHandler,
-        TFunction<bool(double, TArray<FAkUGCTowerDefenseGoalReached>&, FString&)> InAdvanceGameplayTimeHandler,
+        TFunction<bool(double, FAkUGCTowerDefenseGameplayEvents&, FString&)> InAdvanceGameplayTimeHandler,
+        TFunction<bool(const FGuid&, FAkUGCRuntimeHealth&)> InRuntimeHealthHandler,
         TFunction<bool()> InHasGameplayTimeWorkHandler,
         TFunction<void()> InResetGameplayHandler,
         TFunction<bool()> InRuntimeHandlerIsValid,
@@ -192,9 +282,12 @@ private:
     TArray<FAkUGCLogicRuntimeMessage> EmittedMessages;
     TArray<FAkUGCLogicRuntimeSpawn> SpawnedEntities;
     TArray<FAkUGCLogicRuntimeGoalReached> GoalReachedEntities;
+    TArray<FAkUGCLogicRuntimeDamage> DamageEvents;
+    TArray<FAkUGCLogicRuntimeDeath> DeathEvents;
     TFunction<bool(const FAkUGCLogicSpawnEffect&, FAkUGCLogicSpawnPlan&, FString&)> SpawnPlanHandler;
     TFunction<bool(const FAkUGCLogicSpawnEffect&, FGuid&, FString&)> SpawnHandler;
-    TFunction<bool(double, TArray<FAkUGCTowerDefenseGoalReached>&, FString&)> AdvanceGameplayTimeHandler;
+    TFunction<bool(double, FAkUGCTowerDefenseGameplayEvents&, FString&)> AdvanceGameplayTimeHandler;
+    TFunction<bool(const FGuid&, FAkUGCRuntimeHealth&)> RuntimeHealthHandler;
     TFunction<bool()> HasGameplayTimeWorkHandler;
     TFunction<void()> ResetGameplayHandler;
     TFunction<bool()> RuntimeHandlerIsValid;
