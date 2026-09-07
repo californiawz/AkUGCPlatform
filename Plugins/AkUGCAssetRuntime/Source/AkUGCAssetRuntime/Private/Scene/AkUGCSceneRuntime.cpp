@@ -180,6 +180,29 @@ bool FAkUGCSceneRuntime::RunGameStartLogic(
         return Fail(OutError, MoveTemp(HandlerError));
     }
 
+    const bool bHasWaveStart = Scene.LogicGraph.Nodes.ContainsByPredicate([](const FAkUGCLogicNode& Node)
+    {
+        return Node.Type == EAkUGCLogicNodeType::WaveStart;
+    });
+    if (bHasWaveStart)
+    {
+        FAkUGCTowerDefenseRulesetRuntimeConfig RulesetConfig;
+        FString RulesetError;
+        if (!BuildTowerDefenseRulesetRuntimeConfig(Scene, RulesetConfig, RulesetError)
+            || !LogicRuntime->ConfigureTowerDefenseWavesForOwner(
+                ExecutionOwnerId,
+                RulesetConfig,
+                [this]()
+                {
+                    return GetActiveEnemyMovementCount();
+                },
+                &RulesetError))
+        {
+            LogicRuntime->ResetLogicRuntimeForOwner(ExecutionOwnerId);
+            return Fail(OutError, MoveTemp(RulesetError));
+        }
+    }
+
     LogicExecutionOwnerId = ExecutionOwnerId;
     const FAkUGCLogicRuntimeResult Result = LogicRuntime->RunGameStartForOwner(
         ExecutionOwnerId,
@@ -636,6 +659,48 @@ bool FAkUGCSceneRuntime::InitializeRuntimeHealth(
     Health.Current = MaximumHealth->NumberValue;
     RuntimeHealthByEntityId.Add(Entity.EntityId, Health);
     DeadEntityIds.Remove(Entity.EntityId);
+    return true;
+}
+
+bool FAkUGCSceneRuntime::BuildTowerDefenseRulesetRuntimeConfig(
+    const FAkUGCSceneDocument& Scene,
+    FAkUGCTowerDefenseRulesetRuntimeConfig& OutConfig,
+    FString& OutError) const
+{
+    OutConfig = FAkUGCTowerDefenseRulesetRuntimeConfig{};
+    OutConfig.WaveIntervalSeconds = Scene.Ruleset.WaveIntervalSeconds;
+    OutConfig.DefeatCondition = Scene.Ruleset.DefeatCondition;
+    OutConfig.VictoryCondition = Scene.Ruleset.VictoryCondition;
+    for (const FAkUGCTowerDefenseWave& Wave : Scene.Ruleset.Waves)
+    {
+        const FAkUGCEntityRecord* SpawnPoint = Scene.Entities.FindByPredicate([&Wave](const FAkUGCEntityRecord& Entity)
+        {
+            return Entity.EntityId == Wave.SpawnPointEntityId;
+        });
+        const FAkUGCComponentRecord* SpawnComponent = SpawnPoint
+            ? SpawnPoint->Components.FindByPredicate([](const FAkUGCComponentRecord& Component)
+            {
+                return Component.TypeId == TEXT("tower_defense.spawn");
+            })
+            : nullptr;
+        const FAkUGCValue* EnemyPrefab = SpawnComponent ? SpawnComponent->Properties.Find(TEXT("enemyPrefab")) : nullptr;
+        const FAkUGCValue* EnemyCount = SpawnComponent ? SpawnComponent->Properties.Find(TEXT("enemyCount")) : nullptr;
+        const FAkUGCValue* SpawnInterval = SpawnComponent ? SpawnComponent->Properties.Find(TEXT("spawnInterval")) : nullptr;
+        if (!EnemyPrefab || !EnemyCount || !SpawnInterval)
+        {
+            OutError = TEXT("Tower defense Ruleset contains an invalid Spawn Point configuration.");
+            OutConfig = FAkUGCTowerDefenseRulesetRuntimeConfig{};
+            return false;
+        }
+
+        FAkUGCTowerDefenseWaveRuntimeConfig& RuntimeWave = OutConfig.Waves.AddDefaulted_GetRef();
+        RuntimeWave.WaveId = Wave.WaveId;
+        RuntimeWave.SpawnPointEntityId = Wave.SpawnPointEntityId;
+        RuntimeWave.EnemyPrefabId = EnemyPrefab->NameValue;
+        RuntimeWave.EnemyCount = static_cast<int32>(EnemyCount->IntegerValue);
+        RuntimeWave.SpawnIntervalSeconds = SpawnInterval->NumberValue;
+        RuntimeWave.StartDelaySeconds = Wave.StartDelaySeconds;
+    }
     return true;
 }
 

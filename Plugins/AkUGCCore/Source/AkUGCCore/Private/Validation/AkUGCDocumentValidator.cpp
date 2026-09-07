@@ -195,6 +195,19 @@ FAkUGCValidationResult FAkUGCDocumentValidator::ValidateLogicGraph(
     {
         Result.AddError(Path + TEXT(".nodes"), TEXT("Logic graph can contain at most one Wave Start node."));
     }
+    if (WaveStartCount == 1)
+    {
+        for (const TPair<FGuid, EAkUGCLogicNodeType>& Pair : NodeTypes)
+        {
+            if (Pair.Value == EAkUGCLogicNodeType::Spawn)
+            {
+                Result.AddError(
+                    Path + TEXT(".nodes"),
+                    TEXT("Graphs with Wave Start cannot contain Spawn nodes because the Ruleset owns wave spawning."));
+                break;
+            }
+        }
+    }
 
     TSet<FString> ConnectionKeys;
     TMultiMap<FGuid, FGuid> TargetsBySource;
@@ -264,17 +277,26 @@ FAkUGCValidationResult FAkUGCDocumentValidator::ValidateLogicGraph(
         }
     }
 
-    const auto ValidateEntryBudget = [&Result, &TargetsBySource, &Path](
+    const auto CountEntryInstructions = [&Result, &TargetsBySource, &NodeTypes, &Path](
         const FGuid& EntryNodeId,
-        const TCHAR* EventName)
+        const TCHAR* EventName,
+        bool bRejectSpawn)
     {
         TArray<FGuid> PendingNodes = {EntryNodeId};
         int32 ReadIndex = 0;
         while (ReadIndex < PendingNodes.Num()
             && ReadIndex <= AkUGCLogicLimits::MaxExecutedInstructions)
         {
+            const FGuid NodeId = PendingNodes[ReadIndex++];
+            if (bRejectSpawn && NodeTypes.FindRef(NodeId) == EAkUGCLogicNodeType::Spawn)
+            {
+                Result.AddError(
+                    Path + TEXT(".connections"),
+                    TEXT("Wave Start graphs cannot contain Spawn nodes because the Ruleset owns wave spawning."));
+                return AkUGCLogicLimits::MaxExecutedInstructions + 1;
+            }
             TArray<FGuid> Targets;
-            TargetsBySource.MultiFind(PendingNodes[ReadIndex++], Targets);
+            TargetsBySource.MultiFind(NodeId, Targets);
             PendingNodes.Append(Targets);
         }
         if (ReadIndex > AkUGCLogicLimits::MaxExecutedInstructions
@@ -287,14 +309,29 @@ FAkUGCValidationResult FAkUGCDocumentValidator::ValidateLogicGraph(
                     EventName,
                     AkUGCLogicLimits::MaxExecutedInstructions));
         }
+        return PendingNodes.Num();
     };
+
+    int32 GameStartInstructionCount = 0;
+    int32 WaveStartInstructionCount = 0;
     if (Result.IsValid() && GameStartCount == 1)
     {
-        ValidateEntryBudget(GameStartId, TEXT("Game Start"));
+        GameStartInstructionCount = CountEntryInstructions(GameStartId, TEXT("Game Start"), false);
     }
     if (Result.IsValid() && WaveStartCount == 1)
     {
-        ValidateEntryBudget(WaveStartId, TEXT("Wave Start"));
+        WaveStartInstructionCount = CountEntryInstructions(WaveStartId, TEXT("Wave Start"), true);
+    }
+    if (Result.IsValid()
+        && GameStartInstructionCount
+            + WaveStartInstructionCount * AkUGCTowerDefenseRulesetLimits::RequiredWaveCount
+            > AkUGCLogicLimits::MaxExecutedInstructions)
+    {
+        Result.AddError(
+            Path + TEXT(".connections"),
+            FString::Printf(
+                TEXT("Game Start plus three Wave Start executions exceed the instruction budget of %d."),
+                AkUGCLogicLimits::MaxExecutedInstructions));
     }
     return Result;
 }

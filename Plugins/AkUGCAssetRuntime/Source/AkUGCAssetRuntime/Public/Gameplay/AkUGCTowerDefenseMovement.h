@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Document/AkUGCDocument.h"
 
 struct AKUGCASSETRUNTIME_API FAkUGCTowerDefenseEnemyMovement
 {
@@ -50,4 +51,22 @@ struct AKUGCASSETRUNTIME_API FAkUGCTowerDefenseGameplayEvents
 {
     TArray<FAkUGCRuntimeDamage> DamageEvents;
     TArray<FAkUGCTowerDefenseGoalReached> GoalReachedEvents;
+};
+
+struct AKUGCASSETRUNTIME_API FAkUGCTowerDefenseWaveRuntimeConfig
+{
+    FGuid WaveId;
+    FGuid SpawnPointEntityId;
+    FName EnemyPrefabId;
+    int32 EnemyCount = 0;
+    double SpawnIntervalSeconds = 0.0;
+    double StartDelaySeconds = 0.0;
+};
+
+struct AKUGCASSETRUNTIME_API FAkUGCTowerDefenseRulesetRuntimeConfig
+{
+    TArray<FAkUGCTowerDefenseWaveRuntimeConfig> Waves;
+    double WaveIntervalSeconds = 0.0;
+    EAkUGCTowerDefenseDefeatCondition DefeatCondition = EAkUGCTowerDefenseDefeatCondition::BaseHealthDepleted;
+    EAkUGCTowerDefenseVictoryCondition VictoryCondition = EAkUGCTowerDefenseVictoryCondition::AllWavesCleared;
 };

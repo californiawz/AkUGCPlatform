@@ -201,7 +201,47 @@ struct FAkUGCPendingLogicSpawnBatch
     FAkUGCLogicSpawnPlan Plan;
     int32 RemainingCount = 0;
     double RemainingSeconds = 0.0;
+    bool bWaveBatch = false;
 };
+
+UENUM(BlueprintType)
+enum class EAkUGCWaveRuntimeState : uint8
+{
+    Inactive,
+    WaitingToStart,
+    Spawning,
+    WaitingForEnemies,
+    BetweenWaves,
+    Completed
+};
+
+USTRUCT(BlueprintType)
+struct AKUGCASSETRUNTIME_API FAkUGCWaveRuntimeSnapshot
+{
+    GENERATED_BODY()
+
+    UPROPERTY(BlueprintReadOnly, Category = "UGC|Wave")
+    EAkUGCWaveRuntimeState State = EAkUGCWaveRuntimeState::Inactive;
+
+    UPROPERTY(BlueprintReadOnly, Category = "UGC|Wave")
+    int32 CurrentWaveIndex = INDEX_NONE;
+
+    UPROPERTY(BlueprintReadOnly, Category = "UGC|Wave")
+    FGuid CurrentWaveId;
+
+    UPROPERTY(BlueprintReadOnly, Category = "UGC|Wave")
+    int32 TotalWaveCount = 0;
+
+    UPROPERTY(BlueprintReadOnly, Category = "UGC|Wave")
+    double SecondsUntilNextBoundary = 0.0;
+};
+
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(
+    FAkUGCWaveStateChangedDelegate,
+    EAkUGCWaveRuntimeState,
+    State,
+    int32,
+    WaveIndex);
 
 UCLASS()
 class AKUGCASSETRUNTIME_API UAkUGCLogicRuntimeSubsystem : public UTickableWorldSubsystem
@@ -217,6 +257,9 @@ public:
 
     UPROPERTY(BlueprintAssignable, Category = "UGC|Logic")
     FAkUGCLogicWaveStartDelegate OnWaveStart;
+
+    UPROPERTY(BlueprintAssignable, Category = "UGC|Wave")
+    FAkUGCWaveStateChangedDelegate OnWaveStateChanged;
 
     UPROPERTY(BlueprintAssignable, Category = "UGC|Logic")
     FAkUGCLogicGoalReachedDelegate OnGoalReached;
@@ -266,6 +309,15 @@ public:
     UFUNCTION(BlueprintPure, Category = "UGC|Gameplay")
     bool GetRuntimeHealth(FGuid EntityId, FAkUGCLogicRuntimeHealth& OutHealth) const;
 
+    UFUNCTION(BlueprintPure, Category = "UGC|Wave")
+    FAkUGCWaveRuntimeSnapshot GetWaveRuntimeState() const;
+
+    bool ConfigureTowerDefenseWavesForOwner(
+        const FGuid& ExecutionOwnerId,
+        const FAkUGCTowerDefenseRulesetRuntimeConfig& Config,
+        TFunction<int32()> InActiveEnemyCountHandler,
+        FString* OutError = nullptr);
+
     bool SetRuntimeHandlers(
         const FGuid& ExecutionOwnerId,
         TFunction<bool(const FAkUGCLogicSpawnEffect&, FAkUGCLogicSpawnPlan&, FString&)> InSpawnPlanHandler,
@@ -286,7 +338,14 @@ protected:
 
 private:
     bool ApplyRunResult(const FAkUGCLogicRunResult& RunResult, FString& OutErrorPath, FString& OutErrorMessage);
-    bool AdvanceGameplayTime(double DeltaSeconds, FString& OutErrorPath, FString& OutErrorMessage);
+    bool AdvanceGameplayTime(
+        double DeltaSeconds,
+        double& OutAdvancedSeconds,
+        FString& OutErrorPath,
+        FString& OutErrorMessage);
+    bool StartCurrentWave(FString& OutErrorPath, FString& OutErrorMessage);
+    bool RefreshWaveStateTransitions();
+    bool SetWaveState(EAkUGCWaveRuntimeState NewState, double SecondsUntilBoundary = 0.0);
     bool SpawnSingle(const FAkUGCLogicSpawnPlan& Plan, FString& OutErrorPath, FString& OutErrorMessage);
     FAkUGCLogicRuntimeResult MakeCurrentResult(bool bSucceeded, FString ErrorPath = {}, FString ErrorMessage = {}) const;
     void ClearExecutionState(bool bClearSpawnHandler);
@@ -303,11 +362,14 @@ private:
     TFunction<bool(const FAkUGCLogicSpawnEffect&, FGuid&, FString&)> SpawnHandler;
     TFunction<bool(double, double&, bool&, FAkUGCTowerDefenseGameplayEvents&, FString&)> AdvanceGameplayTimeHandler;
     TFunction<bool(const FGuid&, FAkUGCRuntimeHealth&)> RuntimeHealthHandler;
+    TFunction<int32()> ActiveEnemyCountHandler;
     TFunction<bool()> HasGameplayTimeWorkHandler;
     TFunction<void()> ResetGameplayHandler;
     TFunction<bool()> RuntimeHandlerIsValid;
     int32 TotalExecutedInstructionCount = 0;
     int32 ReservedSpawnCount = 0;
+    FAkUGCTowerDefenseRulesetRuntimeConfig WaveConfig;
+    FAkUGCWaveRuntimeSnapshot WaveState;
     FGuid ActiveExecutionOwnerId;
     FGuid ManualExecutionOwnerId = FGuid::NewGuid();
     bool bIsRunning = false;

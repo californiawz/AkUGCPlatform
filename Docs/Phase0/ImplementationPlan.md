@@ -279,7 +279,10 @@ Basic Tower 能稳定选择目标、按攻击间隔造成伤害并移除死亡�
 - Edit 继续允许 0 至 3 波中间态，PlayClient 不在本地启动权威玩法。
 - 已新增 WaveStart Logic 事件入口、独立 IR 入口和按 WaveIndex 触发的 Runner/Runtime API。
 - GameStart 与 WaveStart 分支独立执行，并分别受图校验、IR 校验、重入和指令预算保护。
-- 下一提交实现三波权威状态机。
+- 已实现三波权威状态机，按 StartDelay、WaveInterval、Spawning、WaitingForEnemies 和 Completed 状态推进。
+- 状态机在 Session 初始化时快照 Ruleset 与 enemy_spawn 配置，直接复用既有 Spawn 批次和统一时间线，不生成临时 Logic 节点。
+- 大 Delta 可跨越波次延迟、生成间隔、战斗和波间隔；状态及当前 Wave 可由 Blueprint 查询。
+- 下一提交实现塔防 Victory/Defeat 互斥判定。
 
 ### 目标
 

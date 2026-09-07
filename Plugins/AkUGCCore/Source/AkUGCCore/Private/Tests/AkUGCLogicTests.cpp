@@ -303,6 +303,35 @@ bool FAkUGCLogicGraphValidationTest::RunTest(const FString& Parameters)
     TestFalse(TEXT("Unknown node type is rejected"),
         FAkUGCLogicCompiler::Compile(Document.Scenes[0].LogicGraph).bSucceeded);
 
+    FAkUGCLogicNode WaveStart;
+    WaveStart.NodeId = FGuid::NewGuid();
+    WaveStart.Type = EAkUGCLogicNodeType::WaveStart;
+    FAkUGCLogicNode Spawn;
+    Spawn.NodeId = FGuid::NewGuid();
+    Spawn.Type = EAkUGCLogicNodeType::Spawn;
+    Spawn.SpawnPrefabId = TEXT("official.unit.basic_enemy");
+    FAkUGCLogicGraph WaveSpawnGraph;
+    WaveSpawnGraph.Nodes = {WaveStart, Spawn};
+    TestFalse(TEXT("Wave Start graphs reject duplicate Spawn ownership"),
+        FAkUGCLogicCompiler::Compile(WaveSpawnGraph).bSucceeded);
+
+    FAkUGCLogicGraph RepeatedWaveBudgetGraph;
+    FAkUGCLogicNode& BudgetWaveStart = RepeatedWaveBudgetGraph.Nodes.AddDefaulted_GetRef();
+    BudgetWaveStart.NodeId = FGuid::NewGuid();
+    BudgetWaveStart.Type = EAkUGCLogicNodeType::WaveStart;
+    for (int32 MessageIndex = 0; MessageIndex < 400; ++MessageIndex)
+    {
+        FAkUGCLogicNode& BudgetMessage = RepeatedWaveBudgetGraph.Nodes.AddDefaulted_GetRef();
+        BudgetMessage.NodeId = FGuid::NewGuid();
+        BudgetMessage.Type = EAkUGCLogicNodeType::Message;
+        BudgetMessage.Message = TEXT("Budget");
+        FAkUGCLogicConnection& BudgetConnection = RepeatedWaveBudgetGraph.Connections.AddDefaulted_GetRef();
+        BudgetConnection.SourceNodeId = BudgetWaveStart.NodeId;
+        BudgetConnection.TargetNodeId = BudgetMessage.NodeId;
+    }
+    TestFalse(TEXT("Three Wave Start executions share the total instruction budget"),
+        FAkUGCLogicCompiler::Compile(RepeatedWaveBudgetGraph).bSucceeded);
+
     Document.Scenes[0].LogicGraph.Nodes.Reset();
     for (int32 NodeIndex = 0; NodeIndex <= AkUGCLogicLimits::MaxNodes; ++NodeIndex)
     {

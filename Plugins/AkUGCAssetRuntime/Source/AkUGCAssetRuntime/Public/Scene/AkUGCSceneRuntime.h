@@ -103,6 +103,10 @@ private:
     bool InitializeRuntimeHealth(const FAkUGCEntityRecord& Entity, FString& OutError);
     bool RegisterBasicTowerAttack(const FAkUGCEntityRecord& Entity, FString& OutError);
     bool SelectBasicTowerTarget(const FAkUGCTowerDefenseBasicTowerAttack& Tower, FGuid& OutTargetEntityId) const;
+    bool BuildTowerDefenseRulesetRuntimeConfig(
+        const FAkUGCSceneDocument& Scene,
+        FAkUGCTowerDefenseRulesetRuntimeConfig& OutConfig,
+        FString& OutError) const;
     bool ValidateTowerDefenseGameplay(
         const FAkUGCSceneDocument& Scene,
         const FAkUGCPrefabRegistry& Registry,

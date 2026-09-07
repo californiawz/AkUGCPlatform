@@ -107,6 +107,15 @@ bool FAkUGCLogicRuntimeSubsystemTest::RunTest(const FString& Parameters)
     Scene.SceneId = FGuid::NewGuid();
     Scene.DisplayName = TEXT("Main");
     Scene.LogicGraph = Graph;
+    Scene.LogicGraph.Nodes.RemoveAll([&WaveStart, &WaveMessage](const FAkUGCLogicNode& Node)
+    {
+        return Node.NodeId == WaveStart.NodeId || Node.NodeId == WaveMessage.NodeId;
+    });
+    Scene.LogicGraph.Connections.RemoveAll([&WaveConnection](const FAkUGCLogicConnection& Candidate)
+    {
+        return Candidate.SourceNodeId == WaveConnection.SourceNodeId
+            && Candidate.TargetNodeId == WaveConnection.TargetNodeId;
+    });
     FAkUGCPrefabRegistry Registry;
     {
         FAkUGCSceneRuntime SceneRuntime(World);
@@ -791,6 +800,79 @@ bool FAkUGCLogicRuntimeTimerSpawnTest::RunTest(const FString& Parameters)
             TestEqual(TEXT("Small deltas match large delta Goal result"), Subsystem->GetGoalReachedEntities().Num(), 0);
             TestEqual(TEXT("Small deltas match large delta Base health"), Runtime.GetBaseCurrentHealth(), 25.0);
         }
+    }
+
+    {
+        FAkUGCProjectDocument WaveDocument = Document;
+        FAkUGCSceneDocument& WaveScene = WaveDocument.Scenes[0];
+        FAkUGCComponentRecord* WaveSpawnConfig = WaveScene.Entities[0].Components.FindByPredicate([](const FAkUGCComponentRecord& Component)
+        {
+            return Component.TypeId == TEXT("tower_defense.spawn");
+        });
+        if (WaveSpawnConfig)
+        {
+            WaveSpawnConfig->Properties.FindChecked(TEXT("enemyCount")).IntegerValue = 1;
+        }
+        WaveScene.Ruleset.WaveIntervalSeconds = 0.2;
+        for (int32 WaveIndex = 0; WaveIndex < WaveScene.Ruleset.Waves.Num(); ++WaveIndex)
+        {
+            WaveScene.Ruleset.Waves[WaveIndex].StartDelaySeconds = 0.1;
+        }
+
+        FAkUGCLogicNode WaveGameStart;
+        WaveGameStart.NodeId = FGuid::NewGuid();
+        WaveGameStart.Type = EAkUGCLogicNodeType::GameStart;
+        FAkUGCLogicNode WaveStartNode;
+        WaveStartNode.NodeId = FGuid::NewGuid();
+        WaveStartNode.Type = EAkUGCLogicNodeType::WaveStart;
+        FAkUGCLogicNode WaveMessageNode;
+        WaveMessageNode.NodeId = FGuid::NewGuid();
+        WaveMessageNode.Type = EAkUGCLogicNodeType::Message;
+        WaveMessageNode.Message = TEXT("Wave started");
+        FAkUGCLogicConnection WaveMessageConnection;
+        WaveMessageConnection.SourceNodeId = WaveStartNode.NodeId;
+        WaveMessageConnection.TargetNodeId = WaveMessageNode.NodeId;
+        WaveScene.LogicGraph.Nodes = {WaveMessageNode, WaveGameStart, WaveStartNode};
+        WaveScene.LogicGraph.Connections = {WaveMessageConnection};
+
+        FAkUGCEntityRecord WaveTower;
+        TestTrue(TEXT("Wave state machine Tower is created"), Registry.CreateEntityRecord(
+            TEXT("official.tower.basic"),
+            FGuid::NewGuid(),
+            FTransform(FVector(600.0, 50.0, 0.0)),
+            WaveTower,
+            &Error));
+        FAkUGCComponentRecord* WaveTowerConfig = WaveTower.Components.FindByPredicate([](const FAkUGCComponentRecord& Component)
+        {
+            return Component.TypeId == TEXT("tower_defense.tower");
+        });
+        if (WaveTowerConfig)
+        {
+            WaveTowerConfig->Properties.FindChecked(TEXT("attackRange")).NumberValue = 1000.0;
+            WaveTowerConfig->Properties.FindChecked(TEXT("attackInterval")).NumberValue = 0.1;
+            WaveTowerConfig->Properties.FindChecked(TEXT("attackDamage")).NumberValue = 100.0;
+        }
+        WaveScene.Entities.Add(WaveTower);
+
+        FAkUGCSceneRuntime Runtime(World);
+        FAkUGCDocumentRuntimeSession Session(
+            Runtime,
+            Registry,
+            Scene.SceneId,
+            EAkUGCRuntimeSessionMode::PlayAuthority);
+        TestTrue(TEXT("Three-wave state machine initializes"), Session.Initialize(WaveDocument).bSucceeded);
+        TestEqual(TEXT("Wave state machine starts waiting for first wave"),
+            Subsystem->GetWaveRuntimeState().State,
+            EAkUGCWaveRuntimeState::WaitingToStart);
+        TestTrue(TEXT("Large delta advances all three waves"), Subsystem->AdvanceLogicTime(2.0).bSucceeded);
+        const FAkUGCWaveRuntimeSnapshot WaveState = Subsystem->GetWaveRuntimeState();
+        TestEqual(TEXT("Three-wave state machine completes"), WaveState.State, EAkUGCWaveRuntimeState::Completed);
+        TestEqual(TEXT("Final Wave index is observable"), WaveState.CurrentWaveIndex, 2);
+        TestEqual(TEXT("Each wave triggers WaveStart Logic"), Subsystem->GetEmittedMessages().Num(), 3);
+        TestEqual(TEXT("Each wave spawns one enemy"), Subsystem->GetSpawnedEntities().Num(), 3);
+        TestEqual(TEXT("All wave enemies are defeated"), Runtime.GetActiveEnemyMovementCount(), 0);
+        TestEqual(TEXT("Wave enemies produce three deaths"), Subsystem->GetDeathEvents().Num(), 3);
+        TestEqual(TEXT("Wave state machine preserves Base health"), Runtime.GetBaseCurrentHealth(), 25.0);
     }
 
     GEngine->DestroyWorldContext(World);
