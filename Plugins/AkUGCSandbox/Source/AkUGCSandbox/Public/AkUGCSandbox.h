@@ -90,6 +90,12 @@ public:
 	/** 执行一段 Lua 脚本，返回执行结果。 */
 	FAkUGCSandboxResult RunScript(const FString& Source, const FString& ChunkName = TEXT("=sandbox"));
 
+	/**
+	 * 推进受控定时器：扣减剩余时间并触发到期回调，返回本次触发的回调数量。
+	 * 由宿主（如场景运行时 Tick）周期性调用；回调在沙箱 env 下执行，仍受各类配额约束。
+	 */
+	int32 AdvanceTimers(double DeltaSeconds);
+
 private:
 	TUniquePtr<FAkUGCSandboxImpl> Impl;
 };

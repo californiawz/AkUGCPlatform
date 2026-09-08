@@ -193,6 +193,23 @@ namespace
 			return true;
 		}
 
+		virtual bool SpawnEntity(
+			const FString& PrefabId,
+			const FString& AnchorEntityId,
+			FString& OutEntityId,
+			FString& OutError) override
+		{
+			OutEntityId = FString::Printf(TEXT("spawned-%d"), ++SpawnCounter);
+			SpawnedPrefabs.Add(FString::Printf(TEXT("%s@%s"), *PrefabId, *AnchorEntityId));
+			return true;
+		}
+
+		virtual bool QueryWaveState(FAkUGCSandboxWaveState& OutState) override
+		{
+			OutState = WaveState;
+			return bHasWaveState;
+		}
+
 		struct FAkUGCMockDamage
 		{
 			FString Source;
@@ -204,6 +221,10 @@ namespace
 		TMap<FString, double> HealthByEntity;
 		TMap<FString, double> MaxHealthByEntity;
 		FAkUGCMockDamage LastDamage;
+		TArray<FString> SpawnedPrefabs;
+		FAkUGCSandboxWaveState WaveState;
+		bool bHasWaveState = false;
+		int32 SpawnCounter = 0;
 	};
 }
 
@@ -324,6 +345,99 @@ bool FAkUGCSandboxApplyDamageTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("host received target id"), Host->LastDamage.Target, TEXT("enemy-1"));
 	TestEqual(TEXT("host received source id"), Host->LastDamage.Source, TEXT("tower-1"));
 	TestEqual(TEXT("host received damage amount"), Host->LastDamage.Damage, 30.0);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAkUGCSandboxSpawnTest,
+	"AkUGC.Sandbox.VM.ControlledApiSpawn",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCSandboxSpawnTest::RunTest(const FString& Parameters)
+{
+	const TSharedPtr<FMockSandboxHost> Host = MakeShared<FMockSandboxHost>();
+
+	FAkUGCSandbox Sandbox;
+	Sandbox.Initialize(FAkUGCSandboxConfig(), nullptr, Host);
+
+	const FString Script = TEXT(
+		"local id = ugc.spawn('prefab-1', 'anchor-1')\n"
+		"assert(type(id) == 'string' and #id > 0, 'spawn must return entity id')\n");
+
+	const FAkUGCSandboxResult Result = Sandbox.RunScript(Script);
+	TestEqual(TEXT("spawn forwards to host"), Result.Status, EAkUGCSandboxStatus::Success);
+	TestEqual(TEXT("host received one spawn request"), Host->SpawnedPrefabs.Num(), 1);
+	if (Host->SpawnedPrefabs.Num() == 1)
+	{
+		TestEqual(TEXT("host received prefab and anchor"), Host->SpawnedPrefabs[0], TEXT("prefab-1@anchor-1"));
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAkUGCSandboxGetWaveStateTest,
+	"AkUGC.Sandbox.VM.ControlledApiGetWaveState",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCSandboxGetWaveStateTest::RunTest(const FString& Parameters)
+{
+	const TSharedPtr<FMockSandboxHost> Host = MakeShared<FMockSandboxHost>();
+	Host->bHasWaveState = true;
+	Host->WaveState.WaveIndex = 1;
+	Host->WaveState.TotalWaves = 3;
+	Host->WaveState.State = 2;
+	Host->WaveState.Result = 0;
+	Host->WaveState.SecondsUntilNextBoundary = 1.5;
+
+	FAkUGCSandbox Sandbox;
+	Sandbox.Initialize(FAkUGCSandboxConfig(), nullptr, Host);
+
+	const FString Script = TEXT(
+		"local ws = ugc.get_wave_state()\n"
+		"assert(ws ~= nil, 'wave state must be a table')\n"
+		"assert(ws.wave_index == 1, 'wave index mismatch')\n"
+		"assert(ws.total_waves == 3, 'total waves mismatch')\n"
+		"assert(ws.state == 2, 'state mismatch')\n"
+		"assert(ws.result == 0, 'result mismatch')\n"
+		"assert(ws.seconds_until_boundary == 1.5, 'boundary mismatch')\n");
+
+	const FAkUGCSandboxResult Result = Sandbox.RunScript(Script);
+	TestEqual(TEXT("get_wave_state returns mapped snapshot"), Result.Status, EAkUGCSandboxStatus::Success);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAkUGCSandboxTimerAfterTest,
+	"AkUGC.Sandbox.VM.ControlledApiTimerAfter",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCSandboxTimerAfterTest::RunTest(const FString& Parameters)
+{
+	const TSharedPtr<FMockSandboxHost> Host = MakeShared<FMockSandboxHost>();
+
+	FAkUGCSandbox Sandbox;
+	Sandbox.Initialize(FAkUGCSandboxConfig(), nullptr, Host);
+
+	const FString Script = TEXT(
+		"local id = ugc.timer_after(0.5, function() ugc.message('timer fired') end)\n"
+		"assert(type(id) == 'number' and id >= 1, 'timer id must be positive')\n");
+
+	const FAkUGCSandboxResult Result = Sandbox.RunScript(Script);
+	TestEqual(TEXT("timer registration succeeds"), Result.Status, EAkUGCSandboxStatus::Success);
+	TestEqual(TEXT("no message before timer fires"), Host->Messages.Num(), 0);
+
+	const int32 Fired = Sandbox.AdvanceTimers(0.6);
+	TestEqual(TEXT("one timer fired after advancing"), Fired, 1);
+	TestEqual(TEXT("callback forwarded message"), Host->Messages.Num(), 1);
+	if (Host->Messages.Num() == 1)
+	{
+		TestEqual(TEXT("callback message content"), Host->Messages[0], TEXT("timer fired"));
+	}
+
+	TestEqual(TEXT("timer does not refire"), Sandbox.AdvanceTimers(0.6), 0);
 
 	return true;
 }

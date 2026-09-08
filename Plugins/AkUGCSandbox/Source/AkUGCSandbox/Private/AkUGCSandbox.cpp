@@ -32,12 +32,24 @@ struct FAkUGCSandboxImpl
 	bool bTimeout = false;
 	bool bCallDepthExceeded = false;
 	double RunStartTime = 0.0;
+
+	// 受控定时器：脚本通过 ugc.timer_after 注册，宿主通过 AdvanceTimers 驱动。
+	// 回调函数以 luaL_ref 存入注册表 timer 回调表，到期后由 AdvanceTimers 执行。
+	struct FAkUGCSandboxPendingTimer
+	{
+		int32 Id = 0;
+		double RemainingSeconds = 0.0;
+		int32 CallbackRef = LUA_NOREF;
+	};
+	TArray<FAkUGCSandboxPendingTimer> PendingTimers;
+	int32 NextTimerId = 1;
 };
 
 namespace
 {
 	const char* SandboxImplRegistryKey = "AkUGCSandboxImpl";
 	const char* SandboxEnvRegistryKey = "AkUGCSandboxEnv";
+	const char* SandboxTimerCallbacksKey = "AkUGCSandboxTimerCallbacks";
 
 	/** 查询当前 VM 已用内存（字节）。 */
 	int64 GetLuaMemoryBytes(lua_State* L)
@@ -184,10 +196,116 @@ namespace
 		lua_pushnumber(L, Applied);
 		lua_pushnumber(L, HealthAfter);
 		return 2;
-	}
+		}
 
-	/**
-	 * 创建沙盒独立环境表并存入注册表。
+		/**
+		* ugc.spawn(prefabId [, anchorId])：受控生成实体，返回新实体 ID 字符串。
+		* 宿主未注入或生成失败时抛错（错误消息来自宿主）。
+		*/
+		int LuaUgcSpawn(lua_State* L)
+		{
+		const FString PrefabId = UTF8_TO_TCHAR(luaL_checkstring(L, 1));
+		const FString AnchorId = (lua_gettop(L) >= 2 && !lua_isnil(L, 2))
+			? UTF8_TO_TCHAR(luaL_checkstring(L, 2))
+			: FString();
+
+		lua_getfield(L, LUA_REGISTRYINDEX, SandboxImplRegistryKey);
+		FAkUGCSandboxImpl* Impl = static_cast<FAkUGCSandboxImpl*>(lua_touserdata(L, -1));
+		lua_pop(L, 1);
+
+		if (!Impl || !Impl->Host)
+		{
+			return luaL_error(L, "ugc.spawn is unavailable without a host");
+		}
+
+		FString EntityId;
+		FString Error;
+		if (!Impl->Host->SpawnEntity(PrefabId, AnchorId, EntityId, Error))
+		{
+			return luaL_error(L, TCHAR_TO_UTF8(*Error));
+		}
+
+		lua_pushstring(L, TCHAR_TO_UTF8(*EntityId));
+		return 1;
+		}
+
+		/**
+		* ugc.get_wave_state()：受控规则集查询，返回波次/胜负快照表。
+		* 无规则集状态时返回 nil（便于脚本判空）；宿主未注入时抛错。
+		*/
+		int LuaUgcGetWaveState(lua_State* L)
+		{
+		lua_getfield(L, LUA_REGISTRYINDEX, SandboxImplRegistryKey);
+		FAkUGCSandboxImpl* Impl = static_cast<FAkUGCSandboxImpl*>(lua_touserdata(L, -1));
+		lua_pop(L, 1);
+
+		if (!Impl || !Impl->Host)
+		{
+			return luaL_error(L, "ugc.get_wave_state is unavailable without a host");
+		}
+
+		FAkUGCSandboxWaveState State;
+		if (!Impl->Host->QueryWaveState(State))
+		{
+			lua_pushnil(L);
+			return 1;
+		}
+
+		lua_createtable(L, 0, 5);
+		lua_pushinteger(L, State.WaveIndex);
+		lua_setfield(L, -2, "wave_index");
+		lua_pushinteger(L, State.TotalWaves);
+		lua_setfield(L, -2, "total_waves");
+		lua_pushinteger(L, State.State);
+		lua_setfield(L, -2, "state");
+		lua_pushinteger(L, State.Result);
+		lua_setfield(L, -2, "result");
+		lua_pushnumber(L, State.SecondsUntilNextBoundary);
+		lua_setfield(L, -2, "seconds_until_boundary");
+		return 1;
+		}
+
+		/**
+		* ugc.timer_after(delay, callback)：注册受控延迟回调，返回 timer id。
+		* delay 必须为正数；callback 存入注册表，由宿主通过 AdvanceTimers 驱动触发。
+		*/
+		int LuaUgcTimerAfter(lua_State* L)
+		{
+		const double Delay = static_cast<double>(luaL_checknumber(L, 1));
+		luaL_checktype(L, 2, LUA_TFUNCTION);
+
+		if (!(Delay > 0.0))
+		{
+			return luaL_error(L, "delay must be positive");
+		}
+
+		lua_getfield(L, LUA_REGISTRYINDEX, SandboxImplRegistryKey);
+		FAkUGCSandboxImpl* Impl = static_cast<FAkUGCSandboxImpl*>(lua_touserdata(L, -1));
+		lua_pop(L, 1);
+
+		if (!Impl)
+		{
+			return luaL_error(L, "ugc.timer_after is unavailable without a sandbox");
+		}
+
+		// 将回调函数存入注册表 timer 回调表，取得整数引用。
+		lua_getfield(L, LUA_REGISTRYINDEX, SandboxTimerCallbacksKey);
+		lua_pushvalue(L, 2);
+		const int CallbackRef = luaL_ref(L, -2);
+		lua_pop(L, 1);
+
+		FAkUGCSandboxImpl::FAkUGCSandboxPendingTimer Timer;
+		Timer.Id = Impl->NextTimerId++;
+		Timer.RemainingSeconds = Delay;
+		Timer.CallbackRef = CallbackRef;
+		Impl->PendingTimers.Add(Timer);
+
+		lua_pushinteger(L, Timer.Id);
+		return 1;
+		}
+
+		/**
+		* 创建沙盒独立环境表并存入注册表。
 	 *
 	 * 沙盒隔离不侵入宿主 _G，而是为脚本额外创建一个独立 env：
 	 *   - sandbox_env 为空表，作为脚本的 _ENV，脚本全局读写均落在该表，实例间隔离；
@@ -225,6 +343,12 @@ namespace
 			lua_setfield(L, -2, "get_health");
 			lua_pushcfunction(L, &LuaUgcApplyDamage);
 			lua_setfield(L, -2, "apply_damage");
+			lua_pushcfunction(L, &LuaUgcSpawn);
+			lua_setfield(L, -2, "spawn");
+			lua_pushcfunction(L, &LuaUgcGetWaveState);
+			lua_setfield(L, -2, "get_wave_state");
+			lua_pushcfunction(L, &LuaUgcTimerAfter);
+			lua_setfield(L, -2, "timer_after");
 			lua_setfield(L, SafeGlobals, "ugc");
 		}
 
@@ -243,7 +367,11 @@ namespace
 
 		// 存入注册表供 RunScript 使用。
 		lua_setfield(L, LUA_REGISTRYINDEX, SandboxEnvRegistryKey);
-	}
+
+		// 受控定时器回调表：ugc.timer_after 把回调引用存到这里，供 AdvanceTimers 取用。
+		lua_newtable(L);
+		lua_setfield(L, LUA_REGISTRYINDEX, SandboxTimerCallbacksKey);
+		}
 
 	/** 将栈顶 chunk 的 _ENV 上值替换为沙盒 env（无 _ENV 上值时弹出多余值）。 */
 	void SetChunkEnv(lua_State* L)
@@ -432,4 +560,53 @@ FAkUGCSandboxResult FAkUGCSandbox::RunScript(const FString& Source, const FStrin
 	}
 	Result.ErrorMessage = PopTopString(L);
 	return Result;
+}
+
+int32 FAkUGCSandbox::AdvanceTimers(double DeltaSeconds)
+{
+	if (!Impl->State)
+	{
+		return 0;
+	}
+
+	lua_State* L = Impl->State;
+	FLuaCallScope Scope(L);
+
+	int32 FiredCount = 0;
+	for (int32 Index = Impl->PendingTimers.Num() - 1; Index >= 0; --Index)
+	{
+		FAkUGCSandboxImpl::FAkUGCSandboxPendingTimer& Timer = Impl->PendingTimers[Index];
+		Timer.RemainingSeconds -= DeltaSeconds;
+		if (Timer.RemainingSeconds > 0.0)
+		{
+			continue;
+		}
+
+		// 取出回调函数（绝对索引记录 callbacks 表位置，避免栈操作漂移）。
+		lua_getfield(L, LUA_REGISTRYINDEX, SandboxTimerCallbacksKey);
+		const int CallbacksTable = lua_gettop(L);
+		lua_rawgeti(L, CallbacksTable, Timer.CallbackRef);
+
+		// 重置单次回调执行的配额状态（复用 RunScript 的 hook 语义）。
+		Impl->InstructionsExecuted = 0;
+		Impl->bInstructionLimitExceeded = false;
+		Impl->bMemoryLimitExceeded = false;
+		Impl->bTimeout = false;
+		Impl->bCallDepthExceeded = false;
+		Impl->RunStartTime = FPlatformTime::Seconds();
+
+		const int RunStatus = lua_pcall(L, 0, 0, 0);
+		++FiredCount;
+		if (RunStatus != LUA_OK)
+		{
+			lua_pop(L, 1); // 丢弃错误信息，单个回调失败不阻断其余定时器。
+		}
+
+		// 释放回调引用并移除到期的 timer。
+		luaL_unref(L, CallbacksTable, Timer.CallbackRef);
+		lua_pop(L, 1); // 弹出 callbacks 表。
+		Impl->PendingTimers.RemoveAt(Index);
+	}
+
+	return FiredCount;
 }

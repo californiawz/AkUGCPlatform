@@ -125,16 +125,10 @@ bool FAkUGCSandboxSceneHostTest::RunTest(const FString& Parameters)
 	FAkUGCLogicNode Start;
 	Start.NodeId = FGuid::NewGuid();
 	Start.Type = EAkUGCLogicNodeType::GameStart;
-	FAkUGCLogicNode Spawn;
-	Spawn.NodeId = FGuid::NewGuid();
-	Spawn.Type = EAkUGCLogicNodeType::Spawn;
-	Spawn.SpawnPrefabId = TEXT("official.unit.basic_enemy");
-	Spawn.SpawnAtEntityId = SpawnPointId;
-	Scene.LogicGraph.Nodes = {Spawn, Start};
-	FAkUGCLogicConnection StartToSpawn;
-	StartToSpawn.SourceNodeId = Start.NodeId;
-	StartToSpawn.TargetNodeId = Spawn.NodeId;
-	Scene.LogicGraph.Connections = {StartToSpawn};
+	FAkUGCLogicNode WaveStart;
+	WaveStart.NodeId = FGuid::NewGuid();
+	WaveStart.Type = EAkUGCLogicNodeType::WaveStart;
+	Scene.LogicGraph.Nodes = {Start, WaveStart};
 
 	{
 		FAkUGCSceneRuntime Runtime(World);
@@ -143,30 +137,42 @@ bool FAkUGCSandboxSceneHostTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("Play Authority initializes tower defense scene"), InitResult.bSucceeded);
 		if (!InitResult.bSucceeded)
 		{
-			AddError(TEXT("Play Authority initialization failed; cannot exercise sandbox host."));
+			AddError(FString::Printf(TEXT("Play Authority initialization failed: %s: %s"), *InitResult.ErrorPath, *InitResult.ErrorMessage));
 			GEngine->DestroyWorldContext(World);
 			World->DestroyWorld(false);
 			return false;
 		}
 		TestEqual(TEXT("Base health initializes to authored maximum"), Runtime.GetBaseCurrentHealth(), 25.0);
 
-		const TSharedPtr<FAkUGCSandboxSceneHost> Host = MakeShared<FAkUGCSandboxSceneHost>(Runtime);
+		const TSharedPtr<FAkUGCSandboxSceneHost> Host = MakeShared<FAkUGCSandboxSceneHost>(Runtime, Registry);
 		FAkUGCSandbox Sandbox;
 		Sandbox.Initialize(FAkUGCSandboxConfig(), nullptr, Host);
 
 		const FString BaseIdStr = BaseEntityId.ToString();
 		const FString GoalIdStr = GoalEntityId.ToString();
+		const FString SpawnPointIdStr = SpawnPointId.ToString();
 
 		const FString Script = FString::Printf(TEXT(
 			"local cur, max = ugc.get_health('%s')\n"
 			"assert(cur == 25 and max == 25, 'base health init mismatch')\n"
 			"assert(ugc.get_health('not-a-guid') == nil, 'invalid id returns nil')\n"
 			"local applied, after = ugc.apply_damage('%s', '%s', 10)\n"
-			"assert(applied == 10 and after == 15, 'base damage mismatch')\n"),
-			*BaseIdStr, *GoalIdStr, *BaseIdStr);
+			"assert(applied == 10 and after == 15, 'base damage mismatch')\n"
+			"local ws = ugc.get_wave_state()\n"
+			"assert(ws ~= nil, 'wave state must be available')\n"
+			"assert(ws.total_waves == 3, 'wave count mismatch')\n"
+			"local spawned = ugc.spawn('official.unit.basic_enemy', '%s')\n"
+			"assert(spawned ~= nil and #spawned > 0, 'spawn returns entity id')\n"
+			"local s_cur, s_max = ugc.get_health(spawned)\n"
+			"assert(s_cur == 100 and s_max == 100, 'spawned enemy health mismatch')\n"),
+			*BaseIdStr, *GoalIdStr, *BaseIdStr, *SpawnPointIdStr);
 
 		const FAkUGCSandboxResult Result = Sandbox.RunScript(Script);
-		TestEqual(TEXT("Sandbox script queries and damages base via host"), Result.Status, EAkUGCSandboxStatus::Success);
+		if (Result.Status != EAkUGCSandboxStatus::Success)
+		{
+			AddError(FString::Printf(TEXT("Sandbox script error: %s"), *Result.ErrorMessage));
+		}
+		TestEqual(TEXT("Sandbox script queries/damages/spawns and reads wave state via host"), Result.Status, EAkUGCSandboxStatus::Success);
 
 		TestEqual(TEXT("Base health reflects scripted damage"), Runtime.GetBaseCurrentHealth(), 15.0);
 	}

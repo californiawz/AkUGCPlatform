@@ -619,6 +619,35 @@ bool FAkUGCSceneRuntime::SpawnLogicPrefab(
     return true;
 }
 
+bool FAkUGCSceneRuntime::SpawnSandboxEntity(
+    const FName& PrefabId,
+    const FGuid& AnchorEntityId,
+    const FAkUGCPrefabRegistry& Registry,
+    FGuid& OutEntityId,
+    FString& OutError)
+{
+    FAkUGCLogicSpawnEffect SpawnEffect;
+    SpawnEffect.PrefabId = PrefabId;
+    SpawnEffect.SpawnAtEntityId = AnchorEntityId;
+    return SpawnLogicPrefab(SpawnEffect, Registry, OutEntityId, OutError);
+}
+
+bool FAkUGCSceneRuntime::GetWaveRuntimeState(FAkUGCWaveRuntimeSnapshot& OutSnapshot) const
+{
+    const UWorld* RuntimeWorld = World.Get();
+    if (!RuntimeWorld)
+    {
+        return false;
+    }
+    const UAkUGCLogicRuntimeSubsystem* LogicRuntime = RuntimeWorld->GetSubsystem<UAkUGCLogicRuntimeSubsystem>();
+    if (!LogicRuntime)
+    {
+        return false;
+    }
+    OutSnapshot = LogicRuntime->GetWaveRuntimeState();
+    return true;
+}
+
 bool FAkUGCSceneRuntime::InitializeRuntimeHealth(
     const FAkUGCEntityRecord& Entity,
     FString& OutError)

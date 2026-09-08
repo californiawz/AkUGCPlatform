@@ -5,6 +5,30 @@
 #include "CoreMinimal.h"
 
 /**
+ * FAkUGCSandboxWaveState
+ *
+ * 沙箱受控 Ruleset 查询返回的波次/胜负快照。沙箱层保持游戏无关：
+ * 仅用基本数值表达状态，具体枚举语义由宿主（如塔防运行时）负责映射。
+ */
+struct AKUGCSANDBOX_API FAkUGCSandboxWaveState
+{
+	/** 当前波次下标（从 0 开始），-1 表示尚未开始。 */
+	int32 WaveIndex = -1;
+
+	/** 总波次数量。 */
+	int32 TotalWaves = 0;
+
+	/** 波次状态（宿主定义：0=未激活，1=等待开始，2=刷怪中，3=等待清怪，4=波间，5=完成）。 */
+	int32 State = 0;
+
+	/** 比赛结果（宿主定义：0=进行中，1=胜利，2=失败）。 */
+	int32 Result = 0;
+
+	/** 距下一个状态边界的秒数。 */
+	double SecondsUntilNextBoundary = 0.0;
+};
+
+/**
  * IAkUGCSandboxHost
  *
  * 沙箱受控 API 的宿主接口。UGC 运行时（如权威玩法会话 / 逻辑运行时子系统）
@@ -48,6 +72,29 @@ public:
 		double& OutHealthAfter,
 		bool& OutKilled,
 		FString& OutError)
+	{
+		return false;
+	}
+
+	/**
+	 * 受控生成：脚本调用 ugc.spawn(prefabId, [anchorId]) 时触发。
+	 * 成功返回 true 并回填新实体 ID；失败时 OutError 返回原因。
+	 * AnchorEntityId 可为空（表示无锚点）。宿主未实现该能力时返回 false（沙箱侧抛错）。
+	 */
+	virtual bool SpawnEntity(
+		const FString& PrefabId,
+		const FString& AnchorEntityId,
+		FString& OutEntityId,
+		FString& OutError)
+	{
+		return false;
+	}
+
+	/**
+	 * 受控规则集查询：脚本调用 ugc.get_wave_state() 时触发。
+	 * 回填波次/胜负快照；宿主未实现该能力时返回 false（沙箱侧视为「无规则集状态」）。
+	 */
+	virtual bool QueryWaveState(FAkUGCSandboxWaveState& OutState)
 	{
 		return false;
 	}

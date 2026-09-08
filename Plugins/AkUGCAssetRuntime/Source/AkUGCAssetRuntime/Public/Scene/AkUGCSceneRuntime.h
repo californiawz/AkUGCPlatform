@@ -11,6 +11,7 @@ struct FAkUGCLogicSpawnEffect;
 struct FAkUGCLogicSpawnPlan;
 struct FAkUGCPrefabDefinition;
 struct FAkUGCSceneDocument;
+struct FAkUGCWaveRuntimeSnapshot;
 class AActor;
 class FAkUGCDocumentRuntimeSession;
 class FAkUGCPrefabRegistry;
@@ -68,6 +69,20 @@ public:
         FString& OutError);
     bool HasActiveEnemyMovement() const;
     void ResetTowerDefenseMovement();
+
+    /**
+     * 沙箱受控生成入口：按 Prefab 生成一个运行时实体（复用逻辑 Spawn 语义）。
+     * 成功返回 true 并回填新实体 ID；仅权威端可调用。
+     */
+    bool SpawnSandboxEntity(
+        const FName& PrefabId,
+        const FGuid& AnchorEntityId,
+        const FAkUGCPrefabRegistry& Registry,
+        FGuid& OutEntityId,
+        FString& OutError);
+
+    /** 沙箱受控规则集查询：读取当前波次/胜负快照（无规则集状态时返回 false）。 */
+    bool GetWaveRuntimeState(FAkUGCWaveRuntimeSnapshot& OutSnapshot) const;
 
     static FName GetCurrentPlatformVariant();
 
