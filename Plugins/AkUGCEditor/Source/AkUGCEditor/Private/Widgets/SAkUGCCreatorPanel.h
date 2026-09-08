@@ -4,6 +4,7 @@
 #include "Document/AkUGCDocument.h"
 #include "Prefab/AkUGCPrefabDefinition.h"
 #include "Widgets/SCompoundWidget.h"
+#include "Widgets/Views/SListView.h"
 #include "Widgets/Views/STreeView.h"
 
 class SVerticalBox;
@@ -63,6 +64,36 @@ private:
         const FAkUGCEntityRecord& Entity,
         const FAkUGCPropertyDefinition& Property);
 
+    // Logic editing
+    void RebuildLogicList();
+    void RebuildLogicDetails();
+    void RebuildConnections();
+    TSharedRef<ITableRow> GenerateLogicRow(
+        TSharedPtr<FAkUGCLogicNode> Item,
+        const TSharedRef<STableViewBase>& OwnerTable) const;
+    void OnLogicSelectionChanged(TSharedPtr<FAkUGCLogicNode> Item, ESelectInfo::Type SelectInfo);
+    FText GetLogicNodeLabel(const FAkUGCLogicNode& Node) const;
+    FReply AddLogicNodeOfType(EAkUGCLogicNodeType Type);
+    FReply DeleteSelectedLogicNode();
+    FReply ConnectPendingNodes();
+    void CommitLogicMessage(const FGuid& NodeId, const FText& Text);
+    void CommitLogicDelay(const FGuid& NodeId, double Value);
+    void CommitLogicSpawnPrefab(const FGuid& NodeId, FName PrefabId);
+    void CommitLogicSpawnAnchor(const FGuid& NodeId, const FGuid& AnchorEntityId);
+    void AddLogicConnection(const FGuid& SourceNodeId, const FGuid& TargetNodeId);
+    void RemoveLogicConnection(const FGuid& SourceNodeId, const FGuid& TargetNodeId);
+    TSharedRef<SWidget> BuildAddLogicNodeMenu();
+    TSharedRef<SWidget> BuildSpawnPrefabMenu(const FGuid& NodeId);
+    TSharedRef<SWidget> BuildSpawnAnchorMenu(const FGuid& NodeId);
+    TSharedRef<SWidget> BuildSourceNodeMenu();
+    TSharedRef<SWidget> BuildTargetNodeMenu();
+    FText GetPendingSourceLabel() const;
+    FText GetPendingTargetLabel() const;
+    FText GetLogicValidationText() const;
+    static FText GetLogicNodeTypeDisplayName(EAkUGCLogicNodeType Type);
+    const FAkUGCLogicNode* FindLogicNode(const FGuid& NodeId) const;
+    FString GetEntityDisplayName(const FGuid& EntityId) const;
+
     TWeakObjectPtr<UAkUGCEditorSubsystem> Subsystem;
     TSharedPtr<STreeView<TSharedPtr<FAkUGCEntityTreeItem>>> EntityTreeView;
     TSharedPtr<SVerticalBox> DetailsBox;
@@ -73,4 +104,12 @@ private:
     FGuid ObservedSelectionId;
     int32 PlacementIndex = 0;
     bool bUpdatingTreeSelection = false;
+
+    TSharedPtr<SListView<TSharedPtr<FAkUGCLogicNode>>> LogicListView;
+    TArray<TSharedPtr<FAkUGCLogicNode>> LogicItems;
+    TSharedPtr<SVerticalBox> ConnectionsBox;
+    FGuid SelectedLogicNodeId;
+    FGuid PendingSourceNodeId;
+    FGuid PendingTargetNodeId;
+    bool bUpdatingLogicSelection = false;
 };
