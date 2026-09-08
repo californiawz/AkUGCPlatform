@@ -3,6 +3,7 @@
 #include "Containers/StringConv.h"
 #include "HAL/PlatformTime.h"
 
+#include "LuaState.h"
 #include "lua.h"
 #include "lauxlib.h"
 #include "lualib.h"
@@ -13,11 +14,16 @@ using namespace slua;
 struct FAkUGCSandboxImpl
 {
 	FAkUGCSandboxConfig Config;
+
+	// 复用 slua 的 LuaState 创建/持有 Lua VM，不再自行 lua_newstate。
+	TUniquePtr<NS_SLUA::LuaState> LuaStateOwner;
 	lua_State* State = nullptr;
 
 	int64 InstructionsExecuted = 0;
-	int64 CurrentMemoryBytes = 0;
+	int64 BaseMemoryBytes = 0;
+	int32 HookInterval = 1000;
 	bool bInstructionLimitExceeded = false;
+	bool bMemoryLimitExceeded = false;
 	bool bTimeout = false;
 	double RunStartTime = 0.0;
 };
@@ -25,38 +31,17 @@ struct FAkUGCSandboxImpl
 namespace
 {
 	const char* SandboxImplRegistryKey = "AkUGCSandboxImpl";
+	const char* SavedGlobalsRegistryKey = "AkUGCSandboxSavedGlobals";
 
-	/** 内存分配器：跟踪用量，超限返回 nullptr 触发 Lua 内存错误。 */
-	void* SandboxAlloc(void* UserData, void* Ptr, size_t OldSize, size_t NewSize)
+	/** 查询当前 VM 已用内存（字节）。 */
+	int64 GetLuaMemoryBytes(lua_State* L)
 	{
-		FAkUGCSandboxImpl* Impl = static_cast<FAkUGCSandboxImpl*>(UserData);
-		if (!Impl)
-		{
-			return nullptr;
-		}
-
-		if (NewSize == 0)
-		{
-			FMemory::Free(Ptr);
-			Impl->CurrentMemoryBytes -= static_cast<int64>(OldSize);
-			return nullptr;
-		}
-
-		const int64 Delta = static_cast<int64>(NewSize) - static_cast<int64>(OldSize);
-		if (Impl->Config.MaxMemoryBytes > 0 && Impl->CurrentMemoryBytes + Delta > Impl->Config.MaxMemoryBytes)
-		{
-			return nullptr;
-		}
-
-		void* NewPtr = FMemory::Realloc(Ptr, static_cast<SIZE_T>(NewSize));
-		if (NewPtr)
-		{
-			Impl->CurrentMemoryBytes += Delta;
-		}
-		return NewPtr;
+		const int KB = lua_gc(L, LUA_GCCOUNT, 0);
+		const int B = lua_gc(L, LUA_GCCOUNTB, 0);
+		return static_cast<int64>(KB) * 1024 + B;
 	}
 
-	/** 指令/超时 hook：累计指令并检查配额，超限即终止。 */
+	/** 指令/超时/内存 hook：累计指令并检查三类配额，超限即终止。 */
 	void SandboxCountHook(lua_State* L, lua_Debug* /*Ar*/)
 	{
 		lua_getfield(L, LUA_REGISTRYINDEX, SandboxImplRegistryKey);
@@ -67,7 +52,7 @@ namespace
 			return;
 		}
 
-		Impl->InstructionsExecuted += Impl->Config.InstructionCheckInterval;
+		Impl->InstructionsExecuted += Impl->HookInterval;
 
 		if (Impl->Config.MaxInstructionCount > 0 && Impl->InstructionsExecuted >= Impl->Config.MaxInstructionCount)
 		{
@@ -84,41 +69,61 @@ namespace
 				luaL_error(L, "time limit exceeded");
 			}
 		}
+
+		if (Impl->Config.MaxMemoryBytes > 0)
+		{
+			const int64 Used = GetLuaMemoryBytes(L) - Impl->BaseMemoryBytes;
+			if (Used > Impl->Config.MaxMemoryBytes)
+			{
+				Impl->bMemoryLimitExceeded = true;
+				luaL_error(L, "memory limit exceeded");
+			}
+		}
 	}
 
-	/** 仅打开安全标准库子集。 */
-	void OpenSafeLibraries(lua_State* L)
-	{
-		luaL_requiref(L, "_G", luaopen_base, 1);
-		lua_pop(L, 1);
-
-		luaL_requiref(L, LUA_TABLIBNAME, luaopen_table, 1);
-		lua_pop(L, 1);
-
-		luaL_requiref(L, LUA_STRLIBNAME, luaopen_string, 1);
-		lua_pop(L, 1);
-
-		luaL_requiref(L, LUA_MATHLIBNAME, luaopen_math, 1);
-		lua_pop(L, 1);
-
-		luaL_requiref(L, LUA_UTF8LIBNAME, luaopen_utf8, 1);
-		lua_pop(L, 1);
-
-#if defined(LUA_COMPAT_BITLIB)
-		luaL_requiref(L, LUA_BITLIBNAME, luaopen_bit32, 1);
-		lua_pop(L, 1);
-#endif
-	}
-
-	/** 移除可访问文件系统或加载代码的危险全局函数。 */
+	/** 移除可访问文件系统/加载代码/宿主桥接的危险全局入口，并保存原始值以便关闭前恢复。 */
 	void RemoveDangerousGlobals(lua_State* L)
 	{
-		static const char* DangerousGlobals[] = { "dofile", "loadfile", "load", "loadstring" };
+		static const char* DangerousGlobals[] = {
+			// 标准库危险入口。
+			"io", "os", "debug", "package", "require",
+			"dofile", "loadfile", "load", "loadstring", "coroutine",
+			// slua 注入的宿主桥接入口。
+			"import", "slua", "slua_profile", "getStringFromMD5", "pb",
+		};
+
+		// 原始值存入注册表，供 Shutdown 恢复（slua 内部清理依赖 os 等）。
+		lua_newtable(L);
+		const int SavedTable = lua_gettop(L);
 		for (const char* Name : DangerousGlobals)
 		{
+			lua_getglobal(L, Name);
+			lua_setfield(L, SavedTable, Name);
+
 			lua_pushnil(L);
 			lua_setglobal(L, Name);
 		}
+		lua_setfield(L, LUA_REGISTRYINDEX, SavedGlobalsRegistryKey);
+	}
+
+	/** 关闭前恢复被移除的危险全局，确保 slua 内部清理（如 LuaProfiler::clean）正常执行。 */
+	void RestoreDangerousGlobals(lua_State* L)
+	{
+		lua_getfield(L, LUA_REGISTRYINDEX, SavedGlobalsRegistryKey);
+		if (!lua_istable(L, -1))
+		{
+			lua_pop(L, 1);
+			return;
+		}
+		lua_pushnil(L);
+		while (lua_next(L, -2) != 0)
+		{
+			const char* Name = lua_tostring(L, -2);
+			lua_pushvalue(L, -1);
+			lua_setglobal(L, Name);
+			lua_pop(L, 1);
+		}
+		lua_pop(L, 1);
 	}
 
 	/** 弹出栈顶字符串并返回。 */
@@ -147,32 +152,47 @@ bool FAkUGCSandbox::Initialize(const FAkUGCSandboxConfig& InConfig, FString* Out
 	Shutdown();
 
 	Impl->Config = InConfig;
-	Impl->CurrentMemoryBytes = 0;
 	Impl->InstructionsExecuted = 0;
+	Impl->BaseMemoryBytes = 0;
 	Impl->bInstructionLimitExceeded = false;
+	Impl->bMemoryLimitExceeded = false;
 	Impl->bTimeout = false;
 
-	Impl->State = lua_newstate(&SandboxAlloc, Impl.Get());
-	if (!Impl->State)
+	// 使用 slua 创建 Lua 虚拟机。
+	Impl->LuaStateOwner = MakeUnique<NS_SLUA::LuaState>("AkUGCSandbox");
+	if (!Impl->LuaStateOwner->init())
 	{
+		Impl->LuaStateOwner.Reset();
 		if (OutError)
 		{
-			*OutError = TEXT("failed to create Lua state");
+			*OutError = TEXT("failed to create Lua state via slua");
 		}
 		return false;
 	}
+	Impl->State = Impl->LuaStateOwner->getLuaState();
 
-	OpenSafeLibraries(Impl->State);
+	// slua 已打开全库并注入宿主桥接，此处清空危险入口，仅保留安全子集。
 	RemoveDangerousGlobals(Impl->State);
+
+	// 记录基线内存，作为脚本增量配额基准（slua 初始化本身占用较大）。
+	Impl->BaseMemoryBytes = GetLuaMemoryBytes(Impl->State);
 
 	// 将内部状态指针存入注册表，供 hook 回调访问。
 	lua_pushlightuserdata(Impl->State, Impl.Get());
 	lua_setfield(Impl->State, LUA_REGISTRYINDEX, SandboxImplRegistryKey);
 
-	// 开启指令/超时 hook。
-	if (InConfig.MaxInstructionCount > 0 || InConfig.MaxRunTimeSeconds > 0.0)
+	// 开启指令/超时/内存 hook。
+	const bool bNeedInstructionHook = (InConfig.MaxInstructionCount > 0) || (InConfig.MaxRunTimeSeconds > 0.0);
+	const bool bNeedMemoryHook = (InConfig.MaxMemoryBytes > 0);
+	if (bNeedInstructionHook || bNeedMemoryHook)
 	{
-		const int32 Interval = (InConfig.InstructionCheckInterval > 0) ? InConfig.InstructionCheckInterval : 1000;
+		int32 Interval = (InConfig.InstructionCheckInterval > 0) ? InConfig.InstructionCheckInterval : 1000;
+		if (bNeedMemoryHook)
+		{
+			// 内存检查需要较细粒度，尽量及时拦截循环中的累计分配。
+			Interval = (Interval < 100) ? Interval : 100;
+		}
+		Impl->HookInterval = Interval;
 		lua_sethook(Impl->State, &SandboxCountHook, LUA_MASKCOUNT, Interval);
 	}
 
@@ -183,10 +203,17 @@ void FAkUGCSandbox::Shutdown()
 {
 	if (Impl->State)
 	{
-		lua_close(Impl->State);
-		Impl->State = nullptr;
+		// 先恢复被移除的全局（如 os），确保 slua 内部清理正常执行。
+		RestoreDangerousGlobals(Impl->State);
 	}
-	Impl->CurrentMemoryBytes = 0;
+
+	// 释放 LuaState 会触发其析构 -> close() -> lua_close。
+	if (Impl->LuaStateOwner)
+	{
+		Impl->LuaStateOwner.Reset();
+	}
+	Impl->State = nullptr;
+	Impl->BaseMemoryBytes = 0;
 }
 
 bool FAkUGCSandbox::IsInitialized() const
@@ -220,12 +247,26 @@ FAkUGCSandboxResult FAkUGCSandbox::RunScript(const FString& Source, const FStrin
 	// 运行。
 	Impl->InstructionsExecuted = 0;
 	Impl->bInstructionLimitExceeded = false;
+	Impl->bMemoryLimitExceeded = false;
 	Impl->bTimeout = false;
 	Impl->RunStartTime = FPlatformTime::Seconds();
 
 	const int RunStatus = lua_pcall(L, 0, 0, 0);
 	if (RunStatus == LUA_OK)
 	{
+		// slua 未提供可注入的硬内存分配器，单次大分配（如 string.rep）无法被
+		// hook 打断，只能在运行结束后检测增量内存是否越界。
+		if (Impl->Config.MaxMemoryBytes > 0)
+		{
+			const int64 Used = GetLuaMemoryBytes(L) - Impl->BaseMemoryBytes;
+			if (Used > Impl->Config.MaxMemoryBytes)
+			{
+				lua_gc(L, LUA_GCCOLLECT, 0);
+				Result.Status = EAkUGCSandboxStatus::MemoryLimitExceeded;
+				Result.ErrorMessage = TEXT("memory limit exceeded");
+				return Result;
+			}
+		}
 		Result.Status = EAkUGCSandboxStatus::Success;
 		return Result;
 	}
@@ -239,7 +280,7 @@ FAkUGCSandboxResult FAkUGCSandbox::RunScript(const FString& Source, const FStrin
 	{
 		Result.Status = EAkUGCSandboxStatus::Timeout;
 	}
-	else if (RunStatus == LUA_ERRMEM)
+	else if (Impl->bMemoryLimitExceeded || RunStatus == LUA_ERRMEM)
 	{
 		Result.Status = EAkUGCSandboxStatus::MemoryLimitExceeded;
 	}
