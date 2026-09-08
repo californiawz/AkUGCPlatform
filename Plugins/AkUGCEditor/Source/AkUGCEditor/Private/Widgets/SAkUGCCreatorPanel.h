@@ -8,6 +8,8 @@
 #include "Widgets/Views/STreeView.h"
 
 class SVerticalBox;
+class SWidgetSwitcher;
+class SAkUGCLogicCanvas;
 class UAkUGCEditorSubsystem;
 
 struct FAkUGCEntityTreeItem
@@ -87,6 +89,8 @@ private:
     TSharedRef<SWidget> BuildSpawnAnchorMenu(const FGuid& NodeId);
     TSharedRef<SWidget> BuildSourceNodeMenu();
     TSharedRef<SWidget> BuildTargetNodeMenu();
+    FReply ToggleLogicGraphView();
+    FText GetLogicViewToggleLabel() const;
     FText GetPendingSourceLabel() const;
     FText GetPendingTargetLabel() const;
     FText GetLogicValidationText() const;
@@ -108,8 +112,11 @@ private:
     TSharedPtr<SListView<TSharedPtr<FAkUGCLogicNode>>> LogicListView;
     TArray<TSharedPtr<FAkUGCLogicNode>> LogicItems;
     TSharedPtr<SVerticalBox> ConnectionsBox;
+    TSharedPtr<SWidgetSwitcher> LogicViewSwitcher;
+    TSharedPtr<SAkUGCLogicCanvas> LogicCanvas;
     FGuid SelectedLogicNodeId;
     FGuid PendingSourceNodeId;
     FGuid PendingTargetNodeId;
     bool bUpdatingLogicSelection = false;
+    bool bShowingLogicGraph = false;
 };

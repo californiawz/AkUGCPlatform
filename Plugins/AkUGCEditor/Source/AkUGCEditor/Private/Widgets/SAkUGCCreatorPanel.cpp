@@ -2,6 +2,7 @@
 
 #include "Prefab/AkUGCOfficialPrefabCatalog.h"
 #include "Subsystem/AkUGCEditorSubsystem.h"
+#include "Widgets/SAkUGCLogicCanvas.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SComboButton.h"
@@ -13,6 +14,7 @@
 #include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/Layout/SSeparator.h"
 #include "Widgets/Layout/SSplitter.h"
+#include "Widgets/Layout/SWidgetSwitcher.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Views/STableRow.h"
@@ -88,27 +90,49 @@ void SAkUGCCreatorPanel::Construct(const FArguments& InArgs, UAkUGCEditorSubsyst
                         .OnSelectionChanged(this, &SAkUGCCreatorPanel::OnEntitySelectionChanged)
                     ]
                     + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 6.0f, 0.0f, 4.0f)
-                    [SNew(STextBlock).Text(FText::FromString(TEXT("Logic Nodes")))]
-                    + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 4.0f)
                     [
                         SNew(SHorizontalBox)
-                        + SHorizontalBox::Slot().AutoWidth().Padding(2.0f)
+                        + SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center)
+                        [SNew(STextBlock).Text(FText::FromString(TEXT("Logic Nodes")))]
+                        + SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
                         [
-                            SNew(SComboButton)
-                            .OnGetMenuContent(this, &SAkUGCCreatorPanel::BuildAddLogicNodeMenu)
-                            .ButtonContent()
-                            [SNew(STextBlock).Text(FText::FromString(TEXT("Add Logic Node")))]
+                            SNew(SButton)
+                            .Text_Lambda([this]() { return GetLogicViewToggleLabel(); })
+                            .OnClicked(this, &SAkUGCCreatorPanel::ToggleLogicGraphView)
                         ]
-                        + SHorizontalBox::Slot().AutoWidth().Padding(2.0f)
-                        [SNew(SButton).Text(FText::FromString(TEXT("Delete Node"))).OnClicked(this, &SAkUGCCreatorPanel::DeleteSelectedLogicNode)]
                     ]
-                    + SVerticalBox::Slot().FillHeight(0.22f)
+                    + SVerticalBox::Slot().FillHeight(0.30f)
                     [
-                        SAssignNew(LogicListView, SListView<TSharedPtr<FAkUGCLogicNode>>)
-                        .ListItemsSource(&LogicItems)
-                        .SelectionMode(ESelectionMode::Single)
-                        .OnGenerateRow(this, &SAkUGCCreatorPanel::GenerateLogicRow)
-                        .OnSelectionChanged(this, &SAkUGCCreatorPanel::OnLogicSelectionChanged)
+                        SAssignNew(LogicViewSwitcher, SWidgetSwitcher)
+                        + SWidgetSwitcher::Slot()
+                        [
+                            SNew(SVerticalBox)
+                            + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 4.0f)
+                            [
+                                SNew(SHorizontalBox)
+                                + SHorizontalBox::Slot().AutoWidth().Padding(2.0f)
+                                [
+                                    SNew(SComboButton)
+                                    .OnGetMenuContent(this, &SAkUGCCreatorPanel::BuildAddLogicNodeMenu)
+                                    .ButtonContent()
+                                    [SNew(STextBlock).Text(FText::FromString(TEXT("Add Logic Node")))]
+                                ]
+                                + SHorizontalBox::Slot().AutoWidth().Padding(2.0f)
+                                [SNew(SButton).Text(FText::FromString(TEXT("Delete Node"))).OnClicked(this, &SAkUGCCreatorPanel::DeleteSelectedLogicNode)]
+                            ]
+                            + SVerticalBox::Slot().FillHeight(1.0f)
+                            [
+                                SAssignNew(LogicListView, SListView<TSharedPtr<FAkUGCLogicNode>>)
+                                .ListItemsSource(&LogicItems)
+                                .SelectionMode(ESelectionMode::Single)
+                                .OnGenerateRow(this, &SAkUGCCreatorPanel::GenerateLogicRow)
+                                .OnSelectionChanged(this, &SAkUGCCreatorPanel::OnLogicSelectionChanged)
+                            ]
+                        ]
+                        + SWidgetSwitcher::Slot()
+                        [
+                            SAssignNew(LogicCanvas, SAkUGCLogicCanvas, Subsystem.Get())
+                        ]
                     ]
                     + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 6.0f, 0.0f, 4.0f)
                     [SNew(STextBlock).Text(FText::FromString(TEXT("Logic Connections")))]
@@ -1391,6 +1415,21 @@ TSharedRef<SWidget> SAkUGCCreatorPanel::BuildTargetNodeMenu()
         }
     }
     return MenuBuilder.MakeWidget();
+}
+
+FReply SAkUGCCreatorPanel::ToggleLogicGraphView()
+{
+    bShowingLogicGraph = !bShowingLogicGraph;
+    if (LogicViewSwitcher.IsValid())
+    {
+        LogicViewSwitcher->SetActiveWidgetIndex(bShowingLogicGraph ? 1 : 0);
+    }
+    return FReply::Handled();
+}
+
+FText SAkUGCCreatorPanel::GetLogicViewToggleLabel() const
+{
+    return FText::FromString(bShowingLogicGraph ? TEXT("List") : TEXT("Graph"));
 }
 
 FText SAkUGCCreatorPanel::GetPendingSourceLabel() const
