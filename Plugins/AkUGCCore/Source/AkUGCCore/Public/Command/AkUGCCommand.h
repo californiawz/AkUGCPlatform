@@ -22,7 +22,8 @@ enum class EAkUGCCommandType : uint8
     UpdateWave,
     DeleteWave,
     MoveWave,
-    SetRulesetSettings
+    SetRulesetSettings,
+    UpdateLogicNode
 };
 
 USTRUCT(BlueprintType)

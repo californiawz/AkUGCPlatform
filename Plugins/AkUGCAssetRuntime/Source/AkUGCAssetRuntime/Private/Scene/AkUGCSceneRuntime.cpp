@@ -1679,6 +1679,7 @@ bool FAkUGCSceneRuntime::ApplyCommand(
     case EAkUGCCommandType::DeleteLogicNode:
     case EAkUGCCommandType::ConnectLogicNode:
     case EAkUGCCommandType::DisconnectLogicNode:
+    case EAkUGCCommandType::UpdateLogicNode:
     case EAkUGCCommandType::AddWave:
     case EAkUGCCommandType::UpdateWave:
     case EAkUGCCommandType::DeleteWave:

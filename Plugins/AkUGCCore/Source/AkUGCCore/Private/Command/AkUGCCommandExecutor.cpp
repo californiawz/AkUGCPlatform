@@ -449,6 +449,19 @@ FAkUGCCommandExecutionResult FAkUGCCommandExecutor::ApplySingle(
         return FAkUGCCommandExecutionResult::Success();
     }
 
+    case EAkUGCCommandType::UpdateLogicNode:
+    {
+        const int32 NodeIndex = FindLogicNodeIndex(Scene->LogicGraph, Command.LogicNode.NodeId);
+        if (NodeIndex == INDEX_NONE)
+        {
+            return FAkUGCCommandExecutionResult::Failure(TEXT("logicNode.nodeId"), TEXT("Logic node does not exist in the graph."));
+        }
+        OutInverse = MakeInverse(Command, EAkUGCCommandType::UpdateLogicNode);
+        OutInverse.LogicNode = Scene->LogicGraph.Nodes[NodeIndex];
+        Scene->LogicGraph.Nodes[NodeIndex] = Command.LogicNode;
+        return FAkUGCCommandExecutionResult::Success();
+    }
+
     case EAkUGCCommandType::AddWave:
     {
         if (!Command.Wave.WaveId.IsValid())

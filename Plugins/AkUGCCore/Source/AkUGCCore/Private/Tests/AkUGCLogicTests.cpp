@@ -123,6 +123,119 @@ bool FAkUGCLogicGraphWorkflowTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FAkUGCLogicUpdateNodeTest,
+    "AkUGC.Core.Logic.UpdateNodeParameter",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCLogicUpdateNodeTest::RunTest(const FString& Parameters)
+{
+    FGuid SceneId;
+    FAkUGCProjectDocument Document = MakeLogicDocument(SceneId);
+    const FGuid MessageId(2, 0, 0, 0);
+    const FGuid SpawnId(3, 0, 0, 0);
+    const FGuid AnchorA(4, 0, 0, 0);
+    const FGuid AnchorB(5, 0, 0, 0);
+
+    FAkUGCCommand AddAnchorA = MakeLogicCommand(EAkUGCCommandType::AddEntity, SceneId);
+    AddAnchorA.Entity.EntityId = AnchorA;
+    AddAnchorA.Entity.PrefabId = TEXT("official.gameplay.enemy_spawn");
+
+    FAkUGCCommand AddAnchorB = MakeLogicCommand(EAkUGCCommandType::AddEntity, SceneId);
+    AddAnchorB.Entity.EntityId = AnchorB;
+    AddAnchorB.Entity.PrefabId = TEXT("official.gameplay.enemy_spawn");
+
+    FAkUGCCommand AddMessage = MakeLogicCommand(EAkUGCCommandType::AddLogicNode, SceneId);
+    AddMessage.LogicNode.NodeId = MessageId;
+    AddMessage.LogicNode.Type = EAkUGCLogicNodeType::Message;
+    AddMessage.LogicNode.Message = TEXT("Before");
+
+    FAkUGCCommand AddSpawn = MakeLogicCommand(EAkUGCCommandType::AddLogicNode, SceneId);
+    AddSpawn.LogicNode.NodeId = SpawnId;
+    AddSpawn.LogicNode.Type = EAkUGCLogicNodeType::Spawn;
+    AddSpawn.LogicNode.SpawnPrefabId = TEXT("official.unit.basic_enemy");
+    AddSpawn.LogicNode.SpawnAtEntityId = AnchorA;
+
+    FAkUGCCommandHistory History;
+    TestTrue(TEXT("Add nodes succeeds"),
+        History.Execute(Document, MakeLogicTransaction({AddAnchorA, AddAnchorB, AddMessage, AddSpawn})).bSucceeded);
+
+    FAkUGCCommand UpdateMessage = MakeLogicCommand(EAkUGCCommandType::UpdateLogicNode, SceneId);
+    UpdateMessage.LogicNode.NodeId = MessageId;
+    UpdateMessage.LogicNode.Type = EAkUGCLogicNodeType::Message;
+    UpdateMessage.LogicNode.Message = TEXT("After");
+
+    FAkUGCCommand UpdateSpawn = MakeLogicCommand(EAkUGCCommandType::UpdateLogicNode, SceneId);
+    UpdateSpawn.LogicNode.NodeId = SpawnId;
+    UpdateSpawn.LogicNode.Type = EAkUGCLogicNodeType::Spawn;
+    UpdateSpawn.LogicNode.SpawnPrefabId = TEXT("official.unit.basic_tower");
+    UpdateSpawn.LogicNode.SpawnAtEntityId = AnchorB;
+
+    const FAkUGCCommandTransaction UpdateTransaction = MakeLogicTransaction({UpdateMessage, UpdateSpawn});
+    TestTrue(TEXT("Update nodes succeeds"), History.Execute(Document, UpdateTransaction).bSucceeded);
+
+    const FAkUGCLogicNode* MessageNode = Document.Scenes[0].LogicGraph.Nodes.FindByPredicate(
+        [&MessageId](const FAkUGCLogicNode& Node) { return Node.NodeId == MessageId; });
+    TestTrue(TEXT("Updated message node exists"), MessageNode != nullptr);
+    if (MessageNode)
+    {
+        TestEqual(TEXT("Message parameter is updated"), MessageNode->Message, FString(TEXT("After")));
+    }
+
+    const FAkUGCLogicNode* SpawnNode = Document.Scenes[0].LogicGraph.Nodes.FindByPredicate(
+        [&SpawnId](const FAkUGCLogicNode& Node) { return Node.NodeId == SpawnId; });
+    TestTrue(TEXT("Updated spawn node exists"), SpawnNode != nullptr);
+    if (SpawnNode)
+    {
+        TestEqual(TEXT("Spawn prefab is updated"), SpawnNode->SpawnPrefabId, FName(TEXT("official.unit.basic_tower")));
+        TestEqual(TEXT("Spawn anchor is updated"), SpawnNode->SpawnAtEntityId, AnchorB);
+    }
+
+    TestTrue(TEXT("Undo succeeds"), History.Undo(Document).bSucceeded);
+    const FAkUGCLogicNode* UndoneMessage = Document.Scenes[0].LogicGraph.Nodes.FindByPredicate(
+        [&MessageId](const FAkUGCLogicNode& Node) { return Node.NodeId == MessageId; });
+    TestTrue(TEXT("Undone message node exists"), UndoneMessage != nullptr);
+    if (UndoneMessage)
+    {
+        TestEqual(TEXT("Undo restores old message"), UndoneMessage->Message, FString(TEXT("Before")));
+    }
+    const FAkUGCLogicNode* UndoneSpawn = Document.Scenes[0].LogicGraph.Nodes.FindByPredicate(
+        [&SpawnId](const FAkUGCLogicNode& Node) { return Node.NodeId == SpawnId; });
+    TestTrue(TEXT("Undone spawn node exists"), UndoneSpawn != nullptr);
+    if (UndoneSpawn)
+    {
+        TestEqual(TEXT("Undo restores old spawn prefab"), UndoneSpawn->SpawnPrefabId, FName(TEXT("official.unit.basic_enemy")));
+        TestEqual(TEXT("Undo restores old spawn anchor"), UndoneSpawn->SpawnAtEntityId, AnchorA);
+    }
+
+    TestTrue(TEXT("Redo succeeds"), History.Redo(Document).bSucceeded);
+    const FAkUGCLogicNode* RedoneMessage = Document.Scenes[0].LogicGraph.Nodes.FindByPredicate(
+        [&MessageId](const FAkUGCLogicNode& Node) { return Node.NodeId == MessageId; });
+    TestTrue(TEXT("Redone message node exists"), RedoneMessage != nullptr);
+    if (RedoneMessage)
+    {
+        TestEqual(TEXT("Redo restores new message"), RedoneMessage->Message, FString(TEXT("After")));
+    }
+
+    FAkUGCCommand UpdateMissing = MakeLogicCommand(EAkUGCCommandType::UpdateLogicNode, SceneId);
+    UpdateMissing.LogicNode.NodeId = FGuid(99, 0, 0, 0);
+    UpdateMissing.LogicNode.Type = EAkUGCLogicNodeType::Message;
+    UpdateMissing.LogicNode.Message = TEXT("Ghost");
+    TestFalse(TEXT("Updating a missing node fails"),
+        History.Execute(Document, MakeLogicTransaction({UpdateMissing})).bSucceeded);
+
+    FString CommandJson;
+    FString Error;
+    TestTrue(TEXT("Update transaction serializes"), FAkUGCCommandJson::Serialize(UpdateTransaction, CommandJson, &Error));
+    FAkUGCCommandTransaction RestoredTransaction;
+    TestTrue(TEXT("Update transaction deserializes"), FAkUGCCommandJson::Deserialize(CommandJson, RestoredTransaction, &Error));
+    TestEqual(TEXT("Update command count round-trips"), RestoredTransaction.Commands.Num(), 2);
+    TestEqual(TEXT("Update command type round-trips"), RestoredTransaction.Commands[0].Type, EAkUGCCommandType::UpdateLogicNode);
+    TestEqual(TEXT("Updated message round-trips"), RestoredTransaction.Commands[0].LogicNode.Message, FString(TEXT("After")));
+    TestEqual(TEXT("Updated spawn anchor round-trips"), RestoredTransaction.Commands[1].LogicNode.SpawnAtEntityId, AnchorB);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FAkUGCLogicRunnerTest,
     "AkUGC.Core.Logic.GameStartRunner",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
