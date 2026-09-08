@@ -21,12 +21,16 @@ struct FAkUGCSandboxImpl
 	TSharedPtr<FLuaVirtualMachine> VirtualMachine;
 	lua_State* State = nullptr;
 
+	// 受控 API 宿主（可选）；未注入时 ugc 命名空间不可用。
+	TSharedPtr<IAkUGCSandboxHost> Host;
+
 	int64 InstructionsExecuted = 0;
 	int64 BaseMemoryBytes = 0;
 	int32 HookInterval = 1000;
 	bool bInstructionLimitExceeded = false;
 	bool bMemoryLimitExceeded = false;
 	bool bTimeout = false;
+	bool bCallDepthExceeded = false;
 	double RunStartTime = 0.0;
 };
 
@@ -81,6 +85,42 @@ namespace
 				luaL_error(L, "memory limit exceeded");
 			}
 		}
+
+		if (Impl->Config.MaxCallDepth > 0)
+		{
+			int32 Depth = 0;
+			lua_Debug Ar;
+			while (Depth <= Impl->Config.MaxCallDepth && lua_getstack(L, Depth, &Ar))
+			{
+				++Depth;
+			}
+			if (Depth > Impl->Config.MaxCallDepth)
+			{
+				Impl->bCallDepthExceeded = true;
+				luaL_error(L, "call depth limit exceeded");
+			}
+		}
+	}
+
+	/**
+	 * ugc.message(msg)：把消息转发给受控 API 宿主。
+	 * 宿主未注入时（注册表内无有效 Impl 或 Host 为空）抛错。
+	 */
+	int LuaUgcMessage(lua_State* L)
+	{
+		const char* Msg = luaL_checkstring(L, 1);
+
+		lua_getfield(L, LUA_REGISTRYINDEX, SandboxImplRegistryKey);
+		FAkUGCSandboxImpl* Impl = static_cast<FAkUGCSandboxImpl*>(lua_touserdata(L, -1));
+		lua_pop(L, 1);
+
+		if (!Impl || !Impl->Host)
+		{
+			return luaL_error(L, "ugc.message is unavailable without a host");
+		}
+
+		Impl->Host->EmitMessage(UTF8_TO_TCHAR(Msg));
+		return 0;
 	}
 
 	/**
@@ -89,9 +129,10 @@ namespace
 	 * 沙盒隔离不侵入宿主 _G，而是为脚本额外创建一个独立 env：
 	 *   - sandbox_env 为空表，作为脚本的 _ENV，脚本全局读写均落在该表，实例间隔离；
 	 *   - sandbox_env 的 __index 指向安全库白名单，脚本仅能访问白名单内的安全库；
+	 *   - 注入 Host 时，额外注册 `ugc` 命名空间承载受控 API；
 	 *   - 宿主 _G 保持完整，AkLuaRuntime/slua 内部机制不受影响。
 	 */
-	void CreateSandboxEnv(lua_State* L)
+	void CreateSandboxEnv(lua_State* L, IAkUGCSandboxHost* Host)
 	{
 		// 安全全局白名单（base 精简子集 + 安全标准库）。
 		static const char* SafeGlobalNames[] = {
@@ -111,11 +152,20 @@ namespace
 			lua_setfield(L, SafeGlobals, Name);
 		}
 
-		// 2) 沙盒 env 表（脚本的 _ENV）。
+		// 2) 受控 API 命名空间 ugc（仅当宿主注入时可用）。
+		if (Host)
+		{
+			lua_newtable(L);
+			lua_pushcfunction(L, &LuaUgcMessage);
+			lua_setfield(L, -2, "message");
+			lua_setfield(L, SafeGlobals, "ugc");
+		}
+
+		// 3) 沙盒 env 表（脚本的 _ENV）。
 		lua_newtable(L);
 		const int Env = lua_gettop(L);
 
-		// 3) env 元表：__index = 安全库表。
+		// 4) env 元表：__index = 安全库表。
 		lua_newtable(L);
 		lua_pushvalue(L, SafeGlobals);
 		lua_setfield(L, -2, "__index");
@@ -159,16 +209,21 @@ FAkUGCSandbox::~FAkUGCSandbox()
 	Shutdown();
 }
 
-bool FAkUGCSandbox::Initialize(const FAkUGCSandboxConfig& InConfig, FString* OutError)
+bool FAkUGCSandbox::Initialize(
+	const FAkUGCSandboxConfig& InConfig,
+	FString* OutError,
+	TSharedPtr<IAkUGCSandboxHost> InHost)
 {
 	Shutdown();
 
 	Impl->Config = InConfig;
+	Impl->Host = InHost;
 	Impl->InstructionsExecuted = 0;
 	Impl->BaseMemoryBytes = 0;
 	Impl->bInstructionLimitExceeded = false;
 	Impl->bMemoryLimitExceeded = false;
 	Impl->bTimeout = false;
+	Impl->bCallDepthExceeded = false;
 
 	// 复用 AkLuaRuntime 的 FLuaVirtualMachine 创建并初始化 Lua VM。
 	Impl->VirtualMachine = MakeShared<FLuaVirtualMachine>();
@@ -183,8 +238,8 @@ bool FAkUGCSandbox::Initialize(const FAkUGCSandboxConfig& InConfig, FString* Out
 	}
 	Impl->State = Impl->VirtualMachine->GetRawState();
 
-	// 创建独立沙盒 env（不侵入宿主 _G）。
-	CreateSandboxEnv(Impl->State);
+	// 创建独立沙盒 env（不侵入宿主 _G），并注入受控 API 宿主（若提供）。
+	CreateSandboxEnv(Impl->State, InHost.Get());
 
 	// 记录基线内存，作为脚本增量配额基准（slua 初始化本身占用较大）。
 	Impl->BaseMemoryBytes = GetLuaMemoryBytes(Impl->State);
@@ -193,8 +248,11 @@ bool FAkUGCSandbox::Initialize(const FAkUGCSandboxConfig& InConfig, FString* Out
 	lua_pushlightuserdata(Impl->State, Impl.Get());
 	lua_setfield(Impl->State, LUA_REGISTRYINDEX, SandboxImplRegistryKey);
 
-	// 开启指令/超时/内存 hook。
-	const bool bNeedInstructionHook = (InConfig.MaxInstructionCount > 0) || (InConfig.MaxRunTimeSeconds > 0.0);
+	// 开启指令/超时/调用深度 hook（任一相关配额启用即开启）。
+	const bool bNeedInstructionHook =
+		(InConfig.MaxInstructionCount > 0) ||
+		(InConfig.MaxRunTimeSeconds > 0.0) ||
+		(InConfig.MaxCallDepth > 0);
 	const bool bNeedMemoryHook = (InConfig.MaxMemoryBytes > 0);
 	if (bNeedInstructionHook || bNeedMemoryHook)
 	{
@@ -221,6 +279,7 @@ void FAkUGCSandbox::Shutdown()
 	}
 	Impl->State = nullptr;
 	Impl->BaseMemoryBytes = 0;
+	Impl->Host.Reset();
 }
 
 bool FAkUGCSandbox::IsInitialized() const
@@ -260,6 +319,7 @@ FAkUGCSandboxResult FAkUGCSandbox::RunScript(const FString& Source, const FStrin
 	Impl->bInstructionLimitExceeded = false;
 	Impl->bMemoryLimitExceeded = false;
 	Impl->bTimeout = false;
+	Impl->bCallDepthExceeded = false;
 	Impl->RunStartTime = FPlatformTime::Seconds();
 
 	const int RunStatus = lua_pcall(L, 0, 0, 0);
@@ -286,6 +346,10 @@ FAkUGCSandboxResult FAkUGCSandbox::RunScript(const FString& Source, const FStrin
 	if (Impl->bInstructionLimitExceeded)
 	{
 		Result.Status = EAkUGCSandboxStatus::InstructionLimitExceeded;
+	}
+	else if (Impl->bCallDepthExceeded)
+	{
+		Result.Status = EAkUGCSandboxStatus::CallDepthExceeded;
 	}
 	else if (Impl->bTimeout)
 	{

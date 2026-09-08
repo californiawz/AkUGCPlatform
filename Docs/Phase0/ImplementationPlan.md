@@ -444,6 +444,15 @@ App 通过模板化方式编辑安全的有限 Logic，不提供完整专业节�
 
 ## P9：Lua 5.3.4 独立沙箱
 
+### 状态
+
+- 已引入 slua_unreal 作为 Lua 运行时，并迁移 AkLuaRuntime 复用其 `FLuaVirtualMachine` 封装 VM 生命周期。
+- 每个沙箱实例使用独立 VM + 独立 env 表（`_ENV` 白名单），实例间隔离且不侵入宿主 `_G`。
+- 已禁止 io/os/debug/package/require/dofile/loadfile/load 等危险库，仅开放 base 精简子集与 table/string/math/utf8。
+- 已实现指令、时间、内存、调用深度四类配额 hook，死循环/超时/OOM/深递归均安全终止。
+- 已新增受控 API 宿主接口 `IAkUGCSandboxHost`，首个受控能力 `ugc.message` 已落地；未注入宿主时 `ugc` 命名空间不可用。
+- 待完成：Entity Query/Timer/Spawn/Damage/Ruleset 等受控 API 的宿主实现、Capability/Effect Validator 重复校验。
+
 ### 目标
 
 提供 L3 脚本能力，但不替代 L2 Trigger Graph。
@@ -522,7 +531,7 @@ P10 Android/DS 一致性验收
 
 ## 6. 近期提交计划
 
-P0–P5 已全部提交（塔防规则闭环 + 多人复制契约完成）。
+P0–P8 已全部提交；P9（Lua 沙箱）基础已落地并持续推进。
 
 已提交：
 
@@ -544,10 +553,21 @@ P0–P5 已全部提交（塔防规则闭环 + 多人复制契约完成）。
 16. `功能：新增 Creator Studio Logic 列表编辑器`（P6）
 17. `功能：新增 Logic Node 布局持久化`（P6）
 18. `功能：新增 Trigger Graph 可视化画布`（P6）
+19. `功能：App 轻编辑接入 Logic 节点编辑命令与移动端校验`（P7）
+20. `功能：App 轻编辑接入 Ruleset 波次编辑命令与移动端校验`（P7）
+21. `功能：新增 Logic Pack 确定性哈希工具 FAkUGCLogicPackHasher`（P8）
+22. `功能：新增 Logic Pack 构建与加载（Builder/Codec/Loader）`（P8）
+23. `功能：新增 Logic Pack 发布签名与验签（Ed25519）`（P8）
+24. `功能：引入 slua_unreal 插件提供 Lua 运行时，重构 AkUGCSandbox 安全沙盒`（P9）
+25. `功能：沙盒改用 slua LuaState 创建虚拟机并完善内存配额`（P9）
+26. `功能：沙盒隔离改为独立 env 表并参考 AkLuaRuntime 封装 VM`（P9）
+27. `功能：迁移 AkLuaRuntime 插件并让 AkUGCSandbox 复用其 VM 封装`（P9）
+28. `功能：新增沙箱受控 API 宿主接口与调用深度配额`（P9）
 
-待推进（P8 起）：
+待推进（P9 起）：
 
-- Logic Pack、Release Manifest、依赖、哈希与签名（P8）
+- Entity Query/Timer/Spawn/Damage/Ruleset 受控 API 宿主实现
+- Capability/Effect Validator 在 Client/Server 侧重复校验
 
 每个提交完成后执行：
 

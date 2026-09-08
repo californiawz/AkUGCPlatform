@@ -145,4 +145,88 @@ bool FAkUGCSandboxMemoryLimitTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+namespace
+{
+	/** 记录受控消息的测试宿主。 */
+	class FMockSandboxHost : public IAkUGCSandboxHost
+	{
+	public:
+		virtual void EmitMessage(const FString& Message) override
+		{
+			Messages.Add(Message);
+		}
+
+		TArray<FString> Messages;
+	};
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAkUGCSandboxControlledApiTest,
+	"AkUGC.Sandbox.VM.ControlledApiMessage",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCSandboxControlledApiTest::RunTest(const FString& Parameters)
+{
+	const TSharedPtr<FMockSandboxHost> Host = MakeShared<FMockSandboxHost>();
+
+	FAkUGCSandbox Sandbox;
+	Sandbox.Initialize(FAkUGCSandboxConfig(), nullptr, Host);
+
+	const FString Script = TEXT("ugc.message('hello sandbox')\n");
+	const FAkUGCSandboxResult Result = Sandbox.RunScript(Script);
+	TestEqual(TEXT("script runs successfully"), Result.Status, EAkUGCSandboxStatus::Success);
+	TestEqual(TEXT("one message forwarded to host"), Host->Messages.Num(), 1);
+	if (Host->Messages.Num() == 1)
+	{
+		TestEqual(TEXT("message content forwarded intact"), Host->Messages[0], TEXT("hello sandbox"));
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAkUGCSandboxNoHostApiAbsentTest,
+	"AkUGC.Sandbox.VM.NoHostApiAbsent",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCSandboxNoHostApiAbsentTest::RunTest(const FString& Parameters)
+{
+	FAkUGCSandbox Sandbox;
+	Sandbox.Initialize(FAkUGCSandboxConfig());
+
+	// 未注入宿主时，ugc 命名空间必须不存在。
+	const FString Script = TEXT("assert(ugc == nil, 'ugc must be absent without a host')\n");
+	const FAkUGCSandboxResult Result = Sandbox.RunScript(Script);
+	TestEqual(TEXT("ugc is absent without a host"), Result.Status, EAkUGCSandboxStatus::Success);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAkUGCSandboxCallDepthLimitTest,
+	"AkUGC.Sandbox.VM.CallDepthLimit",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCSandboxCallDepthLimitTest::RunTest(const FString& Parameters)
+{
+	FAkUGCSandboxConfig Config;
+	Config.MaxCallDepth = 32;
+
+	FAkUGCSandbox Sandbox;
+	Sandbox.Initialize(Config);
+
+	// 非尾调用的无终止递归：每次递归都保留上一帧，调用深度持续增长。
+	const FString Script = TEXT(
+		"local function recurse()\n"
+		"    local x = recurse()\n"
+		"    return x\n"
+		"end\n"
+		"recurse()\n");
+
+	const FAkUGCSandboxResult Result = Sandbox.RunScript(Script);
+	TestEqual(TEXT("deep recursion is terminated by call depth limit"), Result.Status, EAkUGCSandboxStatus::CallDepthExceeded);
+
+	return true;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS

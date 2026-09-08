@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "IAkUGCSandboxHost.h"
 
 /** 沙箱执行结果状态。 */
 enum class EAkUGCSandboxStatus : uint8
@@ -17,6 +18,8 @@ enum class EAkUGCSandboxStatus : uint8
 	MemoryLimitExceeded,
 	/** 运行超时。 */
 	Timeout,
+	/** 调用深度配额超限。 */
+	CallDepthExceeded,
 };
 
 /** 沙箱配额配置。 */
@@ -33,6 +36,9 @@ struct AKUGCSANDBOX_API FAkUGCSandboxConfig
 
 	/** 指令 hook 检查间隔（每 N 条指令检查一次配额与超时）。 */
 	int32 InstructionCheckInterval = 1000;
+
+	/** 最大调用深度（嵌套 Lua 调用层数），0 表示不限制。 */
+	int32 MaxCallDepth = 0;
 };
 
 /** 沙箱执行结果。 */
@@ -64,8 +70,16 @@ public:
 	FAkUGCSandbox(const FAkUGCSandbox&) = delete;
 	FAkUGCSandbox& operator=(const FAkUGCSandbox&) = delete;
 
-	/** 初始化沙箱 VM。失败时 OutError 返回原因。 */
-	bool Initialize(const FAkUGCSandboxConfig& InConfig, FString* OutError = nullptr);
+	/**
+	 * 初始化沙箱 VM。失败时 OutError 返回原因。
+	 *
+	 * InHost 可选：注入受控 API 宿主后，脚本可在 `ugc` 命名空间调用受控能力；
+	 * 未注入时 `ugc` 为 nil（安全默认）。Host 以 TSharedPtr 持有强引用。
+	 */
+	bool Initialize(
+		const FAkUGCSandboxConfig& InConfig,
+		FString* OutError = nullptr,
+		TSharedPtr<IAkUGCSandboxHost> InHost = nullptr);
 
 	/** 关闭并释放 VM。 */
 	void Shutdown();
