@@ -32,6 +32,13 @@ public:
     // 服务器权威端初始化三波塔防会话。重复调用会被拒绝。
     bool InitializeAuthoritySession(FAkUGCProjectDocument& Document, FString* OutError = nullptr);
 
+    // 服务器权威端从磁盘加载签名 Logic Pack 并初始化三波塔防会话。
+    // 未签名、签名不合法、文件缺失或内容非法都会被拒绝。
+    bool LoadAndInitializeAuthoritySession(
+        const FString& PackFilePath,
+        const FString& TrustedPublicKeyHex,
+        FString* OutError = nullptr);
+
     bool HasAuthoritySession() const;
 
     // 把权威玩法状态投影到 GameState（仅可观察状态变化时触发复制）。

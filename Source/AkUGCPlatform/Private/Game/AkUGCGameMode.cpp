@@ -3,6 +3,8 @@
 #include "Command/AkUGCCommandExecutor.h"
 #include "Document/AkUGCDocument.h"
 #include "Game/AkUGCGameState.h"
+#include "Pack/AkUGCLogicPack.h"
+#include "Pack/AkUGCLogicPackLoader.h"
 #include "Prefab/AkUGCOfficialPrefabCatalog.h"
 #include "Prefab/AkUGCPrefabRegistry.h"
 #include "Scene/AkUGCSceneRuntime.h"
@@ -78,6 +80,35 @@ bool AAkUGCGameMode::InitializeAuthoritySession(FAkUGCProjectDocument& Document,
     }
 
     return true;
+}
+
+bool AAkUGCGameMode::LoadAndInitializeAuthoritySession(
+    const FString& PackFilePath,
+    const FString& TrustedPublicKeyHex,
+    FString* OutError)
+{
+    if (Session.IsValid())
+    {
+        if (OutError)
+        {
+            *OutError = TEXT("Authority session is already initialized.");
+        }
+        return false;
+    }
+
+    const FAkUGCLogicPackLoadResult LoadResult =
+        FAkUGCLogicPackLoader::LoadVerifiedFromFile(PackFilePath, TrustedPublicKeyHex);
+    if (!LoadResult.bSucceeded)
+    {
+        if (OutError)
+        {
+            *OutError = LoadResult.ErrorMessage;
+        }
+        return false;
+    }
+
+    FAkUGCProjectDocument Document = LoadResult.Pack.Document;
+    return InitializeAuthoritySession(Document, OutError);
 }
 
 bool AAkUGCGameMode::HasAuthoritySession() const
