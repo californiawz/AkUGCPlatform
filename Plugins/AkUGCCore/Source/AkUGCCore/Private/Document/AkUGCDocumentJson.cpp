@@ -68,12 +68,13 @@ namespace
         const FString& Path,
         FString& OutError)
     {
-        for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Object->Values)
+        for (const auto& Pair : Object->Values)
         {
-            const FString FieldPath = Path.IsEmpty() ? Pair.Key : Path + TEXT(".") + Pair.Key;
-            if (Pair.Key.Equals(TEXT("integerValue"), ESearchCase::IgnoreCase))
+            const FString Key(Pair.Key.ToView());
+            const FString FieldPath = Path.IsEmpty() ? Key : Path + TEXT(".") + Key;
+            if (Key.Equals(TEXT("integerValue"), ESearchCase::IgnoreCase))
             {
-                if (Pair.Key != TEXT("integerValue"))
+                if (Key != TEXT("integerValue"))
                 {
                     OutError = FString::Printf(
                         TEXT("%s: Field must use canonical casing 'integerValue'."),
@@ -215,18 +216,19 @@ namespace
         const FString& Path,
         FString& OutError)
     {
-        for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Object->Values)
+        for (const auto& Pair : Object->Values)
         {
+            const FString Key(Pair.Key.ToView());
             bool bExactMatch = false;
             FString CanonicalField;
             for (const FString& Field : ExpectedFields)
             {
-                if (Field.Equals(Pair.Key, ESearchCase::CaseSensitive))
+                if (Field.Equals(Key, ESearchCase::CaseSensitive))
                 {
                     bExactMatch = true;
                     break;
                 }
-                if (Field.Equals(Pair.Key, ESearchCase::IgnoreCase))
+                if (Field.Equals(Key, ESearchCase::IgnoreCase))
                 {
                     CanonicalField = Field;
                 }
@@ -236,16 +238,17 @@ namespace
                 continue;
             }
             OutError = !CanonicalField.IsEmpty()
-                ? FString::Printf(TEXT("%s.%s: Field must use canonical casing '%s'."), *Path, *Pair.Key, *CanonicalField)
-                : FString::Printf(TEXT("%s.%s: Field is not supported."), *Path, *Pair.Key);
+                ? FString::Printf(TEXT("%s.%s: Field must use canonical casing '%s'."), *Path, *Key, *CanonicalField)
+                : FString::Printf(TEXT("%s.%s: Field is not supported."), *Path, *Key);
             return false;
         }
         for (const FString& Field : ExpectedFields)
         {
             bool bFoundExact = false;
-            for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Object->Values)
+            for (const auto& Pair : Object->Values)
             {
-                if (Pair.Key.Equals(Field, ESearchCase::CaseSensitive))
+                const FString Key(Pair.Key.ToView());
+                if (Key.Equals(Field, ESearchCase::CaseSensitive))
                 {
                     bFoundExact = true;
                     break;

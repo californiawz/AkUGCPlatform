@@ -51,7 +51,14 @@
     "android": {
       "targetPlatform": "Android",
       "cookFlavor": "ASTC",
-      "configuration": "Development"
+      "configuration": "Development",
+      "buildEnv": {
+        "ANDROID_HOME": "${workspace_dir}/AndroidSDK",
+        "ANDROID_SDK_ROOT": "${workspace_dir}/AndroidSDK",
+        "NDKROOT": "${workspace_dir}/AndroidSDK/ndk/27.2.12479018",
+        "ANDROID_NDK_ROOT": "${workspace_dir}/AndroidSDK/ndk/27.2.12479018",
+        "JAVA_HOME": "${workspace_dir}/Java/jdk-17.0.20.1+1"
+      }
     },
     "shipping-win64": {
       "targetPlatform": "Win64",

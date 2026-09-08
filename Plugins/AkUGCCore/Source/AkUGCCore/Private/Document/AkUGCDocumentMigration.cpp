@@ -27,17 +27,18 @@ namespace
         FString& OutError)
     {
         OutValue.Reset();
-        for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Object->Values)
+        for (const auto& Pair : Object->Values)
         {
-            if (!Pair.Key.Equals(FieldName, ESearchCase::IgnoreCase))
+            const FString Key(Pair.Key.ToView());
+            if (!Key.Equals(FieldName, ESearchCase::IgnoreCase))
             {
                 continue;
             }
-            if (!Pair.Key.Equals(FieldName, ESearchCase::CaseSensitive))
+            if (!Key.Equals(FieldName, ESearchCase::CaseSensitive))
             {
                 OutError = FString::Printf(
                     TEXT("Field '%s' must use canonical casing '%s'."),
-                    *Pair.Key,
+                    *Key,
                     FieldName);
                 return false;
             }
