@@ -1,0 +1,23 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0",
+	"FriendlyName": "AkUGC Sandbox",
+	"Description": "AkUGC 独立 Lua 5.3.4 沙箱：受控脚本执行环境，提供指令、内存与运行时间配额。Lua 运行时由 slua_unreal 插件提供，本插件在其上层实现安全沙盒。",
+	"Category": "Gameplay",
+	"CreatedBy": "AkStudio",
+	"Modules": [
+		{
+			"Name": "AkUGCSandbox",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "slua_unreal",
+			"Enabled": true
+		}
+	],
+	"CanContainContent": false
+}

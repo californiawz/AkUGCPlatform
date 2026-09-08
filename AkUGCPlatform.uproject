@@ -26,6 +26,14 @@
 			]
 		},
 		{
+			"Name": "slua_unreal",
+			"Enabled": true
+		},
+		{
+			"Name": "AkUGCSandbox",
+			"Enabled": true
+		},
+		{
 			"Name": "PythonScriptPlugin",
 			"Enabled": true,
 			"TargetAllowList": [
