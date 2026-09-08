@@ -124,6 +124,69 @@ namespace
 	}
 
 	/**
+	 * ugc.get_health(entityId)：查询实体血量，返回 current, maximum。
+	 * 实体不存在或无血量状态时返回 nil（不抛错，便于脚本判空）。
+	 */
+	int LuaUgcGetHealth(lua_State* L)
+	{
+		const FString EntityId = UTF8_TO_TCHAR(luaL_checkstring(L, 1));
+
+		lua_getfield(L, LUA_REGISTRYINDEX, SandboxImplRegistryKey);
+		FAkUGCSandboxImpl* Impl = static_cast<FAkUGCSandboxImpl*>(lua_touserdata(L, -1));
+		lua_pop(L, 1);
+
+		if (!Impl || !Impl->Host)
+		{
+			return luaL_error(L, "ugc.get_health is unavailable without a host");
+		}
+
+		double Current = 0.0;
+		double Maximum = 0.0;
+		if (!Impl->Host->QueryEntityHealth(EntityId, Current, Maximum))
+		{
+			lua_pushnil(L);
+			return 1;
+		}
+
+		lua_pushnumber(L, Current);
+		lua_pushnumber(L, Maximum);
+		return 2;
+	}
+
+	/**
+	 * ugc.apply_damage(sourceId, targetId, damage)：对目标实体造成伤害，
+	 * 返回 applied, healthAfter；失败时抛错（错误消息来自宿主）。
+	 */
+	int LuaUgcApplyDamage(lua_State* L)
+	{
+		const FString SourceId = UTF8_TO_TCHAR(luaL_checkstring(L, 1));
+		const FString TargetId = UTF8_TO_TCHAR(luaL_checkstring(L, 2));
+		const double Damage = static_cast<double>(luaL_checknumber(L, 3));
+
+		lua_getfield(L, LUA_REGISTRYINDEX, SandboxImplRegistryKey);
+		FAkUGCSandboxImpl* Impl = static_cast<FAkUGCSandboxImpl*>(lua_touserdata(L, -1));
+		lua_pop(L, 1);
+
+		if (!Impl || !Impl->Host)
+		{
+			return luaL_error(L, "ugc.apply_damage is unavailable without a host");
+		}
+
+		double Applied = 0.0;
+		double HealthAfter = 0.0;
+		bool bKilled = false;
+		FString Error;
+		if (!Impl->Host->ApplyDamage(SourceId, TargetId, Damage, Applied, HealthAfter, bKilled, Error))
+		{
+			return luaL_error(L, TCHAR_TO_UTF8(*Error));
+		}
+
+		lua_pushnumber(L, Applied);
+		lua_pushnumber(L, HealthAfter);
+		return 2;
+	}
+
+	/**
 	 * 创建沙盒独立环境表并存入注册表。
 	 *
 	 * 沙盒隔离不侵入宿主 _G，而是为脚本额外创建一个独立 env：
@@ -158,6 +221,10 @@ namespace
 			lua_newtable(L);
 			lua_pushcfunction(L, &LuaUgcMessage);
 			lua_setfield(L, -2, "message");
+			lua_pushcfunction(L, &LuaUgcGetHealth);
+			lua_setfield(L, -2, "get_health");
+			lua_pushcfunction(L, &LuaUgcApplyDamage);
+			lua_setfield(L, -2, "apply_damage");
 			lua_setfield(L, SafeGlobals, "ugc");
 		}
 

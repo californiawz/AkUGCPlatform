@@ -11,7 +11,8 @@ public class AkUGCAssetRuntime : ModuleRules
             "Core",
             "CoreUObject",
             "Engine",
-            "AkUGCCore"
+            "AkUGCCore",
+            "AkUGCSandbox"
         });
     }
 }

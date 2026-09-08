@@ -20,6 +20,10 @@
     {
       "Name": "AkUGCCore",
       "Enabled": true
+    },
+    {
+      "Name": "AkUGCSandbox",
+      "Enabled": true
     }
   ]
 }

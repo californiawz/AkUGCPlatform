@@ -147,7 +147,7 @@ bool FAkUGCSandboxMemoryLimitTest::RunTest(const FString& Parameters)
 
 namespace
 {
-	/** 记录受控消息的测试宿主。 */
+	/** 记录受控消息、实体查询与伤害的测试宿主。 */
 	class FMockSandboxHost : public IAkUGCSandboxHost
 	{
 	public:
@@ -156,7 +156,54 @@ namespace
 			Messages.Add(Message);
 		}
 
+		virtual bool QueryEntityHealth(const FString& EntityId, double& OutCurrent, double& OutMaximum) override
+		{
+			const double* Current = HealthByEntity.Find(EntityId);
+			const double* Maximum = MaxHealthByEntity.Find(EntityId);
+			if (!Current || !Maximum)
+			{
+				return false;
+			}
+			OutCurrent = *Current;
+			OutMaximum = *Maximum;
+			return true;
+		}
+
+		virtual bool ApplyDamage(
+			const FString& SourceEntityId,
+			const FString& TargetEntityId,
+			double Damage,
+			double& OutAppliedDamage,
+			double& OutHealthAfter,
+			bool& OutKilled,
+			FString& OutError) override
+		{
+			double* Current = HealthByEntity.Find(TargetEntityId);
+			if (!Current)
+			{
+				OutError = TEXT("unknown target entity");
+				return false;
+			}
+			const double Previous = *Current;
+			*Current = (Previous > Damage) ? (Previous - Damage) : 0.0;
+			OutAppliedDamage = Previous - *Current;
+			OutHealthAfter = *Current;
+			OutKilled = *Current <= 0.0;
+			LastDamage = FAkUGCMockDamage{SourceEntityId, TargetEntityId, Damage};
+			return true;
+		}
+
+		struct FAkUGCMockDamage
+		{
+			FString Source;
+			FString Target;
+			double Damage = 0.0;
+		};
+
 		TArray<FString> Messages;
+		TMap<FString, double> HealthByEntity;
+		TMap<FString, double> MaxHealthByEntity;
+		FAkUGCMockDamage LastDamage;
 	};
 }
 
@@ -225,6 +272,58 @@ bool FAkUGCSandboxCallDepthLimitTest::RunTest(const FString& Parameters)
 
 	const FAkUGCSandboxResult Result = Sandbox.RunScript(Script);
 	TestEqual(TEXT("deep recursion is terminated by call depth limit"), Result.Status, EAkUGCSandboxStatus::CallDepthExceeded);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAkUGCSandboxGetHealthTest,
+	"AkUGC.Sandbox.VM.ControlledApiGetHealth",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCSandboxGetHealthTest::RunTest(const FString& Parameters)
+{
+	const TSharedPtr<FMockSandboxHost> Host = MakeShared<FMockSandboxHost>();
+	Host->HealthByEntity.Add(TEXT("entity-1"), 70.0);
+	Host->MaxHealthByEntity.Add(TEXT("entity-1"), 100.0);
+
+	FAkUGCSandbox Sandbox;
+	Sandbox.Initialize(FAkUGCSandboxConfig(), nullptr, Host);
+
+	const FString Script = TEXT(
+		"local cur, max = ugc.get_health('entity-1')\n"
+		"assert(cur == 70 and max == 100, 'health mismatch')\n"
+		"assert(ugc.get_health('entity-missing') == nil, 'missing must be nil')\n");
+
+	const FAkUGCSandboxResult Result = Sandbox.RunScript(Script);
+	TestEqual(TEXT("get_health queries and returns values"), Result.Status, EAkUGCSandboxStatus::Success);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAkUGCSandboxApplyDamageTest,
+	"AkUGC.Sandbox.VM.ControlledApiApplyDamage",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCSandboxApplyDamageTest::RunTest(const FString& Parameters)
+{
+	const TSharedPtr<FMockSandboxHost> Host = MakeShared<FMockSandboxHost>();
+	Host->HealthByEntity.Add(TEXT("enemy-1"), 100.0);
+	Host->MaxHealthByEntity.Add(TEXT("enemy-1"), 100.0);
+
+	FAkUGCSandbox Sandbox;
+	Sandbox.Initialize(FAkUGCSandboxConfig(), nullptr, Host);
+
+	const FString Script = TEXT(
+		"local applied, after = ugc.apply_damage('tower-1', 'enemy-1', 30)\n"
+		"assert(applied == 30 and after == 70, 'damage mismatch')\n");
+
+	const FAkUGCSandboxResult Result = Sandbox.RunScript(Script);
+	TestEqual(TEXT("apply_damage forwards to host"), Result.Status, EAkUGCSandboxStatus::Success);
+	TestEqual(TEXT("host received target id"), Host->LastDamage.Target, TEXT("enemy-1"));
+	TestEqual(TEXT("host received source id"), Host->LastDamage.Source, TEXT("tower-1"));
+	TestEqual(TEXT("host received damage amount"), Host->LastDamage.Damage, 30.0);
 
 	return true;
 }

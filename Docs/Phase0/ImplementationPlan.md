@@ -450,8 +450,9 @@ App 通过模板化方式编辑安全的有限 Logic，不提供完整专业节�
 - 每个沙箱实例使用独立 VM + 独立 env 表（`_ENV` 白名单），实例间隔离且不侵入宿主 `_G`。
 - 已禁止 io/os/debug/package/require/dofile/loadfile/load 等危险库，仅开放 base 精简子集与 table/string/math/utf8。
 - 已实现指令、时间、内存、调用深度四类配额 hook，死循环/超时/OOM/深递归均安全终止。
-- 已新增受控 API 宿主接口 `IAkUGCSandboxHost`，首个受控能力 `ugc.message` 已落地；未注入宿主时 `ugc` 命名空间不可用。
-- 待完成：Entity Query/Timer/Spawn/Damage/Ruleset 等受控 API 的宿主实现、Capability/Effect Validator 重复校验。
+- 已新增受控 API 宿主接口 `IAkUGCSandboxHost`，落地 `ugc.message` / `ugc.get_health` / `ugc.apply_damage` 三个受控能力；未注入宿主时 `ugc` 命名空间不可用。
+- 已在 AkUGCAssetRuntime 落地真实宿主 `FAkUGCSandboxSceneHost`，把受控 API 桥接到 `FAkUGCSceneRuntime` 的 `GetRuntimeHealth` / `ApplyRuntimeDamage`，实体 ID 以 FGuid 字符串在脚本与运行时之间传递；端到端测试验证脚本可查询塔防 Base 血量并造成伤害。
+- 待完成：Timer/Spawn/Ruleset 等受控 API 的宿主实现、Capability/Effect Validator 在 Client/Server 侧重复校验。
 
 ### 目标
 
@@ -563,10 +564,11 @@ P0–P8 已全部提交；P9（Lua 沙箱）基础已落地并持续推进。
 26. `功能：沙盒隔离改为独立 env 表并参考 AkLuaRuntime 封装 VM`（P9）
 27. `功能：迁移 AkLuaRuntime 插件并让 AkUGCSandbox 复用其 VM 封装`（P9）
 28. `功能：新增沙箱受控 API 宿主接口与调用深度配额`（P9）
+29. `功能：落地受控 API 宿主桥接（get_health/apply_damage）`（P9）
 
 待推进（P9 起）：
 
-- Entity Query/Timer/Spawn/Damage/Ruleset 受控 API 宿主实现
+- Timer/Spawn/Ruleset 受控 API 宿主实现
 - Capability/Effect Validator 在 Client/Server 侧重复校验
 
 每个提交完成后执行：

@@ -24,4 +24,31 @@ public:
 
 	/** 受控消息：脚本调用 ugc.message(msg) 时触发。 */
 	virtual void EmitMessage(const FString& Message) = 0;
+
+	/**
+	 * 受控实体查询：脚本调用 ugc.get_health(entityId) 时触发。
+	 * 返回实体当前/最大血量；实体不存在或无血量状态时返回 false。
+	 * 宿主未实现该能力时返回 false（沙箱侧视为「未找到」）。
+	 */
+	virtual bool QueryEntityHealth(const FString& EntityId, double& OutCurrent, double& OutMaximum)
+	{
+		return false;
+	}
+
+	/**
+	 * 受控伤害：脚本调用 ugc.apply_damage(sourceId, targetId, damage) 时触发。
+	 * 成功返回 true 并回填实际伤害 / 剩余血量 / 是否击杀；失败时 OutError 返回原因。
+	 * 宿主未实现该能力时返回 false（沙箱侧抛错）。
+	 */
+	virtual bool ApplyDamage(
+		const FString& SourceEntityId,
+		const FString& TargetEntityId,
+		double Damage,
+		double& OutAppliedDamage,
+		double& OutHealthAfter,
+		bool& OutKilled,
+		FString& OutError)
+	{
+		return false;
+	}
 };
