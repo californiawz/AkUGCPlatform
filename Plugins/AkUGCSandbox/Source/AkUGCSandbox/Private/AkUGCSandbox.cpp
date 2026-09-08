@@ -3,7 +3,8 @@
 #include "Containers/StringConv.h"
 #include "HAL/PlatformTime.h"
 
-#include "LuaState.h"
+#include "Core/LuaVirtualMachine.h"
+#include "Core/LuaCallScope.h"
 #include "lua.h"
 #include "lauxlib.h"
 #include "lualib.h"
@@ -15,9 +16,9 @@ struct FAkUGCSandboxImpl
 {
 	FAkUGCSandboxConfig Config;
 
-	// 复用 slua 的 LuaState 创建/持有 Lua VM（参考 AkLuaRuntime 的
-	// FLuaVirtualMachine：VM 生命周期集中封装，不再自行 lua_newstate）。
-	TUniquePtr<NS_SLUA::LuaState> LuaStateOwner;
+	// 复用 AkLuaRuntime 的 FLuaVirtualMachine 封装 VM 生命周期；
+	// 沙盒只在 VM 之上额外创建独立 env，不再自行 new LuaState。
+	TSharedPtr<FLuaVirtualMachine> VirtualMachine;
 	lua_State* State = nullptr;
 
 	int64 InstructionsExecuted = 0;
@@ -33,30 +34,6 @@ namespace
 {
 	const char* SandboxImplRegistryKey = "AkUGCSandboxImpl";
 	const char* SandboxEnvRegistryKey = "AkUGCSandboxEnv";
-
-	/**
-	 * 栈平衡守卫（参考 AkLuaRuntime 的 FLuaCallScope）：
-	 * 构造时记录栈顶，析构时恢复，保证 native->lua 调用后栈平衡。
-	 */
-	struct FLuaStackScope
-	{
-		explicit FLuaStackScope(lua_State* InL)
-			: L(InL)
-			, SavedTop(InL ? lua_gettop(InL) : 0)
-		{
-		}
-		~FLuaStackScope()
-		{
-			if (L)
-			{
-				lua_settop(L, SavedTop);
-			}
-		}
-		FLuaStackScope(const FLuaStackScope&) = delete;
-		FLuaStackScope& operator=(const FLuaStackScope&) = delete;
-		lua_State* L;
-		int SavedTop;
-	};
 
 	/** 查询当前 VM 已用内存（字节）。 */
 	int64 GetLuaMemoryBytes(lua_State* L)
@@ -109,10 +86,10 @@ namespace
 	/**
 	 * 创建沙盒独立环境表并存入注册表。
 	 *
-	 * 沙盒隔离不再清空宿主 _G 的危险全局，而是为脚本额外创建一个独立 env：
+	 * 沙盒隔离不侵入宿主 _G，而是为脚本额外创建一个独立 env：
 	 *   - sandbox_env 为空表，作为脚本的 _ENV，脚本全局读写均落在该表，实例间隔离；
 	 *   - sandbox_env 的 __index 指向安全库白名单，脚本仅能访问白名单内的安全库；
-	 *   - 宿主 _G 保持完整，slua 内部机制（LuaProfiler 等）不受影响。
+	 *   - 宿主 _G 保持完整，AkLuaRuntime/slua 内部机制不受影响。
 	 */
 	void CreateSandboxEnv(lua_State* L)
 	{
@@ -193,20 +170,20 @@ bool FAkUGCSandbox::Initialize(const FAkUGCSandboxConfig& InConfig, FString* Out
 	Impl->bMemoryLimitExceeded = false;
 	Impl->bTimeout = false;
 
-	// 使用 slua 创建 Lua 虚拟机（参考 AkLuaRuntime 的 FLuaVirtualMachine）。
-	Impl->LuaStateOwner = MakeUnique<NS_SLUA::LuaState>("AkUGCSandbox");
-	if (!Impl->LuaStateOwner->init())
+	// 复用 AkLuaRuntime 的 FLuaVirtualMachine 创建并初始化 Lua VM。
+	Impl->VirtualMachine = MakeShared<FLuaVirtualMachine>();
+	if (!Impl->VirtualMachine->Initialize(TEXT("AkUGCSandbox"), nullptr))
 	{
-		Impl->LuaStateOwner.Reset();
+		Impl->VirtualMachine.Reset();
 		if (OutError)
 		{
-			*OutError = TEXT("failed to create Lua state via slua");
+			*OutError = TEXT("failed to create Lua virtual machine via AkLuaRuntime");
 		}
 		return false;
 	}
-	Impl->State = Impl->LuaStateOwner->getLuaState();
+	Impl->State = Impl->VirtualMachine->GetRawState();
 
-	// 创建独立沙盒 env（不再清空宿主全局，宿主 _G 保持完整）。
+	// 创建独立沙盒 env（不侵入宿主 _G）。
 	CreateSandboxEnv(Impl->State);
 
 	// 记录基线内存，作为脚本增量配额基准（slua 初始化本身占用较大）。
@@ -236,11 +213,11 @@ bool FAkUGCSandbox::Initialize(const FAkUGCSandboxConfig& InConfig, FString* Out
 
 void FAkUGCSandbox::Shutdown()
 {
-	// 释放 LuaState 会触发其析构 -> close() -> lua_close。
-	// 宿主 _G 全程保持完整，slua 内部清理（LuaProfiler::clean 等）可直接执行。
-	if (Impl->LuaStateOwner)
+	// 交由 FLuaVirtualMachine::Shutdown 完成 VM 关闭与资源释放（幂等）。
+	if (Impl->VirtualMachine)
 	{
-		Impl->LuaStateOwner.Reset();
+		Impl->VirtualMachine->Shutdown();
+		Impl->VirtualMachine.Reset();
 	}
 	Impl->State = nullptr;
 	Impl->BaseMemoryBytes = 0;
@@ -262,7 +239,7 @@ FAkUGCSandboxResult FAkUGCSandbox::RunScript(const FString& Source, const FStrin
 	}
 
 	lua_State* L = Impl->State;
-	FLuaStackScope Scope(L);
+	FLuaCallScope Scope(L);
 
 	// 编译源码。
 	const auto SourceAnsi = StringCast<ANSICHAR>(*Source, Source.Len());

@@ -30,6 +30,10 @@
 			"Enabled": true
 		},
 		{
+			"Name": "AkLuaRuntime",
+			"Enabled": true
+		},
+		{
 			"Name": "AkUGCSandbox",
 			"Enabled": true
 		},

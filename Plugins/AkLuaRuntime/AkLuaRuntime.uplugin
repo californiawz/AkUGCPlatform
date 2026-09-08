@@ -1,0 +1,30 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0",
+	"FriendlyName": "Ak Lua Runtime",
+	"Description": "Game-agnostic Lua scripting runtime built on sluaunreal. Provides VM lifecycle management, a configurable script loader, a pluggable C++/Lua bridge system and a GameInstance subsystem entry point. Reusable across projects.",
+	"Category": "Scripting",
+	"CreatedBy": "Akatsuki",
+	"CreatedByURL": "",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"EnabledByDefault": true,
+	"CanContainContent": false,
+	"IsBetaVersion": false,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "AkLuaRuntime",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "slua_unreal",
+			"Enabled": true
+		}
+	]
+}
