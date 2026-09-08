@@ -1,5 +1,7 @@
 #include "Game/AkUGCGameMode.h"
 
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 #include "Command/AkUGCCommandExecutor.h"
 #include "Document/AkUGCDocument.h"
 #include "Game/AkUGCGameState.h"
@@ -114,6 +116,34 @@ bool AAkUGCGameMode::LoadAndInitializeAuthoritySession(
 bool AAkUGCGameMode::HasAuthoritySession() const
 {
     return Session.IsValid();
+}
+
+void AAkUGCGameMode::InitGame(const FString& MapName, const FString& Options, FString& ErrorMessage)
+{
+    Super::InitGame(MapName, Options, ErrorMessage);
+
+    // 服务器权威端启动时，从命令行解析并自动加载签名 Logic Pack：
+    //   -LogicPack=<path>  发布包 JSON 文件路径
+    //   -LogicPackKey=<hex>  可信公钥（十六进制）
+    FString LogicPackPath;
+    if (FParse::Value(FCommandLine::Get(), TEXT("LogicPack="), LogicPackPath))
+    {
+        FString LogicPackKey;
+        FParse::Value(FCommandLine::Get(), TEXT("LogicPackKey="), LogicPackKey);
+
+        FString LoadError;
+        if (!LoadAndInitializeAuthoritySession(LogicPackPath, LogicPackKey, &LoadError))
+        {
+            UE_LOG(LogTemp, Error,
+                TEXT("[AkUGC] Authority Logic Pack load failed for '%s': %s"),
+                *LogicPackPath, *LoadError);
+        }
+        else
+        {
+            UE_LOG(LogTemp, Log,
+                TEXT("[AkUGC] Authority Logic Pack loaded: %s"), *LogicPackPath);
+        }
+    }
 }
 
 void AAkUGCGameMode::ProjectStateToGameState(AAkUGCGameState* InGameState)

@@ -41,6 +41,8 @@ public:
 
     bool HasAuthoritySession() const;
 
+    virtual void InitGame(const FString& MapName, const FString& Options, FString& ErrorMessage) override;
+
     // 把权威玩法状态投影到 GameState（仅可观察状态变化时触发复制）。
     void ProjectStateToGameState(AAkUGCGameState* GameState);
 
