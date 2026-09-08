@@ -8,6 +8,7 @@
 #include "Prefab/AkUGCPrefabRegistry.h"
 #include "Scene/AkUGCSceneRuntime.h"
 #include "Session/AkUGCDocumentRuntimeSession.h"
+#include "Validation/AkUGCDocumentValidator.h"
 #include "AkUGCEditorSubsystem.generated.h"
 
 class AActor;
@@ -41,6 +42,11 @@ public:
         FName ComponentTypeId,
         FName PropertyId,
         const FAkUGCValue& Value);
+    FAkUGCCommandExecutionResult AddLogicNode(const FAkUGCLogicNode& Node);
+    FAkUGCCommandExecutionResult DeleteLogicNode(const FGuid& NodeId);
+    FAkUGCCommandExecutionResult UpdateLogicNode(const FAkUGCLogicNode& Node);
+    FAkUGCCommandExecutionResult ConnectLogicNode(const FGuid& SourceNodeId, const FGuid& TargetNodeId);
+    FAkUGCCommandExecutionResult DisconnectLogicNode(const FGuid& SourceNodeId, const FGuid& TargetNodeId);
     FAkUGCCommandExecutionResult DeleteSelectedEntity();
     FAkUGCCommandExecutionResult DuplicateSelectedEntity(FGuid& OutEntityId);
     FAkUGCCommandExecutionResult Undo();
@@ -56,6 +62,8 @@ public:
     bool CanRedo() const;
     const FAkUGCProjectDocument& GetDocument() const;
     const FAkUGCPrefabRegistry& GetPrefabRegistry() const;
+    const FAkUGCLogicGraph* GetLogicGraph() const;
+    FAkUGCValidationResult ValidateLogicGraph() const;
     uint64 GetDocumentRevision() const;
     FString GetDefaultProjectPath() const;
 

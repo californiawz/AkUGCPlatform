@@ -358,6 +358,90 @@ FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::SetEntityProperty(
     return Result;
 }
 
+FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::AddLogicNode(const FAkUGCLogicNode& Node)
+{
+    if (!CommandService)
+    {
+        return NoSessionResult();
+    }
+
+    TGuardValue<bool> ApplyingGuard(bApplyingUGCTransaction, true);
+    FAkUGCCommandExecutionResult Result = CommandService->AddLogicNode(Node);
+    if (Result.bSucceeded)
+    {
+        ++DocumentRevision;
+    }
+    return Result;
+}
+
+FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::DeleteLogicNode(const FGuid& NodeId)
+{
+    if (!CommandService)
+    {
+        return NoSessionResult();
+    }
+
+    TGuardValue<bool> ApplyingGuard(bApplyingUGCTransaction, true);
+    FAkUGCCommandExecutionResult Result = CommandService->DeleteLogicNode(NodeId);
+    if (Result.bSucceeded)
+    {
+        ++DocumentRevision;
+    }
+    return Result;
+}
+
+FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::UpdateLogicNode(const FAkUGCLogicNode& Node)
+{
+    if (!CommandService)
+    {
+        return NoSessionResult();
+    }
+
+    TGuardValue<bool> ApplyingGuard(bApplyingUGCTransaction, true);
+    FAkUGCCommandExecutionResult Result = CommandService->UpdateLogicNode(Node);
+    if (Result.bSucceeded)
+    {
+        ++DocumentRevision;
+    }
+    return Result;
+}
+
+FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::ConnectLogicNode(
+    const FGuid& SourceNodeId,
+    const FGuid& TargetNodeId)
+{
+    if (!CommandService)
+    {
+        return NoSessionResult();
+    }
+
+    TGuardValue<bool> ApplyingGuard(bApplyingUGCTransaction, true);
+    FAkUGCCommandExecutionResult Result = CommandService->ConnectLogicNode(SourceNodeId, TargetNodeId);
+    if (Result.bSucceeded)
+    {
+        ++DocumentRevision;
+    }
+    return Result;
+}
+
+FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::DisconnectLogicNode(
+    const FGuid& SourceNodeId,
+    const FGuid& TargetNodeId)
+{
+    if (!CommandService)
+    {
+        return NoSessionResult();
+    }
+
+    TGuardValue<bool> ApplyingGuard(bApplyingUGCTransaction, true);
+    FAkUGCCommandExecutionResult Result = CommandService->DisconnectLogicNode(SourceNodeId, TargetNodeId);
+    if (Result.bSucceeded)
+    {
+        ++DocumentRevision;
+    }
+    return Result;
+}
+
 FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::DeleteSelectedEntity()
 {
     return SelectedEntityId.IsValid()
@@ -485,6 +569,28 @@ const FAkUGCPrefabRegistry& UAkUGCEditorSubsystem::GetPrefabRegistry() const
 {
     check(PrefabRegistry);
     return *PrefabRegistry;
+}
+
+const FAkUGCLogicGraph* UAkUGCEditorSubsystem::GetLogicGraph() const
+{
+    const FAkUGCSceneDocument* Scene = Document.Scenes.FindByPredicate(
+        [this](const FAkUGCSceneDocument& Candidate)
+        {
+            return Candidate.SceneId == ActiveSceneId;
+        });
+    return Scene ? &Scene->LogicGraph : nullptr;
+}
+
+FAkUGCValidationResult UAkUGCEditorSubsystem::ValidateLogicGraph() const
+{
+    const FAkUGCLogicGraph* Graph = GetLogicGraph();
+    if (!Graph)
+    {
+        FAkUGCValidationResult Result;
+        Result.AddError(TEXT("logicGraph"), TEXT("No active scene logic graph is available."));
+        return Result;
+    }
+    return FAkUGCDocumentValidator::ValidateLogicGraph(*Graph);
 }
 
 uint64 UAkUGCEditorSubsystem::GetDocumentRevision() const

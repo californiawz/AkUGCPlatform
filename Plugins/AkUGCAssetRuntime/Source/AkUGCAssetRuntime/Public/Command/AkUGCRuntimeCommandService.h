@@ -60,6 +60,11 @@ public:
         double WaveIntervalSeconds,
         EAkUGCTowerDefenseDefeatCondition DefeatCondition,
         EAkUGCTowerDefenseVictoryCondition VictoryCondition);
+    FAkUGCCommandExecutionResult AddLogicNode(const FAkUGCLogicNode& Node);
+    FAkUGCCommandExecutionResult DeleteLogicNode(const FGuid& NodeId);
+    FAkUGCCommandExecutionResult UpdateLogicNode(const FAkUGCLogicNode& Node);
+    FAkUGCCommandExecutionResult ConnectLogicNode(const FGuid& SourceNodeId, const FGuid& TargetNodeId);
+    FAkUGCCommandExecutionResult DisconnectLogicNode(const FGuid& SourceNodeId, const FGuid& TargetNodeId);
 
     FAkUGCCommandExecutionResult Undo();
     FAkUGCCommandExecutionResult Redo();

@@ -330,4 +330,139 @@ bool FAkUGCEditorViewportDeletionSyncTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FAkUGCEditorLogicListEditingTest,
+    "AkUGC.Editor.CreatorStudio.LogicListEditing",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCEditorLogicListEditingTest::RunTest(const FString& Parameters)
+{
+    UAkUGCEditorSubsystem* Subsystem = GEditor
+        ? GEditor->GetEditorSubsystem<UAkUGCEditorSubsystem>()
+        : nullptr;
+    TestNotNull(TEXT("Creator Studio subsystem exists"), Subsystem);
+    if (!Subsystem)
+    {
+        return false;
+    }
+
+    FString Error;
+    TestTrue(TEXT("Tower defense project is created"), Subsystem->NewTowerDefenseProject(&Error));
+
+    FGuid AnchorId;
+    TestTrue(
+        TEXT("Spawn anchor entity is placed"),
+        Subsystem->PlacePrefab(TEXT("official.gameplay.base"), FTransform::Identity, AnchorId).bSucceeded);
+
+    const FGuid GameStartId(10, 0, 0, 0);
+    const FGuid MessageId(11, 0, 0, 0);
+    const FGuid SpawnId(12, 0, 0, 0);
+
+    FAkUGCLogicNode GameStart;
+    GameStart.NodeId = GameStartId;
+    GameStart.Type = EAkUGCLogicNodeType::GameStart;
+    TestTrue(TEXT("GameStart node is added"), Subsystem->AddLogicNode(GameStart).bSucceeded);
+
+    FAkUGCLogicNode Message;
+    Message.NodeId = MessageId;
+    Message.Type = EAkUGCLogicNodeType::Message;
+    Message.Message = TEXT("Wave incoming");
+    TestTrue(TEXT("Message node is added"), Subsystem->AddLogicNode(Message).bSucceeded);
+    TestTrue(TEXT("GameStart connects to message"), Subsystem->ConnectLogicNode(GameStartId, MessageId).bSucceeded);
+
+    FAkUGCLogicNode Spawn;
+    Spawn.NodeId = SpawnId;
+    Spawn.Type = EAkUGCLogicNodeType::Spawn;
+    Spawn.SpawnPrefabId = TEXT("official.unit.basic_enemy");
+    Spawn.SpawnAtEntityId = AnchorId;
+    TestTrue(TEXT("Spawn node is added"), Subsystem->AddLogicNode(Spawn).bSucceeded);
+    TestTrue(TEXT("GameStart connects to spawn"), Subsystem->ConnectLogicNode(GameStartId, SpawnId).bSucceeded);
+
+    {
+        const FAkUGCLogicGraph* Graph = Subsystem->GetLogicGraph();
+        TestNotNull(TEXT("Logic graph is exposed"), Graph);
+        if (Graph)
+        {
+            TestEqual(TEXT("Logic graph lists three nodes"), Graph->Nodes.Num(), 3);
+            TestEqual(TEXT("Logic graph lists two connections"), Graph->Connections.Num(), 2);
+        }
+    }
+
+    FAkUGCLogicNode UpdatedMessage = Message;
+    UpdatedMessage.Message = TEXT("Final wave");
+    TestTrue(TEXT("Message node updates"), Subsystem->UpdateLogicNode(UpdatedMessage).bSucceeded);
+    {
+        const FAkUGCLogicGraph* Graph = Subsystem->GetLogicGraph();
+        const FAkUGCLogicNode* StoredMessage = Graph
+            ? Graph->Nodes.FindByPredicate([&MessageId](const FAkUGCLogicNode& Node) { return Node.NodeId == MessageId; })
+            : nullptr;
+        TestNotNull(TEXT("Updated message node exists"), StoredMessage);
+        if (StoredMessage)
+        {
+            TestEqual(TEXT("Message parameter is stored"), StoredMessage->Message, FString(TEXT("Final wave")));
+        }
+    }
+
+    TestTrue(TEXT("Valid logic graph validates"), Subsystem->ValidateLogicGraph().IsValid());
+
+    TestTrue(TEXT("Disconnect logic succeeds"), Subsystem->DisconnectLogicNode(GameStartId, SpawnId).bSucceeded);
+    {
+        const FAkUGCLogicGraph* Graph = Subsystem->GetLogicGraph();
+        if (Graph)
+        {
+            TestEqual(TEXT("Disconnect leaves one connection"), Graph->Connections.Num(), 1);
+        }
+    }
+    TestTrue(TEXT("Undo disconnect succeeds"), Subsystem->Undo().bSucceeded);
+    {
+        const FAkUGCLogicGraph* Graph = Subsystem->GetLogicGraph();
+        if (Graph)
+        {
+            TestEqual(TEXT("Undo restores two connections"), Graph->Connections.Num(), 2);
+        }
+    }
+    TestTrue(TEXT("Redo disconnect succeeds"), Subsystem->Redo().bSucceeded);
+    {
+        const FAkUGCLogicGraph* Graph = Subsystem->GetLogicGraph();
+        if (Graph)
+        {
+            TestEqual(TEXT("Redo disconnect leaves one connection"), Graph->Connections.Num(), 1);
+        }
+    }
+
+    // 重新连接 GameStart -> Spawn，使 Spawn 在删除时仍拥有一条连接，
+    // 从而真正覆盖「删除节点级联删除连接」与「撤销删除恢复连接」的路径。
+    TestTrue(TEXT("Reconnect spawn for cascade test succeeds"), Subsystem->ConnectLogicNode(GameStartId, SpawnId).bSucceeded);
+
+    TestTrue(TEXT("Spawn node deletes"), Subsystem->DeleteLogicNode(SpawnId).bSucceeded);
+    {
+        const FAkUGCLogicGraph* Graph = Subsystem->GetLogicGraph();
+        if (Graph)
+        {
+            TestEqual(TEXT("Delete removes spawn node"), Graph->Nodes.Num(), 2);
+            TestEqual(TEXT("Delete cascades spawn connection"), Graph->Connections.Num(), 1);
+        }
+    }
+    TestTrue(TEXT("Undo delete node succeeds"), Subsystem->Undo().bSucceeded);
+    {
+        const FAkUGCLogicGraph* Graph = Subsystem->GetLogicGraph();
+        if (Graph)
+        {
+            TestEqual(TEXT("Undo restores three nodes"), Graph->Nodes.Num(), 3);
+            TestEqual(TEXT("Undo restores spawn connection"), Graph->Connections.Num(), 2);
+        }
+    }
+
+    FAkUGCLogicGraph InvalidGraph;
+    FAkUGCLogicNode EmptyMessage;
+    EmptyMessage.NodeId = FGuid(20, 0, 0, 0);
+    EmptyMessage.Type = EAkUGCLogicNodeType::Message;
+    InvalidGraph.Nodes.Add(EmptyMessage);
+    TestFalse(TEXT("Empty message graph is rejected"),
+        FAkUGCDocumentValidator::ValidateLogicGraph(InvalidGraph).IsValid());
+
+    Subsystem->CloseProject();
+    return true;
+}
+
 #endif

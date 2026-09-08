@@ -566,6 +566,87 @@ FAkUGCCommandExecutionResult FAkUGCRuntimeCommandService::SetRulesetSettings(
     return Execute(MoveTemp(Transaction));
 }
 
+FAkUGCCommandExecutionResult FAkUGCRuntimeCommandService::AddLogicNode(const FAkUGCLogicNode& Node)
+{
+    FAkUGCCommand Command;
+    Command.CommandId = FGuid::NewGuid();
+    Command.Type = EAkUGCCommandType::AddLogicNode;
+    Command.SceneId = SceneId;
+    Command.LogicNode = Node;
+
+    FAkUGCCommandTransaction Transaction;
+    Transaction.TransactionId = FGuid::NewGuid();
+    Transaction.Label = TEXT("Add logic node");
+    Transaction.Commands.Add(MoveTemp(Command));
+    return Execute(MoveTemp(Transaction));
+}
+
+FAkUGCCommandExecutionResult FAkUGCRuntimeCommandService::DeleteLogicNode(const FGuid& NodeId)
+{
+    FAkUGCCommand Command;
+    Command.CommandId = FGuid::NewGuid();
+    Command.Type = EAkUGCCommandType::DeleteLogicNode;
+    Command.SceneId = SceneId;
+    Command.LogicNode.NodeId = NodeId;
+
+    FAkUGCCommandTransaction Transaction;
+    Transaction.TransactionId = FGuid::NewGuid();
+    Transaction.Label = TEXT("Delete logic node");
+    Transaction.Commands.Add(MoveTemp(Command));
+    return Execute(MoveTemp(Transaction));
+}
+
+FAkUGCCommandExecutionResult FAkUGCRuntimeCommandService::UpdateLogicNode(const FAkUGCLogicNode& Node)
+{
+    FAkUGCCommand Command;
+    Command.CommandId = FGuid::NewGuid();
+    Command.Type = EAkUGCCommandType::UpdateLogicNode;
+    Command.SceneId = SceneId;
+    Command.LogicNode = Node;
+
+    FAkUGCCommandTransaction Transaction;
+    Transaction.TransactionId = FGuid::NewGuid();
+    Transaction.Label = TEXT("Update logic node");
+    Transaction.Commands.Add(MoveTemp(Command));
+    return Execute(MoveTemp(Transaction));
+}
+
+FAkUGCCommandExecutionResult FAkUGCRuntimeCommandService::ConnectLogicNode(
+    const FGuid& SourceNodeId,
+    const FGuid& TargetNodeId)
+{
+    FAkUGCCommand Command;
+    Command.CommandId = FGuid::NewGuid();
+    Command.Type = EAkUGCCommandType::ConnectLogicNode;
+    Command.SceneId = SceneId;
+    Command.LogicConnection.SourceNodeId = SourceNodeId;
+    Command.LogicConnection.TargetNodeId = TargetNodeId;
+
+    FAkUGCCommandTransaction Transaction;
+    Transaction.TransactionId = FGuid::NewGuid();
+    Transaction.Label = TEXT("Connect logic nodes");
+    Transaction.Commands.Add(MoveTemp(Command));
+    return Execute(MoveTemp(Transaction));
+}
+
+FAkUGCCommandExecutionResult FAkUGCRuntimeCommandService::DisconnectLogicNode(
+    const FGuid& SourceNodeId,
+    const FGuid& TargetNodeId)
+{
+    FAkUGCCommand Command;
+    Command.CommandId = FGuid::NewGuid();
+    Command.Type = EAkUGCCommandType::DisconnectLogicNode;
+    Command.SceneId = SceneId;
+    Command.LogicConnection.SourceNodeId = SourceNodeId;
+    Command.LogicConnection.TargetNodeId = TargetNodeId;
+
+    FAkUGCCommandTransaction Transaction;
+    Transaction.TransactionId = FGuid::NewGuid();
+    Transaction.Label = TEXT("Disconnect logic nodes");
+    Transaction.Commands.Add(MoveTemp(Command));
+    return Execute(MoveTemp(Transaction));
+}
+
 FAkUGCCommandExecutionResult FAkUGCRuntimeCommandService::Undo()
 {
     return Session.Undo(Document);
