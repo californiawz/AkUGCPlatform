@@ -263,8 +263,38 @@ namespace
 		Out.GameStartEntryIndex = static_cast<int32>(GameStartEntryIndex);
 		Out.WaveStartEntryIndex = static_cast<int32>(WaveStartEntryIndex);
 		return true;
-	}
-}
+		}
+
+		TSharedPtr<FJsonObject> SerializeSignature(const FAkUGCLogicPackSignature& Signature)
+		{
+			TSharedPtr<FJsonObject> Obj = MakeShared<FJsonObject>();
+			Obj->SetStringField(TEXT("algorithm"), Signature.Algorithm);
+			Obj->SetStringField(TEXT("publicKey"), Signature.PublicKey);
+			Obj->SetStringField(TEXT("signature"), Signature.Signature);
+			return Obj;
+		}
+
+		bool DeserializeSignature(
+			const TSharedPtr<FJsonObject>& Obj,
+			FAkUGCLogicPackSignature& Out,
+			FString& Error)
+		{
+			FString Algorithm;
+			FString PublicKey;
+			FString SignatureValue;
+			if (!Obj->TryGetStringField(TEXT("algorithm"), Algorithm)
+				|| !Obj->TryGetStringField(TEXT("publicKey"), PublicKey)
+				|| !Obj->TryGetStringField(TEXT("signature"), SignatureValue))
+			{
+				Error = TEXT("signature: 必需字段缺失或类型错误。");
+				return false;
+			}
+			Out.Algorithm = Algorithm;
+			Out.PublicKey = PublicKey;
+			Out.Signature = SignatureValue;
+			return true;
+		}
+		}
 
 bool FAkUGCLogicPackCodec::Serialize(const FAkUGCLogicPack& Pack, FString& OutJson, FString* OutError)
 {
@@ -297,6 +327,10 @@ bool FAkUGCLogicPackCodec::Serialize(const FAkUGCLogicPack& Pack, FString& OutJs
 	RootObject->SetObjectField(TEXT("manifest"), SerializeManifest(Pack.Manifest));
 	RootObject->SetObjectField(TEXT("document"), DocumentObject);
 	RootObject->SetObjectField(TEXT("program"), SerializeProgram(Pack.Program));
+	if (!Pack.Signature.Signature.IsEmpty())
+	{
+		RootObject->SetObjectField(TEXT("signature"), SerializeSignature(Pack.Signature));
+	}
 
 	const bool bSucceeded = FJsonSerializer::Serialize(RootObject.ToSharedRef(), TJsonWriterFactory<TCHAR, TPrettyJsonPrintPolicy<TCHAR>>::Create(&OutJson, 0));
 	if (!bSucceeded && OutError)
@@ -372,6 +406,19 @@ bool FAkUGCLogicPackCodec::Deserialize(const FString& Json, FAkUGCLogicPack& Out
 			*OutError = MoveTemp(Error);
 		}
 		return false;
+	}
+
+	const TSharedPtr<FJsonObject>* SignatureObject = nullptr;
+	if (RootObject->TryGetObjectField(TEXT("signature"), SignatureObject))
+	{
+		if (!DeserializeSignature(*SignatureObject, OutPack.Signature, Error))
+		{
+			if (OutError)
+			{
+				*OutError = MoveTemp(Error);
+			}
+			return false;
+		}
 	}
 
 	return true;

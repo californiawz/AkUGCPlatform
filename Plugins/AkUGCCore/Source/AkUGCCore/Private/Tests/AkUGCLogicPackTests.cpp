@@ -7,6 +7,7 @@
 #include "Pack/AkUGCLogicPackCodec.h"
 #include "Pack/AkUGCLogicPackHasher.h"
 #include "Pack/AkUGCLogicPackLoader.h"
+#include "Pack/AkUGCLogicPackSignature.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -468,6 +469,121 @@ bool FAkUGCLogicPackBuilderRejectsInvalidTest::RunTest(const FString& Parameters
     const FAkUGCLogicPackBuildResult Build = FAkUGCLogicPackBuilder::Build(Invalid);
     TestFalse(TEXT("Invalid document is rejected by builder"), Build.bSucceeded);
     TestFalse(TEXT("Rejection carries an error message"), Build.ErrorMessage.IsEmpty());
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FAkUGCLogicPackKeyPairTest,
+    "AkUGC.Core.Pack.Signature.KeyPair",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCLogicPackKeyPairTest::RunTest(const FString& Parameters)
+{
+    FAkUGCLogicPackKeyPair KeyPair;
+    FString Error;
+    TestTrue(*Error, FAkUGCLogicPackSigner::GenerateKeyPair(KeyPair, &Error));
+
+    TestEqual(TEXT("Private key is 64 hex characters"), KeyPair.PrivateKey.Len(), 64);
+    TestEqual(TEXT("Public key is 64 hex characters"), KeyPair.PublicKey.Len(), 64);
+    TestNotEqual(TEXT("Private and public keys differ"), KeyPair.PrivateKey, KeyPair.PublicKey);
+
+    FAkUGCLogicPackKeyPair Another;
+    TestTrue(*Error, FAkUGCLogicPackSigner::GenerateKeyPair(Another, &Error));
+    TestNotEqual(TEXT("Independent key pairs differ"), KeyPair.PublicKey, Another.PublicKey);
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FAkUGCLogicPackSignVerifyTest,
+    "AkUGC.Core.Pack.Signature.SignVerify",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCLogicPackSignVerifyTest::RunTest(const FString& Parameters)
+{
+    FAkUGCLogicPackKeyPair KeyPair;
+    FString Error;
+    TestTrue(*Error, FAkUGCLogicPackSigner::GenerateKeyPair(KeyPair, &Error));
+
+    const FAkUGCLogicPackBuildResult Build = FAkUGCLogicPackBuilder::Build(MakePlayablePackDocument());
+    TestTrue(*Build.ErrorMessage, Build.bSucceeded);
+    if (!Build.bSucceeded)
+    {
+        return false;
+    }
+
+    FAkUGCLogicPackSignature Signature;
+    TestTrue(*Error, FAkUGCLogicPackSigner::Sign(Build.Pack.Manifest, KeyPair.PrivateKey, Signature, &Error));
+    TestEqual(TEXT("Signature algorithm is ed25519"), Signature.Algorithm, TEXT("ed25519"));
+    TestEqual(TEXT("Signature public key matches key pair"), Signature.PublicKey, KeyPair.PublicKey);
+    TestEqual(TEXT("Signature value is 128 hex characters"), Signature.Signature.Len(), 128);
+
+    // 验签通过。
+    TestTrue(*Error, FAkUGCLogicPackVerifier::Verify(Build.Pack.Manifest, Signature, KeyPair.PublicKey, &Error));
+
+    // 篡改清单字段 → 验签失败。
+    FAkUGCLogicPackManifest Tampered = Build.Pack.Manifest;
+    Tampered.ContentHash = TEXT("deadbeef");
+    TestFalse(TEXT("Tampered manifest is rejected"),
+        FAkUGCLogicPackVerifier::Verify(Tampered, Signature, KeyPair.PublicKey, &Error));
+
+    // 用错误公钥验签 → 失败。
+    FAkUGCLogicPackKeyPair Other;
+    TestTrue(*Error, FAkUGCLogicPackSigner::GenerateKeyPair(Other, &Error));
+    TestFalse(TEXT("Wrong trusted public key is rejected"),
+        FAkUGCLogicPackVerifier::Verify(Build.Pack.Manifest, Signature, Other.PublicKey, &Error));
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FAkUGCLogicPackSignedLoadTest,
+    "AkUGC.Core.Pack.Signature.SignedLoad",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCLogicPackSignedLoadTest::RunTest(const FString& Parameters)
+{
+    FAkUGCLogicPackKeyPair KeyPair;
+    FString Error;
+    TestTrue(*Error, FAkUGCLogicPackSigner::GenerateKeyPair(KeyPair, &Error));
+
+    const FAkUGCLogicPackBuildResult Build = FAkUGCLogicPackBuilder::Build(MakePlayablePackDocument());
+    TestTrue(*Build.ErrorMessage, Build.bSucceeded);
+    if (!Build.bSucceeded)
+    {
+        return false;
+    }
+
+    // 签名后放入包，序列化。
+    FAkUGCLogicPack SignedPack = Build.Pack;
+    TestTrue(*Error, FAkUGCLogicPackSigner::Sign(SignedPack.Manifest, KeyPair.PrivateKey, SignedPack.Signature, &Error));
+
+    FString Json;
+    TestTrue(*Error, FAkUGCLogicPackCodec::Serialize(SignedPack, Json, &Error));
+
+    // 反序列化后签名保留。
+    FAkUGCLogicPack Decoded;
+    TestTrue(*Error, FAkUGCLogicPackCodec::Deserialize(Json, Decoded, &Error));
+    TestEqual(TEXT("Signature survives round-trip"), Decoded.Signature.Signature, SignedPack.Signature.Signature);
+
+    // LoadVerified 通过。
+    const FAkUGCLogicPackLoadResult Verified = FAkUGCLogicPackLoader::LoadVerified(Json, KeyPair.PublicKey);
+    TestTrue(*Verified.ErrorMessage, Verified.bSucceeded);
+
+    // 篡改 ReleaseId（不被 ContentHash 覆盖，但被签名覆盖）→ LoadVerified 拒绝。
+    FAkUGCLogicPack Tampered = SignedPack;
+    Tampered.Manifest.ReleaseId = FGuid::NewGuid();
+    FString TamperedJson;
+    TestTrue(*Error, FAkUGCLogicPackCodec::Serialize(Tampered, TamperedJson, &Error));
+    const FAkUGCLogicPackLoadResult TamperedLoad = FAkUGCLogicPackLoader::LoadVerified(TamperedJson, KeyPair.PublicKey);
+    TestFalse(TEXT("Tampered ReleaseId is rejected by verification"), TamperedLoad.bSucceeded);
+
+    // 未签名包被 LoadVerified 拒绝。
+    FString UnsignedJson;
+    TestTrue(*Error, FAkUGCLogicPackCodec::Serialize(Build.Pack, UnsignedJson, &Error));
+    const FAkUGCLogicPackLoadResult UnsignedLoad = FAkUGCLogicPackLoader::LoadVerified(UnsignedJson, KeyPair.PublicKey);
+    TestFalse(TEXT("Unsigned pack is rejected by LoadVerified"), UnsignedLoad.bSucceeded);
 
     return true;
 }

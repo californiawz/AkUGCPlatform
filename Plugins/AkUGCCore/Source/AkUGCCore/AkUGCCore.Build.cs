@@ -13,5 +13,7 @@ public class AkUGCCore : ModuleRules
             "Json",
             "JsonUtilities"
         });
+
+        PrivateDependencyModuleNames.Add("OpenSSL");
     }
 }

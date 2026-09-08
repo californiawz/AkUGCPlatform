@@ -22,6 +22,9 @@ struct AKUGCCORE_API FAkUGCLogicPackLoadResult
 class AKUGCCORE_API FAkUGCLogicPackLoader
 {
 public:
-	/** 加载并校验发布包 JSON。 */
+	/** 加载并校验发布包 JSON（不含签名验签）。 */
 	static FAkUGCLogicPackLoadResult Load(const FString& Json);
+
+	/** 加载、完整性校验并验签发布包 JSON（需内置可信公钥）。 */
+	static FAkUGCLogicPackLoadResult LoadVerified(const FString& Json, const FString& TrustedPublicKeyHex);
 };

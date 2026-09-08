@@ -5,6 +5,7 @@
 #include "Pack/AkUGCLogicPackBuilder.h"
 #include "Pack/AkUGCLogicPackCodec.h"
 #include "Pack/AkUGCLogicPackHasher.h"
+#include "Pack/AkUGCLogicPackSignature.h"
 #include "Validation/AkUGCDocumentValidator.h"
 
 FAkUGCLogicPackLoadResult FAkUGCLogicPackLoader::Load(const FString& Json)
@@ -78,5 +79,23 @@ FAkUGCLogicPackLoadResult FAkUGCLogicPackLoader::Load(const FString& Json)
 	}
 
 	Result.bSucceeded = true;
+	return Result;
+}
+
+FAkUGCLogicPackLoadResult FAkUGCLogicPackLoader::LoadVerified(const FString& Json, const FString& TrustedPublicKeyHex)
+{
+	// 先执行完整性与一致性校验，再验签。
+	FAkUGCLogicPackLoadResult Result = Load(Json);
+	if (!Result.bSucceeded)
+	{
+		return Result;
+	}
+
+	FString VerifyError;
+	if (!FAkUGCLogicPackVerifier::Verify(Result.Pack.Manifest, Result.Pack.Signature, TrustedPublicKeyHex, &VerifyError))
+	{
+		Result.bSucceeded = false;
+		Result.ErrorMessage = MoveTemp(VerifyError);
+	}
 	return Result;
 }

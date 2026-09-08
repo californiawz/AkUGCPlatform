@@ -49,6 +49,52 @@ struct AKUGCCORE_API FAkUGCLogicPackManifest
 };
 
 /**
+ * Ed25519 密钥对（原始 32 字节，hex 编码）。
+ *
+ * 私钥仅由发布方持有；公钥内置于运行端作为可信验签公钥。
+ */
+USTRUCT(BlueprintType)
+struct AKUGCCORE_API FAkUGCLogicPackKeyPair
+{
+	GENERATED_BODY()
+
+	/** 私钥（32 字节，hex 编码 64 字符）。 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Pack|Signature")
+	FString PrivateKey;
+
+	/** 公钥（32 字节，hex 编码 64 字符）。 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Pack|Signature")
+	FString PublicKey;
+};
+
+/**
+ * Logic Pack 数字签名。
+ *
+ * 对发布清单（Manifest）的确定性 JSON 做 Ed25519 签名：
+ *  - Manifest 内含 ContentHash，而 ContentHash 覆盖 Document + Logic IR，
+ *    因此签名传递性地覆盖整个发布包。
+ *  - 验签时，签名内携带的公钥必须与运行端内置的可信公钥一致，
+ *    防止攻击者用自己的私钥伪造「自洽」签名。
+ */
+USTRUCT(BlueprintType)
+struct AKUGCCORE_API FAkUGCLogicPackSignature
+{
+	GENERATED_BODY()
+
+	/** 签名算法标识，当前固定 "ed25519"。 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Pack|Signature")
+	FString Algorithm = TEXT("ed25519");
+
+	/** 签发公钥（hex 编码），验签时需与可信公钥比对。 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Pack|Signature")
+	FString PublicKey;
+
+	/** 签名值（64 字节，hex 编码 128 字符）。 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Pack|Signature")
+	FString Signature;
+};
+
+/**
  * Logic Pack 发布包本体。
  *
  * 由发布清单、作者作品文档与编译后的 Logic IR 组成，
@@ -70,4 +116,8 @@ struct AKUGCCORE_API FAkUGCLogicPack
 	/** 编译后的 Logic IR。 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Pack")
 	FAkUGCLogicProgram Program;
+
+	/** 数字签名（可选，空表示未签名）。 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Pack")
+	FAkUGCLogicPackSignature Signature;
 };
