@@ -192,4 +192,153 @@ bool FAkUGCAppEditorSubsystemWorkflowTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FAkUGCAppEditorLogicEditingTest,
+    "AkUGC.Runtime.AppEditor.LogicEditing",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCAppEditorLogicEditingTest::RunTest(const FString& Parameters)
+{
+    if (!GEngine)
+    {
+        AddError(TEXT("Engine is not available."));
+        return false;
+    }
+
+    UWorld* World = NewObject<UWorld>(GetTransientPackage(), NAME_None, RF_Transient);
+    World->WorldType = EWorldType::Game;
+    FWorldContext& WorldContext = GEngine->CreateNewWorldContext(World->WorldType);
+    WorldContext.SetCurrentWorld(World);
+    World->InitializeNewWorld(UWorld::InitializationValues()
+        .InitializeScenes(false)
+        .AllowAudioPlayback(false)
+        .RequiresHitProxies(false)
+        .CreatePhysicsScene(false)
+        .CreateNavigation(false)
+        .CreateAISystem(false)
+        .ShouldSimulatePhysics(false)
+        .EnableTraceCollision(false)
+        .SetTransactional(false));
+
+    UAkUGCAppEditorSubsystem* Subsystem = World->GetSubsystem<UAkUGCAppEditorSubsystem>();
+    TestNotNull(TEXT("App Editor world subsystem exists"), Subsystem);
+    if (!Subsystem)
+    {
+        GEngine->DestroyWorldContext(World);
+        World->DestroyWorld(false);
+        return false;
+    }
+
+    TestTrue(TEXT("App creates tower defense project"), Subsystem->NewTowerDefenseProject().bSucceeded);
+
+    FGuid SpawnPointId;
+    const FAkUGCAppEditResult SpawnPointPlacement = Subsystem->PlacePrefab(
+        TEXT("official.gameplay.enemy_spawn"),
+        FTransform(FVector(0.0, 0.0, 0.0)),
+        SpawnPointId);
+    TestTrue(TEXT("App places an enemy spawn point"), SpawnPointPlacement.bSucceeded);
+    if (!SpawnPointPlacement.bSucceeded)
+    {
+        Subsystem->CloseProject();
+        GEngine->DestroyWorldContext(World);
+        World->DestroyWorld(false);
+        return false;
+    }
+
+    // 延迟刷怪模板：GameStart -> Timer -> Spawn
+    FAkUGCLogicNode GameStart;
+    GameStart.NodeId = FGuid::NewGuid();
+    GameStart.Type = EAkUGCLogicNodeType::GameStart;
+    TestTrue(TEXT("App adds Game Start node"), Subsystem->AddLogicNode(GameStart).bSucceeded);
+
+    FAkUGCLogicNode Timer;
+    Timer.NodeId = FGuid::NewGuid();
+    Timer.Type = EAkUGCLogicNodeType::Timer;
+    Timer.DelaySeconds = 3.0;
+    TestTrue(TEXT("App adds Timer node"), Subsystem->AddLogicNode(Timer).bSucceeded);
+
+    FAkUGCLogicNode Spawn;
+    Spawn.NodeId = FGuid::NewGuid();
+    Spawn.Type = EAkUGCLogicNodeType::Spawn;
+    Spawn.SpawnPrefabId = TEXT("official.unit.basic_enemy");
+    Spawn.SpawnAtEntityId = SpawnPointId;
+    TestTrue(TEXT("App adds Spawn node anchored to a spawn point"), Subsystem->AddLogicNode(Spawn).bSucceeded);
+
+    TestTrue(TEXT("App connects Game Start to Timer"), Subsystem->ConnectLogicNode(
+        GameStart.NodeId, Timer.NodeId).bSucceeded);
+    TestTrue(TEXT("App connects Timer to Spawn"), Subsystem->ConnectLogicNode(
+        Timer.NodeId, Spawn.NodeId).bSucceeded);
+
+    FAkUGCLogicGraph Graph;
+    TestTrue(TEXT("App reads logic graph"), Subsystem->GetLogicGraph(Graph));
+    TestEqual(TEXT("App logic graph has three nodes"), Graph.Nodes.Num(), 3);
+    TestEqual(TEXT("App logic graph has two connections"), Graph.Connections.Num(), 2);
+
+    TestTrue(TEXT("App undo is available after logic editing"), Subsystem->CanUndo());
+    TestTrue(TEXT("App undo succeeds for logic editing"), Subsystem->Undo().bSucceeded);
+    TestTrue(TEXT("App redo succeeds for logic editing"), Subsystem->Redo().bSucceeded);
+
+    // 移动端权限：禁止 WaveStart 节点（分波刷怪由 Ruleset 拥有）
+    FAkUGCLogicNode WaveStart;
+    WaveStart.NodeId = FGuid::NewGuid();
+    WaveStart.Type = EAkUGCLogicNodeType::WaveStart;
+    TestFalse(TEXT("App rejects Wave Start node"), Subsystem->AddLogicNode(WaveStart).bSucceeded);
+
+    // 移动端权限：Spawn 只能刷官方 enemy
+    FAkUGCLogicNode BadSpawn;
+    BadSpawn.NodeId = FGuid::NewGuid();
+    BadSpawn.Type = EAkUGCLogicNodeType::Spawn;
+    BadSpawn.SpawnPrefabId = TEXT("official.gameplay.tower_arrow");
+    BadSpawn.SpawnAtEntityId = SpawnPointId;
+    TestFalse(TEXT("App rejects non-enemy spawn prefab"), Subsystem->AddLogicNode(BadSpawn).bSucceeded);
+
+    // 移动端权限：Spawn 必须锚定到 enemy_spawn 实体
+    FAkUGCLogicNode OrphanSpawn;
+    OrphanSpawn.NodeId = FGuid::NewGuid();
+    OrphanSpawn.Type = EAkUGCLogicNodeType::Spawn;
+    OrphanSpawn.SpawnPrefabId = TEXT("official.unit.basic_enemy");
+    OrphanSpawn.SpawnAtEntityId = FGuid::NewGuid();
+    TestFalse(TEXT("App rejects spawn without a valid anchor"), Subsystem->AddLogicNode(OrphanSpawn).bSucceeded);
+
+    // 恶意 JSON 拒绝：包含 WaveStart 节点的文档
+    FAkUGCProjectDocument MaliciousLogicDocument = Subsystem->GetDocument();
+    FAkUGCLogicNode& Injected = MaliciousLogicDocument.Scenes[0].LogicGraph.Nodes.AddDefaulted_GetRef();
+    Injected.NodeId = FGuid::NewGuid();
+    Injected.Type = EAkUGCLogicNodeType::WaveStart;
+    FString MaliciousLogicJson;
+    FString FixtureError;
+    TestTrue(TEXT("Malicious logic fixture serializes"), FAkUGCDocumentJson::Serialize(
+        MaliciousLogicDocument, MaliciousLogicJson, &FixtureError));
+    TestFalse(TEXT("App rejects JSON containing a forbidden logic node"), Subsystem->LoadProjectJson(MaliciousLogicJson).bSucceeded);
+
+    // 移动端 Logic 预算：超过 64 个节点
+    FAkUGCProjectDocument OverBudgetLogicDocument = Subsystem->GetDocument();
+    while (OverBudgetLogicDocument.Scenes[0].LogicGraph.Nodes.Num() <= 64)
+    {
+        FAkUGCLogicNode& Extra = OverBudgetLogicDocument.Scenes[0].LogicGraph.Nodes.AddDefaulted_GetRef();
+        Extra.NodeId = FGuid::NewGuid();
+        Extra.Type = EAkUGCLogicNodeType::Message;
+        Extra.Message = TEXT("budget");
+    }
+    FString OverBudgetLogicJson;
+    TestTrue(TEXT("Over-budget logic fixture serializes"), FAkUGCDocumentJson::Serialize(
+        OverBudgetLogicDocument, OverBudgetLogicJson, &FixtureError));
+    TestFalse(TEXT("App rejects JSON beyond mobile logic budget"), Subsystem->LoadProjectJson(OverBudgetLogicJson).bSucceeded);
+
+    // JSON 往返一致性：导出后重载恢复 Logic 图
+    FString Json;
+    TestTrue(TEXT("App exports project JSON after logic editing"), Subsystem->ExportProjectJson(Json).bSucceeded);
+    Subsystem->CloseProject();
+    TestTrue(TEXT("App reloads exported JSON"), Subsystem->LoadProjectJson(Json).bSucceeded);
+    FAkUGCLogicGraph ReloadedGraph;
+    TestTrue(TEXT("Reloaded App reads logic graph"), Subsystem->GetLogicGraph(ReloadedGraph));
+    TestEqual(TEXT("Reloaded logic graph restores nodes"), ReloadedGraph.Nodes.Num(), 3);
+    TestEqual(TEXT("Reloaded logic graph restores connections"), ReloadedGraph.Connections.Num(), 2);
+
+    Subsystem->CloseProject();
+    GEngine->DestroyWorldContext(World);
+    World->DestroyWorld(false);
+    return true;
+}
+
 #endif

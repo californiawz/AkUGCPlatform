@@ -98,6 +98,24 @@ public:
     UFUNCTION(BlueprintPure, Category = "UGC|App Editor")
     bool GetEditableProperties(const FGuid& EntityId, TArray<FAkUGCPropertyDefinition>& OutProperties) const;
 
+    UFUNCTION(BlueprintCallable, Category = "UGC|App Editor")
+    FAkUGCAppEditResult AddLogicNode(const FAkUGCLogicNode& Node);
+
+    UFUNCTION(BlueprintCallable, Category = "UGC|App Editor")
+    FAkUGCAppEditResult UpdateLogicNode(const FAkUGCLogicNode& Node);
+
+    UFUNCTION(BlueprintCallable, Category = "UGC|App Editor")
+    FAkUGCAppEditResult DeleteLogicNode(const FGuid& NodeId);
+
+    UFUNCTION(BlueprintCallable, Category = "UGC|App Editor")
+    FAkUGCAppEditResult ConnectLogicNode(const FGuid& SourceNodeId, const FGuid& TargetNodeId);
+
+    UFUNCTION(BlueprintCallable, Category = "UGC|App Editor")
+    FAkUGCAppEditResult DisconnectLogicNode(const FGuid& SourceNodeId, const FGuid& TargetNodeId);
+
+    UFUNCTION(BlueprintPure, Category = "UGC|App Editor")
+    bool GetLogicGraph(FAkUGCLogicGraph& OutGraph) const;
+
     const FAkUGCProjectDocument& GetDocument() const;
 
 protected:
@@ -108,6 +126,14 @@ private:
     bool ValidateMobileDocument(const FAkUGCProjectDocument& Candidate, FString& OutError) const;
     bool ValidatePlacement(FName PrefabId, const FTransform& Transform, FString& OutError) const;
     bool ValidateDocumentBudgets(const FAkUGCProjectDocument& Candidate, FString& OutError) const;
+    bool ValidateMobileLogicGraph(
+        const FAkUGCLogicGraph& Graph,
+        const FAkUGCSceneDocument& Scene,
+        FString& OutError) const;
+    bool ValidateMobileLogicNode(
+        const FAkUGCLogicNode& Node,
+        const FAkUGCSceneDocument& Scene,
+        FString& OutError) const;
     FAkUGCAppEditResult ExecuteResult(const FAkUGCCommandExecutionResult& Result);
     static FAkUGCAppEditResult Success();
     static FAkUGCAppEditResult Failure(FString Path, FString Message);

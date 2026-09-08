@@ -53,6 +53,7 @@ Phase 0 的目标是证明同一份 UGC Project Document 能够被 Desktop Creat
 
 - Blueprint WorldSubsystem 支持项目创建、JSON 导入导出、Prefab 枚举、Entity 放置/删除/复制、Transform、Parent、Property 和 Undo/Redo。
 - 支持移动端只读属性保护、Prefab 放置约束和内容预算。
+- 支持模板化 Logic 编辑（GameStart/Timer/Spawn/Message），禁止 WaveStart、非 enemy Spawn 与超预算节点。
 - 尚无正式移动端 UMG 产品界面。
 
 #### Logic Graph 与 Runtime
@@ -86,7 +87,7 @@ Phase 0 的目标是证明同一份 UGC Project Document 能够被 Desktop Creat
 ### 2.2 尚未完成
 
 - 正式 Player/Dedicated Server 项目加载入口（Logic Pack）尚未接入；GameMode 权威会话托管与复制契约已完成。
-- Creator/App 尚不能编辑 Logic。
+- Creator 已能编辑 Logic（P6 完成）；App Logic 轻编辑后端已接入 Logic 节点编辑命令与移动端权限/预算校验（P7 进行中），App 分波刷怪模板（Ruleset 命令接入）尚未完成。
 - Logic Pack、依赖、哈希、签名和可信加载未实现。
 - Lua 5.3.4 独立沙箱未实现。
 - Android 真机、Dedicated Server 联机和跨平台一致性验收未完成。
@@ -537,12 +538,16 @@ P0–P5 已全部提交（塔防规则闭环 + 多人复制契约完成）。
 11. `功能：新增 UGC GameState 可复制状态与 GameMode`（P5）
 12. `功能：GameMode 托管权威会话并投影可复制状态`（P5）
 13. `功能：Runtime Entity 稳定复制标识与销毁协议`（P5）
+14. `功能：新增 UpdateLogicNode 命令`（P6）
+15. `功能：Creator Studio 逻辑图编辑 API 与自动化测试`（P6）
+16. `功能：新增 Creator Studio Logic 列表编辑器`（P6）
+17. `功能：新增 Logic Node 布局持久化`（P6）
+18. `功能：新增 Trigger Graph 可视化画布`（P6）
 
-待推进（P6 起）：
+待推进（P7 起）：
 
-- Logic Node 参数修改命令（P6）
-- Creator Studio Logic 列表编辑器（P6）
-- Trigger Graph 可视化画布（P6）
+- App Logic 轻编辑后端：Logic 节点编辑命令接入 + 移动端权限/预算校验（P7）
+- App 分波刷怪模板：Ruleset 波次编辑命令接入（P7）
 
 每个提交完成后执行：
 

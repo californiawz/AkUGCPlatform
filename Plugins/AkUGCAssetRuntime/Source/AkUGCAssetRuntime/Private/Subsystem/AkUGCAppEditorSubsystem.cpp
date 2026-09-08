@@ -15,6 +15,21 @@ namespace
     constexpr int32 MaxMobileRenderUnits = 1000;
     constexpr int32 MaxMobilePhysicsUnits = 500;
     constexpr int32 MaxMobileScriptUnits = 500;
+    constexpr int32 MaxMobileLogicNodes = 64;
+    constexpr int32 MaxMobileLogicConnections = 128;
+
+    bool IsMobileLogicNodeTypeAllowed(EAkUGCLogicNodeType Type)
+    {
+        return Type == EAkUGCLogicNodeType::GameStart
+            || Type == EAkUGCLogicNodeType::Message
+            || Type == EAkUGCLogicNodeType::Timer
+            || Type == EAkUGCLogicNodeType::Spawn;
+    }
+
+    bool IsMobileSpawnablePrefab(FName PrefabId)
+    {
+        return PrefabId == TEXT("official.unit.basic_enemy");
+    }
 
     bool IsAppIntegerWithinRange(int64 Value, const FAkUGCPropertyDefinition& Property)
     {
@@ -362,6 +377,102 @@ bool UAkUGCAppEditorSubsystem::GetEditableProperties(
     return true;
 }
 
+FAkUGCAppEditResult UAkUGCAppEditorSubsystem::AddLogicNode(const FAkUGCLogicNode& Node)
+{
+    if (!CommandService)
+    {
+        return Failure(TEXT("appEditor.session"), TEXT("No UGC project is open."));
+    }
+    const FAkUGCSceneDocument* Scene = CommandService->FindScene();
+    if (!Scene)
+    {
+        return Failure(TEXT("appEditor.sceneId"), TEXT("Active scene does not exist."));
+    }
+
+    FString Error;
+    if (!ValidateMobileLogicNode(Node, *Scene, Error))
+    {
+        return Failure(TEXT("appEditor.logic"), MoveTemp(Error));
+    }
+
+    FAkUGCProjectDocument Candidate = Document;
+    Candidate.Scenes[0].LogicGraph.Nodes.Add(Node);
+    if (!ValidateMobileLogicGraph(Candidate.Scenes[0].LogicGraph, Candidate.Scenes[0], Error))
+    {
+        return Failure(TEXT("appEditor.logic"), MoveTemp(Error));
+    }
+    return ExecuteResult(CommandService->AddLogicNode(Node));
+}
+
+FAkUGCAppEditResult UAkUGCAppEditorSubsystem::UpdateLogicNode(const FAkUGCLogicNode& Node)
+{
+    if (!CommandService)
+    {
+        return Failure(TEXT("appEditor.session"), TEXT("No UGC project is open."));
+    }
+    const FAkUGCSceneDocument* Scene = CommandService->FindScene();
+    if (!Scene)
+    {
+        return Failure(TEXT("appEditor.sceneId"), TEXT("Active scene does not exist."));
+    }
+
+    FString Error;
+    if (!ValidateMobileLogicNode(Node, *Scene, Error))
+    {
+        return Failure(TEXT("appEditor.logic"), MoveTemp(Error));
+    }
+    return ExecuteResult(CommandService->UpdateLogicNode(Node));
+}
+
+FAkUGCAppEditResult UAkUGCAppEditorSubsystem::DeleteLogicNode(const FGuid& NodeId)
+{
+    return CommandService
+        ? ExecuteResult(CommandService->DeleteLogicNode(NodeId))
+        : Failure(TEXT("appEditor.session"), TEXT("No UGC project is open."));
+}
+
+FAkUGCAppEditResult UAkUGCAppEditorSubsystem::ConnectLogicNode(
+    const FGuid& SourceNodeId,
+    const FGuid& TargetNodeId)
+{
+    if (!CommandService)
+    {
+        return Failure(TEXT("appEditor.session"), TEXT("No UGC project is open."));
+    }
+
+    FAkUGCProjectDocument Candidate = Document;
+    FAkUGCLogicConnection& Connection = Candidate.Scenes[0].LogicGraph.Connections.AddDefaulted_GetRef();
+    Connection.SourceNodeId = SourceNodeId;
+    Connection.TargetNodeId = TargetNodeId;
+    FString Error;
+    if (!ValidateMobileLogicGraph(Candidate.Scenes[0].LogicGraph, Candidate.Scenes[0], Error))
+    {
+        return Failure(TEXT("appEditor.logic"), MoveTemp(Error));
+    }
+    return ExecuteResult(CommandService->ConnectLogicNode(SourceNodeId, TargetNodeId));
+}
+
+FAkUGCAppEditResult UAkUGCAppEditorSubsystem::DisconnectLogicNode(
+    const FGuid& SourceNodeId,
+    const FGuid& TargetNodeId)
+{
+    return CommandService
+        ? ExecuteResult(CommandService->DisconnectLogicNode(SourceNodeId, TargetNodeId))
+        : Failure(TEXT("appEditor.session"), TEXT("No UGC project is open."));
+}
+
+bool UAkUGCAppEditorSubsystem::GetLogicGraph(FAkUGCLogicGraph& OutGraph) const
+{
+    OutGraph = FAkUGCLogicGraph{};
+    const FAkUGCSceneDocument* Scene = CommandService ? CommandService->FindScene() : nullptr;
+    if (!Scene)
+    {
+        return false;
+    }
+    OutGraph = Scene->LogicGraph;
+    return true;
+}
+
 const FAkUGCProjectDocument& UAkUGCAppEditorSubsystem::GetDocument() const
 {
     return Document;
@@ -522,6 +633,11 @@ bool UAkUGCAppEditorSubsystem::ValidateMobileDocument(
                 }
             }
         }
+
+        if (!ValidateMobileLogicGraph(Scene.LogicGraph, Scene, OutError))
+        {
+            return false;
+        }
     }
     return true;
 }
@@ -554,6 +670,75 @@ bool UAkUGCAppEditorSubsystem::ValidatePlacement(
     {
         OutError = TEXT("Prefab scale is outside its allowed range.");
         return false;
+    }
+    return true;
+}
+
+bool UAkUGCAppEditorSubsystem::ValidateMobileLogicNode(
+    const FAkUGCLogicNode& Node,
+    const FAkUGCSceneDocument& Scene,
+    FString& OutError) const
+{
+    if (!IsMobileLogicNodeTypeAllowed(Node.Type))
+    {
+        OutError = TEXT("This logic node type is not available in the mobile app editor.");
+        return false;
+    }
+
+    if (Node.Type == EAkUGCLogicNodeType::Spawn)
+    {
+        if (!IsMobileSpawnablePrefab(Node.SpawnPrefabId))
+        {
+            OutError = FString::Printf(
+                TEXT("Spawn prefab '%s' is not allowed in the mobile app editor."),
+                *Node.SpawnPrefabId.ToString());
+            return false;
+        }
+        if (!Node.SpawnAtEntityId.IsValid())
+        {
+            OutError = TEXT("Spawn node must reference a Spawn Point entity.");
+            return false;
+        }
+        const FAkUGCEntityRecord* Anchor = Scene.Entities.FindByPredicate(
+            [&Node](const FAkUGCEntityRecord& Entity)
+            {
+                return Entity.EntityId == Node.SpawnAtEntityId;
+            });
+        if (!Anchor || Anchor->PrefabId != TEXT("official.gameplay.enemy_spawn"))
+        {
+            OutError = TEXT("Spawn node anchor must reference an official.gameplay.enemy_spawn entity.");
+            return false;
+        }
+    }
+    return true;
+}
+
+bool UAkUGCAppEditorSubsystem::ValidateMobileLogicGraph(
+    const FAkUGCLogicGraph& Graph,
+    const FAkUGCSceneDocument& Scene,
+    FString& OutError) const
+{
+    if (Graph.Nodes.Num() > MaxMobileLogicNodes)
+    {
+        OutError = FString::Printf(
+            TEXT("Logic graph exceeds the mobile node budget of %d."),
+            MaxMobileLogicNodes);
+        return false;
+    }
+    if (Graph.Connections.Num() > MaxMobileLogicConnections)
+    {
+        OutError = FString::Printf(
+            TEXT("Logic graph exceeds the mobile connection budget of %d."),
+            MaxMobileLogicConnections);
+        return false;
+    }
+
+    for (const FAkUGCLogicNode& Node : Graph.Nodes)
+    {
+        if (!ValidateMobileLogicNode(Node, Scene, OutError))
+        {
+            return false;
+        }
     }
     return true;
 }
