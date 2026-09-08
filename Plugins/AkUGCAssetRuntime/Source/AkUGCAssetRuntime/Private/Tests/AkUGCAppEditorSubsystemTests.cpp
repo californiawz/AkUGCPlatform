@@ -341,4 +341,147 @@ bool FAkUGCAppEditorLogicEditingTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FAkUGCAppEditorRulesetEditingTest,
+    "AkUGC.Runtime.AppEditor.RulesetEditing",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCAppEditorRulesetEditingTest::RunTest(const FString& Parameters)
+{
+    if (!GEngine)
+    {
+        AddError(TEXT("Engine is not available."));
+        return false;
+    }
+
+    UWorld* World = NewObject<UWorld>(GetTransientPackage(), NAME_None, RF_Transient);
+    World->WorldType = EWorldType::Game;
+    FWorldContext& WorldContext = GEngine->CreateNewWorldContext(World->WorldType);
+    WorldContext.SetCurrentWorld(World);
+    World->InitializeNewWorld(UWorld::InitializationValues()
+        .InitializeScenes(false)
+        .AllowAudioPlayback(false)
+        .RequiresHitProxies(false)
+        .CreatePhysicsScene(false)
+        .CreateNavigation(false)
+        .CreateAISystem(false)
+        .ShouldSimulatePhysics(false)
+        .EnableTraceCollision(false)
+        .SetTransactional(false));
+
+    UAkUGCAppEditorSubsystem* Subsystem = World->GetSubsystem<UAkUGCAppEditorSubsystem>();
+    TestNotNull(TEXT("App Editor world subsystem exists"), Subsystem);
+    if (!Subsystem)
+    {
+        GEngine->DestroyWorldContext(World);
+        World->DestroyWorld(false);
+        return false;
+    }
+
+    TestTrue(TEXT("App creates tower defense project"), Subsystem->NewTowerDefenseProject().bSucceeded);
+
+    FGuid SpawnPointA;
+    FGuid SpawnPointB;
+    TestTrue(TEXT("App places first spawn point"), Subsystem->PlacePrefab(
+        TEXT("official.gameplay.enemy_spawn"),
+        FTransform(FVector(0.0, 0.0, 0.0)),
+        SpawnPointA).bSucceeded);
+    TestTrue(TEXT("App places second spawn point"), Subsystem->PlacePrefab(
+        TEXT("official.gameplay.enemy_spawn"),
+        FTransform(FVector(100.0, 0.0, 0.0)),
+        SpawnPointB).bSucceeded);
+
+    FGuid EnemyEntityId;
+    TestTrue(TEXT("App places an enemy prefab"), Subsystem->PlacePrefab(
+        TEXT("official.unit.basic_enemy"),
+        FTransform(FVector(200.0, 0.0, 0.0)),
+        EnemyEntityId).bSucceeded);
+
+    FAkUGCTowerDefenseWave Wave1;
+    Wave1.WaveId = FGuid::NewGuid();
+    Wave1.SpawnPointEntityId = SpawnPointA;
+    Wave1.StartDelaySeconds = 0.0;
+    TestTrue(TEXT("App adds first wave"), Subsystem->AddWave(Wave1).bSucceeded);
+
+    FAkUGCTowerDefenseWave Wave2;
+    Wave2.WaveId = FGuid::NewGuid();
+    Wave2.SpawnPointEntityId = SpawnPointB;
+    Wave2.StartDelaySeconds = 10.0;
+    TestTrue(TEXT("App adds second wave"), Subsystem->AddWave(Wave2).bSucceeded);
+
+    FAkUGCTowerDefenseWave Wave3;
+    Wave3.WaveId = FGuid::NewGuid();
+    Wave3.SpawnPointEntityId = SpawnPointA;
+    Wave3.StartDelaySeconds = 20.0;
+    TestTrue(TEXT("App adds third wave"), Subsystem->AddWave(Wave3).bSucceeded);
+
+    FAkUGCTowerDefenseWave Wave4;
+    Wave4.WaveId = FGuid::NewGuid();
+    Wave4.SpawnPointEntityId = SpawnPointA;
+    Wave4.StartDelaySeconds = 30.0;
+    TestFalse(TEXT("App rejects a fourth wave"), Subsystem->AddWave(Wave4).bSucceeded);
+
+    FAkUGCTowerDefenseWave OrphanWave;
+    OrphanWave.WaveId = FGuid::NewGuid();
+    OrphanWave.SpawnPointEntityId = FGuid::NewGuid();
+    TestFalse(TEXT("App rejects wave with an orphan spawn point"), Subsystem->AddWave(OrphanWave).bSucceeded);
+
+    FAkUGCTowerDefenseWave NonSpawnWave;
+    NonSpawnWave.WaveId = FGuid::NewGuid();
+    NonSpawnWave.SpawnPointEntityId = EnemyEntityId;
+    TestFalse(TEXT("App rejects wave anchored to a non-spawn entity"), Subsystem->AddWave(NonSpawnWave).bSucceeded);
+
+    Wave2.StartDelaySeconds = 15.0;
+    TestTrue(TEXT("App updates a wave"), Subsystem->UpdateWave(Wave2).bSucceeded);
+
+    TestTrue(TEXT("App moves a wave"), Subsystem->MoveWave(Wave1.WaveId, 2).bSucceeded);
+    TestTrue(TEXT("App deletes a wave"), Subsystem->DeleteWave(Wave3.WaveId).bSucceeded);
+
+    TestTrue(TEXT("App updates ruleset settings"), Subsystem->SetRulesetSettings(
+        8.0,
+        EAkUGCTowerDefenseDefeatCondition::BaseHealthDepleted,
+        EAkUGCTowerDefenseVictoryCondition::AllWavesCleared).bSucceeded);
+    TestFalse(TEXT("App rejects negative wave interval"), Subsystem->SetRulesetSettings(
+        -1.0,
+        EAkUGCTowerDefenseDefeatCondition::BaseHealthDepleted,
+        EAkUGCTowerDefenseVictoryCondition::AllWavesCleared).bSucceeded);
+
+    FAkUGCTowerDefenseRuleset Ruleset;
+    TestTrue(TEXT("App reads ruleset"), Subsystem->GetRuleset(Ruleset));
+    TestEqual(TEXT("App ruleset keeps two waves after edit"), Ruleset.Waves.Num(), 2);
+    TestEqual(TEXT("App ruleset stores wave interval"), Ruleset.WaveIntervalSeconds, 8.0);
+
+    TestTrue(TEXT("App undo is available after ruleset editing"), Subsystem->CanUndo());
+    TestTrue(TEXT("App undo succeeds for ruleset editing"), Subsystem->Undo().bSucceeded);
+    TestTrue(TEXT("App redo succeeds for ruleset editing"), Subsystem->Redo().bSucceeded);
+
+    // 恶意 JSON 拒绝：超过 3 波上限的文档
+    FAkUGCProjectDocument OverWaveDocument = Subsystem->GetDocument();
+    while (OverWaveDocument.Scenes[0].Ruleset.Waves.Num() < 4)
+    {
+        FAkUGCTowerDefenseWave& Extra = OverWaveDocument.Scenes[0].Ruleset.Waves.AddDefaulted_GetRef();
+        Extra.WaveId = FGuid::NewGuid();
+        Extra.SpawnPointEntityId = SpawnPointA;
+    }
+    FString OverWaveJson;
+    FString FixtureError;
+    TestTrue(TEXT("Over-wave fixture serializes"), FAkUGCDocumentJson::Serialize(
+        OverWaveDocument, OverWaveJson, &FixtureError));
+    TestFalse(TEXT("App rejects JSON with more than three waves"), Subsystem->LoadProjectJson(OverWaveJson).bSucceeded);
+
+    // JSON 往返一致：导出后重载恢复 Ruleset
+    FString Json;
+    TestTrue(TEXT("App exports project JSON after ruleset editing"), Subsystem->ExportProjectJson(Json).bSucceeded);
+    Subsystem->CloseProject();
+    TestTrue(TEXT("App reloads exported JSON"), Subsystem->LoadProjectJson(Json).bSucceeded);
+    FAkUGCTowerDefenseRuleset ReloadedRuleset;
+    TestTrue(TEXT("Reloaded App reads ruleset"), Subsystem->GetRuleset(ReloadedRuleset));
+    TestEqual(TEXT("Reloaded ruleset restores waves"), ReloadedRuleset.Waves.Num(), 2);
+
+    Subsystem->CloseProject();
+    GEngine->DestroyWorldContext(World);
+    World->DestroyWorld(false);
+    return true;
+}
+
 #endif

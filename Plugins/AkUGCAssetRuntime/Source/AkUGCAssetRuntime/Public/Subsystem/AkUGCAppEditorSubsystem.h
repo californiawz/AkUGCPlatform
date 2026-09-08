@@ -116,6 +116,27 @@ public:
     UFUNCTION(BlueprintPure, Category = "UGC|App Editor")
     bool GetLogicGraph(FAkUGCLogicGraph& OutGraph) const;
 
+    UFUNCTION(BlueprintCallable, Category = "UGC|App Editor")
+    FAkUGCAppEditResult AddWave(const FAkUGCTowerDefenseWave& Wave);
+
+    UFUNCTION(BlueprintCallable, Category = "UGC|App Editor")
+    FAkUGCAppEditResult UpdateWave(const FAkUGCTowerDefenseWave& Wave);
+
+    UFUNCTION(BlueprintCallable, Category = "UGC|App Editor")
+    FAkUGCAppEditResult DeleteWave(const FGuid& WaveId);
+
+    UFUNCTION(BlueprintCallable, Category = "UGC|App Editor")
+    FAkUGCAppEditResult MoveWave(const FGuid& WaveId, int32 TargetWaveIndex);
+
+    UFUNCTION(BlueprintCallable, Category = "UGC|App Editor")
+    FAkUGCAppEditResult SetRulesetSettings(
+        double WaveIntervalSeconds,
+        EAkUGCTowerDefenseDefeatCondition DefeatCondition,
+        EAkUGCTowerDefenseVictoryCondition VictoryCondition);
+
+    UFUNCTION(BlueprintPure, Category = "UGC|App Editor")
+    bool GetRuleset(FAkUGCTowerDefenseRuleset& OutRuleset) const;
+
     const FAkUGCProjectDocument& GetDocument() const;
 
 protected:
@@ -132,6 +153,10 @@ private:
         FString& OutError) const;
     bool ValidateMobileLogicNode(
         const FAkUGCLogicNode& Node,
+        const FAkUGCSceneDocument& Scene,
+        FString& OutError) const;
+    bool ValidateMobileWave(
+        const FAkUGCTowerDefenseWave& Wave,
         const FAkUGCSceneDocument& Scene,
         FString& OutError) const;
     FAkUGCAppEditResult ExecuteResult(const FAkUGCCommandExecutionResult& Result);

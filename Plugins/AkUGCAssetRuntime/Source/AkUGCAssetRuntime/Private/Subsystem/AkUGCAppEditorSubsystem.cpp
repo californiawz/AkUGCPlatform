@@ -473,6 +473,104 @@ bool UAkUGCAppEditorSubsystem::GetLogicGraph(FAkUGCLogicGraph& OutGraph) const
     return true;
 }
 
+FAkUGCAppEditResult UAkUGCAppEditorSubsystem::AddWave(const FAkUGCTowerDefenseWave& Wave)
+{
+    if (!CommandService)
+    {
+        return Failure(TEXT("appEditor.session"), TEXT("No UGC project is open."));
+    }
+    const FAkUGCSceneDocument* Scene = CommandService->FindScene();
+    if (!Scene)
+    {
+        return Failure(TEXT("appEditor.sceneId"), TEXT("Active scene does not exist."));
+    }
+
+    if (Scene->Ruleset.Waves.Num() >= AkUGCTowerDefenseRulesetLimits::RequiredWaveCount)
+    {
+        return Failure(
+            TEXT("appEditor.ruleset.waves"),
+            FString::Printf(
+                TEXT("Tower defense ruleset supports at most %d waves."),
+                AkUGCTowerDefenseRulesetLimits::RequiredWaveCount));
+    }
+
+    FString Error;
+    if (!ValidateMobileWave(Wave, *Scene, Error))
+    {
+        return Failure(TEXT("appEditor.ruleset"), MoveTemp(Error));
+    }
+    return ExecuteResult(CommandService->AddWave(Wave));
+}
+
+FAkUGCAppEditResult UAkUGCAppEditorSubsystem::UpdateWave(const FAkUGCTowerDefenseWave& Wave)
+{
+    if (!CommandService)
+    {
+        return Failure(TEXT("appEditor.session"), TEXT("No UGC project is open."));
+    }
+    const FAkUGCSceneDocument* Scene = CommandService->FindScene();
+    if (!Scene)
+    {
+        return Failure(TEXT("appEditor.sceneId"), TEXT("Active scene does not exist."));
+    }
+
+    FString Error;
+    if (!ValidateMobileWave(Wave, *Scene, Error))
+    {
+        return Failure(TEXT("appEditor.ruleset"), MoveTemp(Error));
+    }
+    return ExecuteResult(CommandService->UpdateWave(Wave));
+}
+
+FAkUGCAppEditResult UAkUGCAppEditorSubsystem::DeleteWave(const FGuid& WaveId)
+{
+    return CommandService
+        ? ExecuteResult(CommandService->DeleteWave(WaveId))
+        : Failure(TEXT("appEditor.session"), TEXT("No UGC project is open."));
+}
+
+FAkUGCAppEditResult UAkUGCAppEditorSubsystem::MoveWave(const FGuid& WaveId, int32 TargetWaveIndex)
+{
+    return CommandService
+        ? ExecuteResult(CommandService->MoveWave(WaveId, TargetWaveIndex))
+        : Failure(TEXT("appEditor.session"), TEXT("No UGC project is open."));
+}
+
+FAkUGCAppEditResult UAkUGCAppEditorSubsystem::SetRulesetSettings(
+    double WaveIntervalSeconds,
+    EAkUGCTowerDefenseDefeatCondition DefeatCondition,
+    EAkUGCTowerDefenseVictoryCondition VictoryCondition)
+{
+    if (!CommandService)
+    {
+        return Failure(TEXT("appEditor.session"), TEXT("No UGC project is open."));
+    }
+    if (!FMath::IsFinite(WaveIntervalSeconds)
+        || WaveIntervalSeconds < 0.0
+        || WaveIntervalSeconds > AkUGCTowerDefenseRulesetLimits::MaxWaveIntervalSeconds)
+    {
+        return Failure(
+            TEXT("appEditor.ruleset.waveIntervalSeconds"),
+            FString::Printf(
+                TEXT("Wave interval must be between 0 and %.0f seconds."),
+                AkUGCTowerDefenseRulesetLimits::MaxWaveIntervalSeconds));
+    }
+    return ExecuteResult(CommandService->SetRulesetSettings(
+        WaveIntervalSeconds, DefeatCondition, VictoryCondition));
+}
+
+bool UAkUGCAppEditorSubsystem::GetRuleset(FAkUGCTowerDefenseRuleset& OutRuleset) const
+{
+    OutRuleset = FAkUGCTowerDefenseRuleset{};
+    const FAkUGCSceneDocument* Scene = CommandService ? CommandService->FindScene() : nullptr;
+    if (!Scene)
+    {
+        return false;
+    }
+    OutRuleset = Scene->Ruleset;
+    return true;
+}
+
 const FAkUGCProjectDocument& UAkUGCAppEditorSubsystem::GetDocument() const
 {
     return Document;
@@ -638,6 +736,14 @@ bool UAkUGCAppEditorSubsystem::ValidateMobileDocument(
         {
             return false;
         }
+
+        for (const FAkUGCTowerDefenseWave& Wave : Scene.Ruleset.Waves)
+        {
+            if (!ValidateMobileWave(Wave, Scene, OutError))
+            {
+                return false;
+            }
+        }
     }
     return true;
 }
@@ -709,6 +815,29 @@ bool UAkUGCAppEditorSubsystem::ValidateMobileLogicNode(
             OutError = TEXT("Spawn node anchor must reference an official.gameplay.enemy_spawn entity.");
             return false;
         }
+    }
+    return true;
+}
+
+bool UAkUGCAppEditorSubsystem::ValidateMobileWave(
+    const FAkUGCTowerDefenseWave& Wave,
+    const FAkUGCSceneDocument& Scene,
+    FString& OutError) const
+{
+    if (!Wave.SpawnPointEntityId.IsValid())
+    {
+        OutError = TEXT("Wave must reference a Spawn Point entity.");
+        return false;
+    }
+    const FAkUGCEntityRecord* SpawnPoint = Scene.Entities.FindByPredicate(
+        [&Wave](const FAkUGCEntityRecord& Entity)
+        {
+            return Entity.EntityId == Wave.SpawnPointEntityId;
+        });
+    if (!SpawnPoint || SpawnPoint->PrefabId != TEXT("official.gameplay.enemy_spawn"))
+    {
+        OutError = TEXT("Wave spawn point must reference an official.gameplay.enemy_spawn entity.");
+        return false;
     }
     return true;
 }
