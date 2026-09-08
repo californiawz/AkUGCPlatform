@@ -236,6 +236,83 @@ bool FAkUGCLogicUpdateNodeTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FAkUGCLogicSetNodePositionTest,
+    "AkUGC.Core.Logic.SetNodePosition",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCLogicSetNodePositionTest::RunTest(const FString& Parameters)
+{
+    FGuid SceneId;
+    FAkUGCProjectDocument Document = MakeLogicDocument(SceneId);
+    const FGuid StartId(1, 0, 0, 0);
+
+    FAkUGCCommand AddStart = MakeLogicCommand(EAkUGCCommandType::AddLogicNode, SceneId);
+    AddStart.LogicNode.NodeId = StartId;
+    AddStart.LogicNode.Type = EAkUGCLogicNodeType::GameStart;
+    AddStart.LogicNode.PositionX = 10.0f;
+    AddStart.LogicNode.PositionY = 20.0f;
+
+    FAkUGCCommandHistory History;
+    TestTrue(TEXT("Add node succeeds"),
+        History.Execute(Document, MakeLogicTransaction({AddStart})).bSucceeded);
+
+    FAkUGCCommand Move = MakeLogicCommand(EAkUGCCommandType::SetLogicNodePosition, SceneId);
+    Move.LogicNode.NodeId = StartId;
+    Move.LogicNode.PositionX = 300.0f;
+    Move.LogicNode.PositionY = 400.0f;
+    const FAkUGCCommandTransaction MoveTransaction = MakeLogicTransaction({Move});
+    TestTrue(TEXT("Move node succeeds"), History.Execute(Document, MoveTransaction).bSucceeded);
+
+    const FAkUGCLogicNode* Moved = Document.Scenes[0].LogicGraph.Nodes.FindByPredicate(
+        [&StartId](const FAkUGCLogicNode& Node) { return Node.NodeId == StartId; });
+    TestTrue(TEXT("Moved node exists"), Moved != nullptr);
+    if (Moved)
+    {
+        TestEqual(TEXT("Position X is updated"), Moved->PositionX, 300.0f);
+        TestEqual(TEXT("Position Y is updated"), Moved->PositionY, 400.0f);
+        TestEqual(TEXT("Node type is preserved by position move"), Moved->Type, EAkUGCLogicNodeType::GameStart);
+    }
+
+    TestTrue(TEXT("Undo succeeds"), History.Undo(Document).bSucceeded);
+    const FAkUGCLogicNode* Undone = Document.Scenes[0].LogicGraph.Nodes.FindByPredicate(
+        [&StartId](const FAkUGCLogicNode& Node) { return Node.NodeId == StartId; });
+    TestTrue(TEXT("Undone node exists"), Undone != nullptr);
+    if (Undone)
+    {
+        TestEqual(TEXT("Undo restores old X"), Undone->PositionX, 10.0f);
+        TestEqual(TEXT("Undo restores old Y"), Undone->PositionY, 20.0f);
+    }
+
+    TestTrue(TEXT("Redo succeeds"), History.Redo(Document).bSucceeded);
+    const FAkUGCLogicNode* Redone = Document.Scenes[0].LogicGraph.Nodes.FindByPredicate(
+        [&StartId](const FAkUGCLogicNode& Node) { return Node.NodeId == StartId; });
+    TestTrue(TEXT("Redone node exists"), Redone != nullptr);
+    if (Redone)
+    {
+        TestEqual(TEXT("Redo restores new X"), Redone->PositionX, 300.0f);
+        TestEqual(TEXT("Redo restores new Y"), Redone->PositionY, 400.0f);
+    }
+
+    FAkUGCCommand MoveMissing = MakeLogicCommand(EAkUGCCommandType::SetLogicNodePosition, SceneId);
+    MoveMissing.LogicNode.NodeId = FGuid(99, 0, 0, 0);
+    MoveMissing.LogicNode.PositionX = 0.0f;
+    MoveMissing.LogicNode.PositionY = 0.0f;
+    TestFalse(TEXT("Moving a missing node fails"),
+        History.Execute(Document, MakeLogicTransaction({MoveMissing})).bSucceeded);
+
+    FString CommandJson;
+    FString Error;
+    TestTrue(TEXT("Move transaction serializes"), FAkUGCCommandJson::Serialize(MoveTransaction, CommandJson, &Error));
+    FAkUGCCommandTransaction RestoredTransaction;
+    TestTrue(TEXT("Move transaction deserializes"), FAkUGCCommandJson::Deserialize(CommandJson, RestoredTransaction, &Error));
+    TestEqual(TEXT("Move command type round-trips"), RestoredTransaction.Commands[0].Type, EAkUGCCommandType::SetLogicNodePosition);
+    TestEqual(TEXT("Move node id round-trips"), RestoredTransaction.Commands[0].LogicNode.NodeId, StartId);
+    TestEqual(TEXT("Move X round-trips"), RestoredTransaction.Commands[0].LogicNode.PositionX, 300.0f);
+    TestEqual(TEXT("Move Y round-trips"), RestoredTransaction.Commands[0].LogicNode.PositionY, 400.0f);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FAkUGCLogicRunnerTest,
     "AkUGC.Core.Logic.GameStartRunner",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

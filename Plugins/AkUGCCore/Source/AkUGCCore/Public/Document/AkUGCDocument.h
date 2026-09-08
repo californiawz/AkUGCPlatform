@@ -6,7 +6,7 @@
 namespace AkUGCSchema
 {
     inline constexpr int32 OldestSupportedProjectDocumentVersion = 0;
-    inline constexpr int32 CurrentProjectDocumentVersion = 4;
+    inline constexpr int32 CurrentProjectDocumentVersion = 5;
 }
 
 namespace AkUGCTowerDefenseRulesetLimits
@@ -140,6 +140,12 @@ struct AKUGCCORE_API FAkUGCLogicNode
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Logic")
     FGuid SpawnAtEntityId;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Logic")
+    float PositionX = 0.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Logic")
+    float PositionY = 0.0f;
 };
 
 USTRUCT(BlueprintType)

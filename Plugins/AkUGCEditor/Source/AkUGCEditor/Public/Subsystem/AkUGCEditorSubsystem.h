@@ -45,6 +45,7 @@ public:
     FAkUGCCommandExecutionResult AddLogicNode(const FAkUGCLogicNode& Node);
     FAkUGCCommandExecutionResult DeleteLogicNode(const FGuid& NodeId);
     FAkUGCCommandExecutionResult UpdateLogicNode(const FAkUGCLogicNode& Node);
+    FAkUGCCommandExecutionResult SetLogicNodePosition(const FGuid& NodeId, float PositionX, float PositionY);
     FAkUGCCommandExecutionResult ConnectLogicNode(const FGuid& SourceNodeId, const FGuid& TargetNodeId);
     FAkUGCCommandExecutionResult DisconnectLogicNode(const FGuid& SourceNodeId, const FGuid& TargetNodeId);
     FAkUGCCommandExecutionResult DeleteSelectedEntity();

@@ -270,7 +270,7 @@ bool FAkUGCDocumentLegacyMigrationTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Migration succeeds"), Migration.bSucceeded);
     TestEqual(TEXT("Missing version is recognized as V0"), Migration.SourceVersion, 0);
     TestEqual(TEXT("Migration targets current version"), Migration.TargetVersion, AkUGCSchema::CurrentProjectDocumentVersion);
-    TestEqual(TEXT("V0 to current applies four migration steps"), Migration.AppliedSteps.Num(), 4);
+    TestEqual(TEXT("V0 to current applies five migration steps"), Migration.AppliedSteps.Num(), 5);
     if (Migrated.Scenes.IsEmpty()
         || Migrated.Scenes[0].Entities.IsEmpty()
         || Migrated.Scenes[0].Entities[0].Components.IsEmpty())
@@ -322,9 +322,9 @@ bool FAkUGCDocumentMigrationRejectionTest::RunTest(const FString& Parameters)
     FString Error;
     FAkUGCDocumentMigrationResult Migration;
 
-    const FString FutureJson = TEXT("{\"manifest\":{\"schemaVersion\":5},\"scenes\":[]}");
+    const FString FutureJson = TEXT("{\"manifest\":{\"schemaVersion\":6},\"scenes\":[]}");
     TestFalse(TEXT("Future project version is rejected"), FAkUGCDocumentJson::Deserialize(FutureJson, Output, &Error, &Migration));
-    TestEqual(TEXT("Future version is reported"), Migration.SourceVersion, 5);
+    TestEqual(TEXT("Future version is reported"), Migration.SourceVersion, 6);
     TestEqual(TEXT("Future version error path is precise"), Migration.ErrorPath, FString(TEXT("manifest.schemaVersion")));
     TestFalse(TEXT("Rejected output is reset instead of partially populated"), Output.Manifest.ProjectId.IsValid());
 
@@ -511,6 +511,82 @@ bool FAkUGCTowerDefenseRulesetValidationTest::RunTest(const FString& Parameters)
     Scene.Ruleset.Waves[0].SpawnPointEntityId = FGuid::NewGuid();
     TestFalse(TEXT("Wave rejects missing cross-reference"),
         FAkUGCDocumentValidator::Validate(Document).IsValid());
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FAkUGCDocumentLogicLayoutMigrationTest,
+    "AkUGC.Core.Document.Migration.InitializesLogicNodeLayout",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCDocumentLogicLayoutMigrationTest::RunTest(const FString& Parameters)
+{
+    TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+    TSharedRef<FJsonObject> Manifest = MakeShared<FJsonObject>();
+    Manifest->SetNumberField(TEXT("schemaVersion"), 4);
+    Root->SetObjectField(TEXT("manifest"), Manifest);
+
+    TSharedRef<FJsonObject> LogicGraph = MakeShared<FJsonObject>();
+    TSharedRef<FJsonObject> StartNode = MakeShared<FJsonObject>();
+    StartNode->SetStringField(TEXT("nodeId"), TEXT("11111111-1111-1111-1111-111111111111"));
+    StartNode->SetStringField(TEXT("type"), TEXT("GameStart"));
+    TSharedRef<FJsonObject> MessageNode = MakeShared<FJsonObject>();
+    MessageNode->SetStringField(TEXT("nodeId"), TEXT("22222222-2222-2222-2222-222222222222"));
+    MessageNode->SetStringField(TEXT("type"), TEXT("Message"));
+    MessageNode->SetStringField(TEXT("message"), TEXT("Hello"));
+    LogicGraph->SetArrayField(TEXT("nodes"), {
+        MakeShared<FJsonValueObject>(StartNode),
+        MakeShared<FJsonValueObject>(MessageNode)});
+    LogicGraph->SetArrayField(TEXT("connections"), {});
+
+    TSharedRef<FJsonObject> Scene = MakeShared<FJsonObject>();
+    Scene->SetObjectField(TEXT("logicGraph"), LogicGraph);
+    Scene->SetObjectField(TEXT("ruleset"), MakeShared<FJsonObject>());
+    Root->SetArrayField(TEXT("scenes"), {MakeShared<FJsonValueObject>(Scene)});
+
+    const FAkUGCDocumentMigrationResult Migration = FAkUGCDocumentMigrator::Migrate(Root);
+    TestTrue(TEXT("V4 layout migration succeeds"), Migration.bSucceeded);
+    TestTrue(TEXT("Layout migration step is recorded"), Migration.AppliedSteps.Contains(TEXT("ProjectDocumentV4ToV5")));
+    if (!Migration.bSucceeded)
+    {
+        return false;
+    }
+
+    const TSharedPtr<FJsonObject>* MigratedManifest = nullptr;
+    TestTrue(TEXT("Manifest survives migration"), Root->TryGetObjectField(TEXT("manifest"), MigratedManifest));
+    TestEqual(
+        TEXT("Manifest version advances to current"),
+        static_cast<int32>((*MigratedManifest)->GetNumberField(TEXT("schemaVersion"))),
+        AkUGCSchema::CurrentProjectDocumentVersion);
+
+    const TArray<TSharedPtr<FJsonValue>>* Scenes = nullptr;
+    const TArray<TSharedPtr<FJsonValue>>* Nodes = nullptr;
+    if (!Root->TryGetArrayField(TEXT("scenes"), Scenes)
+        || !Scenes
+        || Scenes->IsEmpty()
+        || (*Scenes)[0]->Type != EJson::Object)
+    {
+        AddError(TEXT("Migrated scenes are invalid."));
+        return false;
+    }
+    const TSharedPtr<FJsonObject> MigratedScene = (*Scenes)[0]->AsObject();
+    const TSharedPtr<FJsonObject>* MigratedGraph = nullptr;
+    if (!MigratedScene->TryGetObjectField(TEXT("logicGraph"), MigratedGraph)
+        || !MigratedGraph
+        || !(*MigratedGraph)->TryGetArrayField(TEXT("nodes"), Nodes)
+        || !Nodes
+        || Nodes->Num() != 2)
+    {
+        AddError(TEXT("Migrated logic graph nodes are invalid."));
+        return false;
+    }
+
+    const TSharedPtr<FJsonObject> FirstNode = (*Nodes)[0]->AsObject();
+    const TSharedPtr<FJsonObject> SecondNode = (*Nodes)[1]->AsObject();
+    TestEqual(TEXT("First node X is initialized"), FirstNode->GetNumberField(TEXT("positionX")), 0.0);
+    TestEqual(TEXT("First node Y is initialized"), FirstNode->GetNumberField(TEXT("positionY")), 0.0);
+    TestEqual(TEXT("Second node X is initialized"), SecondNode->GetNumberField(TEXT("positionX")), 0.0);
+    TestEqual(TEXT("Second node Y is staggered below the first"), SecondNode->GetNumberField(TEXT("positionY")), 180.0);
     return true;
 }
 

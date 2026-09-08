@@ -376,6 +376,46 @@ FAkUGCDocumentMigrationResult FAkUGCDocumentMigrator::Migrate(
         Result.AppliedSteps.Add(TEXT("ProjectDocumentV3ToV4"));
         WorkingVersion = 4;
     }
+    if (WorkingVersion == 4)
+    {
+        TArray<TSharedPtr<FJsonObject>> Scenes;
+        if (!ReadObjectArray(RootObject, TEXT("scenes"), TEXT("scenes"), Scenes, ErrorPath, ErrorMessage))
+        {
+            return Failure(SourceVersion, MoveTemp(ErrorPath), MoveTemp(ErrorMessage));
+        }
+        for (int32 SceneIndex = 0; SceneIndex < Scenes.Num(); ++SceneIndex)
+        {
+            TSharedPtr<FJsonValue> LogicGraphValue;
+            const FString LogicGraphPath = FString::Printf(TEXT("scenes[%d].logicGraph"), SceneIndex);
+            if (!FindCanonicalField(Scenes[SceneIndex].ToSharedRef(), TEXT("logicGraph"), false, LogicGraphValue, ErrorMessage))
+            {
+                return Failure(SourceVersion, LogicGraphPath, MoveTemp(ErrorMessage));
+            }
+            if (!LogicGraphValue.IsValid())
+            {
+                continue;
+            }
+            if (LogicGraphValue->Type != EJson::Object || !LogicGraphValue->AsObject().IsValid())
+            {
+                return Failure(SourceVersion, LogicGraphPath, TEXT("Logic graph must be an object."));
+            }
+
+            TArray<TSharedPtr<FJsonObject>> Nodes;
+            const FString NodesPath = LogicGraphPath + TEXT(".nodes");
+            if (!ReadObjectArray(LogicGraphValue->AsObject().ToSharedRef(), TEXT("nodes"), NodesPath, Nodes, ErrorPath, ErrorMessage))
+            {
+                return Failure(SourceVersion, MoveTemp(ErrorPath), MoveTemp(ErrorMessage));
+            }
+            for (int32 NodeIndex = 0; NodeIndex < Nodes.Num(); ++NodeIndex)
+            {
+                Nodes[NodeIndex]->SetNumberField(TEXT("positionX"), 0.0);
+                Nodes[NodeIndex]->SetNumberField(TEXT("positionY"), NodeIndex * 180.0);
+            }
+        }
+        Manifest->SetNumberField(TEXT("schemaVersion"), 5);
+        Result.AppliedSteps.Add(TEXT("ProjectDocumentV4ToV5"));
+        WorkingVersion = 5;
+    }
 
     if (WorkingVersion != AkUGCSchema::CurrentProjectDocumentVersion)
     {

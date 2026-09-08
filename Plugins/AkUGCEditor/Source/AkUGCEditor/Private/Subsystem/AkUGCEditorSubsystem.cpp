@@ -406,6 +406,25 @@ FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::UpdateLogicNode(const FAkUGC
     return Result;
 }
 
+FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::SetLogicNodePosition(
+    const FGuid& NodeId,
+    float PositionX,
+    float PositionY)
+{
+    if (!CommandService)
+    {
+        return NoSessionResult();
+    }
+
+    TGuardValue<bool> ApplyingGuard(bApplyingUGCTransaction, true);
+    FAkUGCCommandExecutionResult Result = CommandService->SetLogicNodePosition(NodeId, PositionX, PositionY);
+    if (Result.bSucceeded)
+    {
+        ++DocumentRevision;
+    }
+    return Result;
+}
+
 FAkUGCCommandExecutionResult UAkUGCEditorSubsystem::ConnectLogicNode(
     const FGuid& SourceNodeId,
     const FGuid& TargetNodeId)

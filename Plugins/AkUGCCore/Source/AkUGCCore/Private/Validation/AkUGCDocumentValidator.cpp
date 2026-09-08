@@ -185,6 +185,11 @@ FAkUGCValidationResult FAkUGCDocumentValidator::ValidateLogicGraph(
             Result.AddError(NodePath + TEXT(".type"), TEXT("Logic node type is not supported."));
             break;
         }
+
+        if (!FMath::IsFinite(Node.PositionX) || !FMath::IsFinite(Node.PositionY))
+        {
+            Result.AddError(NodePath + TEXT(".position"), TEXT("Logic node position must be finite."));
+        }
     }
 
     if (GameStartCount > 1)

@@ -462,6 +462,27 @@ FAkUGCCommandExecutionResult FAkUGCCommandExecutor::ApplySingle(
         return FAkUGCCommandExecutionResult::Success();
     }
 
+    case EAkUGCCommandType::SetLogicNodePosition:
+    {
+        const int32 NodeIndex = FindLogicNodeIndex(Scene->LogicGraph, Command.LogicNode.NodeId);
+        if (NodeIndex == INDEX_NONE)
+        {
+            return FAkUGCCommandExecutionResult::Failure(TEXT("logicNode.nodeId"), TEXT("Logic node does not exist in the graph."));
+        }
+        if (!FMath::IsFinite(Command.LogicNode.PositionX) || !FMath::IsFinite(Command.LogicNode.PositionY))
+        {
+            return FAkUGCCommandExecutionResult::Failure(TEXT("logicNode.position"), TEXT("Logic node position must be finite."));
+        }
+
+        OutInverse = MakeInverse(Command, EAkUGCCommandType::SetLogicNodePosition);
+        OutInverse.LogicNode.NodeId = Command.LogicNode.NodeId;
+        OutInverse.LogicNode.PositionX = Scene->LogicGraph.Nodes[NodeIndex].PositionX;
+        OutInverse.LogicNode.PositionY = Scene->LogicGraph.Nodes[NodeIndex].PositionY;
+        Scene->LogicGraph.Nodes[NodeIndex].PositionX = Command.LogicNode.PositionX;
+        Scene->LogicGraph.Nodes[NodeIndex].PositionY = Command.LogicNode.PositionY;
+        return FAkUGCCommandExecutionResult::Success();
+    }
+
     case EAkUGCCommandType::AddWave:
     {
         if (!Command.Wave.WaveId.IsValid())

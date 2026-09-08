@@ -611,6 +611,26 @@ FAkUGCCommandExecutionResult FAkUGCRuntimeCommandService::UpdateLogicNode(const 
     return Execute(MoveTemp(Transaction));
 }
 
+FAkUGCCommandExecutionResult FAkUGCRuntimeCommandService::SetLogicNodePosition(
+    const FGuid& NodeId,
+    float PositionX,
+    float PositionY)
+{
+    FAkUGCCommand Command;
+    Command.CommandId = FGuid::NewGuid();
+    Command.Type = EAkUGCCommandType::SetLogicNodePosition;
+    Command.SceneId = SceneId;
+    Command.LogicNode.NodeId = NodeId;
+    Command.LogicNode.PositionX = PositionX;
+    Command.LogicNode.PositionY = PositionY;
+
+    FAkUGCCommandTransaction Transaction;
+    Transaction.TransactionId = FGuid::NewGuid();
+    Transaction.Label = TEXT("Move logic node");
+    Transaction.Commands.Add(MoveTemp(Command));
+    return Execute(MoveTemp(Transaction));
+}
+
 FAkUGCCommandExecutionResult FAkUGCRuntimeCommandService::ConnectLogicNode(
     const FGuid& SourceNodeId,
     const FGuid& TargetNodeId)
