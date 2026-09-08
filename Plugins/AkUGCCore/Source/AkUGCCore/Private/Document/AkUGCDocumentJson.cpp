@@ -9,7 +9,6 @@
 #include "Serialization/JsonSerializer.h"
 #include "String/LexFromString.h"
 #include "UObject/UnrealType.h"
-#include "Validation/AkUGCDocumentValidator.h"
 
 namespace
 {
@@ -386,22 +385,9 @@ bool FAkUGCDocumentJson::Serialize(
         return false;
     }
 
-    const FAkUGCValidationResult Validation = FAkUGCDocumentValidator::Validate(Document);
-    if (!Validation.IsValid())
-    {
-        if (OutError)
-        {
-            const FAkUGCValidationIssue* FirstError = Validation.Issues.FindByPredicate([](const FAkUGCValidationIssue& Issue)
-            {
-                return Issue.Severity == EAkUGCValidationSeverity::Error;
-            });
-            *OutError = FirstError
-                ? FString::Printf(TEXT("%s: %s"), *FirstError->Path, *FirstError->Message)
-                : TEXT("UGC project document validation failed.");
-        }
-        return false;
-    }
-
+    // 序列化只负责把内存结构转成 JSON，不做业务校验。
+    // 校验在显式的校验点（OpenDocument / LoadProjectJson / SaveProject 前）进行，
+    // 这样导出与诊断场景可以序列化尚未通过校验的草稿或恶意 fixture。
     const FJsonObjectConverter::CustomExportCallback ExportCallback =
         FJsonObjectConverter::CustomExportCallback::CreateStatic(&ExportDocumentProperty);
     const bool bSucceeded = FJsonObjectConverter::UStructToJsonObjectString(

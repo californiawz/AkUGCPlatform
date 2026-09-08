@@ -266,9 +266,9 @@ FAkUGCValidationResult FAkUGCDocumentValidator::ValidateLogicGraph(
         {
             Result.AddError(Path + TEXT(".connections"), TEXT("Terminal logic node cannot have outgoing connections."));
         }
-        if (Pair.Value == EAkUGCLogicNodeType::Timer && OutgoingCounts.FindRef(Pair.Key) != 1)
+        if (Pair.Value == EAkUGCLogicNodeType::Timer && OutgoingCounts.FindRef(Pair.Key) > 1)
         {
-            Result.AddError(Path + TEXT(".connections"), TEXT("Timer node must have exactly one outgoing connection."));
+            Result.AddError(Path + TEXT(".connections"), TEXT("Timer node must have at most one outgoing connection."));
         }
     }
 

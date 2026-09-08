@@ -449,10 +449,13 @@ App 通过模板化方式编辑安全的有限 Logic，不提供完整专业节�
 - 已引入 slua_unreal 作为 Lua 运行时，并迁移 AkLuaRuntime 复用其 `FLuaVirtualMachine` 封装 VM 生命周期。
 - 每个沙箱实例使用独立 VM + 独立 env 表（`_ENV` 白名单），实例间隔离且不侵入宿主 `_G`。
 - 已禁止 io/os/debug/package/require/dofile/loadfile/load 等危险库，仅开放 base 精简子集与 table/string/math/utf8。
-- 已实现指令、时间、内存、调用深度四类配额 hook，死循环/超时/OOM/深递归均安全终止。
+- 已实现指令、时间、内存、调用深度、Effect 五类配额 hook，死循环/超时/OOM/深递归/副作用过载均安全终止。
 - 已新增受控 API 宿主接口 `IAkUGCSandboxHost`，落地 `ugc.message` / `ugc.get_health` / `ugc.apply_damage` 三个受控能力；未注入宿主时 `ugc` 命名空间不可用。
 - 已在 AkUGCAssetRuntime 落地真实宿主 `FAkUGCSandboxSceneHost`，把受控 API 桥接到 `FAkUGCSceneRuntime` 的 `GetRuntimeHealth` / `ApplyRuntimeDamage`，实体 ID 以 FGuid 字符串在脚本与运行时之间传递；端到端测试验证脚本可查询塔防 Base 血量并造成伤害。
-- 待完成：Timer/Spawn/Ruleset 等受控 API 的宿主实现、Capability/Effect Validator 在 Client/Server 侧重复校验。
+- 已落地 Timer/Spawn/Ruleset 受控 API 宿主实现：`ugc.timer_after(delay, callback)` 返回唯一 Serial 并由 `AdvanceTimers` 顺序执行到期回调；`ugc.spawn(prefab_id, [anchor_id])` 经 `SpawnSandboxEntity` 注册生成实体；`ugc.get_wave_state()` 经 `GetWaveRuntimeState` 返回 `FAkUGCSandboxWaveState` 快照。
+- 已落地 Capability Validator：`FAkUGCCapabilityValidator` 校验作品 Manifest 声明的能力白名单，并接入 `FAkUGCLogicPackLoader::Load`，使 Client 与 Server 在加载 Logic Pack 时重复校验、拒绝越权/未知能力。
+- 已落地 Effect 配额：`FAkUGCSandboxConfig::MaxEffectCount` 限制单次脚本执行（RunScript 或单次定时器回调）产生的受控副作用次数，超限返回 `EffectLimitExceeded`。
+- 已修复 `LogicEditing` 回归：`FAkUGCDocumentValidator` 的 Timer 出边校验由「必须有且仅有一条」放宽为「至多一条」，允许「先加 Timer 节点、后连线」的增量编辑流；运行时 `FAkUGCLogicRunner::ValidateProgram` 仍强制 Timer 有且仅有一个后继，保证执行期不变式不被削弱。
 
 ### 目标
 

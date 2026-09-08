@@ -6,6 +6,7 @@
 #include "Pack/AkUGCLogicPackCodec.h"
 #include "Pack/AkUGCLogicPackHasher.h"
 #include "Pack/AkUGCLogicPackSignature.h"
+#include "Validation/AkUGCCapabilityValidator.h"
 #include "Validation/AkUGCDocumentValidator.h"
 
 FAkUGCLogicPackLoadResult FAkUGCLogicPackLoader::Load(const FString& Json)
@@ -27,6 +28,14 @@ FAkUGCLogicPackLoadResult FAkUGCLogicPackLoader::Load(const FString& Json)
 			TEXT("Logic Pack 版本不兼容：清单声明 Schema %d，运行端支持 %d。"),
 			Result.Pack.Manifest.SchemaVersion,
 			AkUGCSchema::CurrentProjectDocumentVersion);
+		return Result;
+	}
+
+	// 2.5 能力白名单校验（Client 与 Server 重复执行，拒绝越权/未知能力）。
+	FString CapabilityError;
+	if (!FAkUGCCapabilityValidator::Validate(Result.Pack.Manifest.Capabilities, &CapabilityError))
+	{
+		Result.ErrorMessage = MoveTemp(CapabilityError);
 		return Result;
 	}
 

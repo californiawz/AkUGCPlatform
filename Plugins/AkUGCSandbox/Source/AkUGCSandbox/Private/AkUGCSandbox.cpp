@@ -31,6 +31,8 @@ struct FAkUGCSandboxImpl
 	bool bMemoryLimitExceeded = false;
 	bool bTimeout = false;
 	bool bCallDepthExceeded = false;
+	bool bEffectLimitExceeded = false;
+	int32 EffectCount = 0;
 	double RunStartTime = 0.0;
 
 	// 受控定时器：脚本通过 ugc.timer_after 注册，宿主通过 AdvanceTimers 驱动。
@@ -115,6 +117,24 @@ namespace
 	}
 
 	/**
+	 * 记录一次受控副作用并检查 Effect 配额，超限即终止当前脚本。
+	 * 返回 0 表示未超限（配额未启用或仍有剩余），超限时经 luaL_error 长跳转、不会返回。
+	 */
+	int CheckEffectLimit(lua_State* L, FAkUGCSandboxImpl* Impl)
+	{
+		if (Impl->Config.MaxEffectCount > 0)
+		{
+			++Impl->EffectCount;
+			if (Impl->EffectCount > Impl->Config.MaxEffectCount)
+			{
+				Impl->bEffectLimitExceeded = true;
+				return luaL_error(L, "effect limit exceeded");
+			}
+		}
+		return 0;
+	}
+
+	/**
 	 * ugc.message(msg)：把消息转发给受控 API 宿主。
 	 * 宿主未注入时（注册表内无有效 Impl 或 Host 为空）抛错。
 	 */
@@ -131,6 +151,7 @@ namespace
 			return luaL_error(L, "ugc.message is unavailable without a host");
 		}
 
+		CheckEffectLimit(L, Impl);
 		Impl->Host->EmitMessage(UTF8_TO_TCHAR(Msg));
 		return 0;
 	}
@@ -193,6 +214,7 @@ namespace
 			return luaL_error(L, TCHAR_TO_UTF8(*Error));
 		}
 
+		CheckEffectLimit(L, Impl);
 		lua_pushnumber(L, Applied);
 		lua_pushnumber(L, HealthAfter);
 		return 2;
@@ -225,6 +247,7 @@ namespace
 			return luaL_error(L, TCHAR_TO_UTF8(*Error));
 		}
 
+		CheckEffectLimit(L, Impl);
 		lua_pushstring(L, TCHAR_TO_UTF8(*EntityId));
 		return 1;
 		}
@@ -419,6 +442,8 @@ bool FAkUGCSandbox::Initialize(
 	Impl->bMemoryLimitExceeded = false;
 	Impl->bTimeout = false;
 	Impl->bCallDepthExceeded = false;
+	Impl->bEffectLimitExceeded = false;
+	Impl->EffectCount = 0;
 
 	// 复用 AkLuaRuntime 的 FLuaVirtualMachine 创建并初始化 Lua VM。
 	Impl->VirtualMachine = MakeShared<FLuaVirtualMachine>();
@@ -515,6 +540,8 @@ FAkUGCSandboxResult FAkUGCSandbox::RunScript(const FString& Source, const FStrin
 	Impl->bMemoryLimitExceeded = false;
 	Impl->bTimeout = false;
 	Impl->bCallDepthExceeded = false;
+	Impl->bEffectLimitExceeded = false;
+	Impl->EffectCount = 0;
 	Impl->RunStartTime = FPlatformTime::Seconds();
 
 	const int RunStatus = lua_pcall(L, 0, 0, 0);
@@ -549,6 +576,10 @@ FAkUGCSandboxResult FAkUGCSandbox::RunScript(const FString& Source, const FStrin
 	else if (Impl->bTimeout)
 	{
 		Result.Status = EAkUGCSandboxStatus::Timeout;
+	}
+	else if (Impl->bEffectLimitExceeded)
+	{
+		Result.Status = EAkUGCSandboxStatus::EffectLimitExceeded;
 	}
 	else if (Impl->bMemoryLimitExceeded || RunStatus == LUA_ERRMEM)
 	{
@@ -593,6 +624,8 @@ int32 FAkUGCSandbox::AdvanceTimers(double DeltaSeconds)
 		Impl->bMemoryLimitExceeded = false;
 		Impl->bTimeout = false;
 		Impl->bCallDepthExceeded = false;
+		Impl->bEffectLimitExceeded = false;
+		Impl->EffectCount = 0;
 		Impl->RunStartTime = FPlatformTime::Seconds();
 
 		const int RunStatus = lua_pcall(L, 0, 0, 0);

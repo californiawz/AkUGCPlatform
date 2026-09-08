@@ -442,4 +442,37 @@ bool FAkUGCSandboxTimerAfterTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAkUGCSandboxEffectLimitTest,
+	"AkUGC.Sandbox.VM.EffectLimit",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCSandboxEffectLimitTest::RunTest(const FString& Parameters)
+{
+	const TSharedPtr<FMockSandboxHost> Host = MakeShared<FMockSandboxHost>();
+
+	FAkUGCSandboxConfig Config;
+	Config.MaxEffectCount = 2;
+
+	FAkUGCSandbox Sandbox;
+	Sandbox.Initialize(Config, nullptr, Host);
+
+	// 连续产生 3 个受控副作用（message）→ 超过配额 2，脚本被终止。
+	const FString Script = TEXT(
+		"ugc.message('one')\n"
+		"ugc.message('two')\n"
+		"ugc.message('three')\n");
+
+	const FAkUGCSandboxResult Result = Sandbox.RunScript(Script);
+	TestEqual(TEXT("effect limit terminates script"), Result.Status, EAkUGCSandboxStatus::EffectLimitExceeded);
+	TestEqual(TEXT("only effects within budget are forwarded"), Host->Messages.Num(), 2);
+
+	// 配额在每次 RunScript 之间重置：不超过配额时正常成功。
+	const FAkUGCSandboxResult UnderLimit = Sandbox.RunScript(TEXT("ugc.message('ok')\n"));
+	TestEqual(TEXT("effect quota resets between runs"), UnderLimit.Status, EAkUGCSandboxStatus::Success);
+	TestEqual(TEXT("under-limit message forwarded"), Host->Messages.Num(), 3);
+
+	return true;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS

@@ -20,6 +20,8 @@ enum class EAkUGCSandboxStatus : uint8
 	Timeout,
 	/** 调用深度配额超限。 */
 	CallDepthExceeded,
+	/** Effect 配额超限（受控副作用次数超出上限）。 */
+	EffectLimitExceeded,
 };
 
 /** 沙箱配额配置。 */
@@ -39,6 +41,12 @@ struct AKUGCSANDBOX_API FAkUGCSandboxConfig
 
 	/** 最大调用深度（嵌套 Lua 调用层数），0 表示不限制。 */
 	int32 MaxCallDepth = 0;
+
+	/**
+	 * Effect 配额上限：单次脚本执行（RunScript 或单次定时器回调）最多产生的
+	 * 受控副作用次数（ugc.message / ugc.apply_damage / ugc.spawn），0 表示不限制。
+	 */
+	int32 MaxEffectCount = 0;
 };
 
 /** 沙箱执行结果。 */

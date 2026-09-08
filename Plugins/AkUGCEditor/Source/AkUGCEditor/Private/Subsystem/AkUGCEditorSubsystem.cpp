@@ -109,6 +109,23 @@ bool UAkUGCEditorSubsystem::SaveProject(const FString& FilePath, FString* OutErr
         return false;
     }
 
+    // 保存前显式校验，拒绝保存非法文档（Serialize 已不再隐式校验）。
+    const FAkUGCValidationResult Validation = FAkUGCDocumentValidator::Validate(Document);
+    if (!Validation.IsValid())
+    {
+        if (OutError)
+        {
+            const FAkUGCValidationIssue* FirstError = Validation.Issues.FindByPredicate([](const FAkUGCValidationIssue& Issue)
+            {
+                return Issue.Severity == EAkUGCValidationSeverity::Error;
+            });
+            *OutError = FirstError
+                ? FString::Printf(TEXT("%s: %s"), *FirstError->Path, *FirstError->Message)
+                : TEXT("UGC project document validation failed.");
+        }
+        return false;
+    }
+
     FString Json;
     if (!FAkUGCDocumentJson::Serialize(Document, Json, OutError))
     {

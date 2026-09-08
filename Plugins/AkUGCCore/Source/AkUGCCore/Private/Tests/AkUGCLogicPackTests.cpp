@@ -8,6 +8,7 @@
 #include "Pack/AkUGCLogicPackHasher.h"
 #include "Pack/AkUGCLogicPackLoader.h"
 #include "Pack/AkUGCLogicPackSignature.h"
+#include "Validation/AkUGCCapabilityValidator.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -407,6 +408,46 @@ bool FAkUGCLogicPackLoadTest::RunTest(const FString& Parameters)
     }
     TestEqual(TEXT("Loaded pack keeps content hash"),
         Load.Pack.Manifest.ContentHash, Build.Pack.Manifest.ContentHash);
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FAkUGCCapabilityValidatorTest,
+    "AkUGC.Core.Pack.CapabilityValidation",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCCapabilityValidatorTest::RunTest(const FString& Parameters)
+{
+    FString Error;
+
+    // 已知能力全部通过。
+    TestTrue(TEXT("Known capabilities are accepted"),
+        FAkUGCCapabilityValidator::Validate({TEXT("logic"), TEXT("ruleset"), TEXT("world.spawn"), TEXT("rules.wave")}, &Error));
+    TestTrue(TEXT("Empty capability list is accepted"),
+        FAkUGCCapabilityValidator::Validate({}, &Error));
+
+    // 未知能力被拒绝，并回填错误信息。
+    TestFalse(TEXT("Unknown capability is rejected"),
+        FAkUGCCapabilityValidator::Validate({TEXT("logic"), TEXT("net.client"), TEXT("fs.read")}, &Error));
+    TestFalse(TEXT("Rejection carries an error message"), Error.IsEmpty());
+
+    // 通过包加载器在 Client/Server 两侧复用的同一校验：篡改能力被拒绝。
+    const FAkUGCLogicPackBuildResult Build = FAkUGCLogicPackBuilder::Build(MakePlayablePackDocument());
+    TestTrue(*Build.ErrorMessage, Build.bSucceeded);
+    if (!Build.bSucceeded)
+    {
+        return false;
+    }
+
+    FAkUGCLogicPack Tampered = Build.Pack;
+    Tampered.Manifest.Capabilities.Add(TEXT("net.client"));
+    // 重算 ContentHash 以绕过哈希校验，验证能力校验本身会拦截。
+    Tampered.Manifest.ContentHash = FAkUGCLogicPackBuilder::ComputeContentHash(Tampered.Document, Tampered.Program);
+    FString TamperedJson;
+    TestTrue(*Error, FAkUGCLogicPackCodec::Serialize(Tampered, TamperedJson, &Error));
+    TestFalse(TEXT("Pack declaring unsupported capability is rejected by loader"),
+        FAkUGCLogicPackLoader::Load(TamperedJson).bSucceeded);
 
     return true;
 }
