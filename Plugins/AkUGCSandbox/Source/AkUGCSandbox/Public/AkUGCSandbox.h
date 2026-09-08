@@ -45,11 +45,14 @@ struct AKUGCSANDBOX_API FAkUGCSandboxResult
 struct FAkUGCSandboxImpl;
 
 /**
- * 独立 Lua 5.3.4 沙箱。
+ * 独立 Lua 沙箱。
  *
- * 每个实例持有一个独立 VM，与其他实例完全隔离；
- * 仅开放安全标准库子集（base 精简 / table / string / math / utf8 / bit32），
- * 关闭 io / os / debug / package / require / dofile / loadfile / load；
+ * VM 生命周期参考 AkLuaRuntime（复用 slua 的 LuaState，而非自行 lua_newstate）。
+ * 沙盒隔离通过「为每个实例额外创建一个独立 env 表（_ENV）」实现，而非清空宿主全局：
+ *   - 脚本的全局读写均落在独立 env 表，实例间互不可见；
+ *   - env 的 __index 仅指向安全库白名单（base 精简 / table / string / math / utf8），
+ *     无法访问 io / os / debug / package / require / dofile / loadfile / load 等；
+ *   - 宿主 _G 保持完整，slua 内部机制不受影响。
  * 提供指令、内存与运行时间三类配额，超限即安全终止而不影响宿主。
  */
 class AKUGCSANDBOX_API FAkUGCSandbox

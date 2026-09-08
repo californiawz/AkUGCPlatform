@@ -15,7 +15,8 @@ struct FAkUGCSandboxImpl
 {
 	FAkUGCSandboxConfig Config;
 
-	// 复用 slua 的 LuaState 创建/持有 Lua VM，不再自行 lua_newstate。
+	// 复用 slua 的 LuaState 创建/持有 Lua VM（参考 AkLuaRuntime 的
+	// FLuaVirtualMachine：VM 生命周期集中封装，不再自行 lua_newstate）。
 	TUniquePtr<NS_SLUA::LuaState> LuaStateOwner;
 	lua_State* State = nullptr;
 
@@ -31,7 +32,31 @@ struct FAkUGCSandboxImpl
 namespace
 {
 	const char* SandboxImplRegistryKey = "AkUGCSandboxImpl";
-	const char* SavedGlobalsRegistryKey = "AkUGCSandboxSavedGlobals";
+	const char* SandboxEnvRegistryKey = "AkUGCSandboxEnv";
+
+	/**
+	 * 栈平衡守卫（参考 AkLuaRuntime 的 FLuaCallScope）：
+	 * 构造时记录栈顶，析构时恢复，保证 native->lua 调用后栈平衡。
+	 */
+	struct FLuaStackScope
+	{
+		explicit FLuaStackScope(lua_State* InL)
+			: L(InL)
+			, SavedTop(InL ? lua_gettop(InL) : 0)
+		{
+		}
+		~FLuaStackScope()
+		{
+			if (L)
+			{
+				lua_settop(L, SavedTop);
+			}
+		}
+		FLuaStackScope(const FLuaStackScope&) = delete;
+		FLuaStackScope& operator=(const FLuaStackScope&) = delete;
+		lua_State* L;
+		int SavedTop;
+	};
 
 	/** 查询当前 VM 已用内存（字节）。 */
 	int64 GetLuaMemoryBytes(lua_State* L)
@@ -81,49 +106,59 @@ namespace
 		}
 	}
 
-	/** 移除可访问文件系统/加载代码/宿主桥接的危险全局入口，并保存原始值以便关闭前恢复。 */
-	void RemoveDangerousGlobals(lua_State* L)
+	/**
+	 * 创建沙盒独立环境表并存入注册表。
+	 *
+	 * 沙盒隔离不再清空宿主 _G 的危险全局，而是为脚本额外创建一个独立 env：
+	 *   - sandbox_env 为空表，作为脚本的 _ENV，脚本全局读写均落在该表，实例间隔离；
+	 *   - sandbox_env 的 __index 指向安全库白名单，脚本仅能访问白名单内的安全库；
+	 *   - 宿主 _G 保持完整，slua 内部机制（LuaProfiler 等）不受影响。
+	 */
+	void CreateSandboxEnv(lua_State* L)
 	{
-		static const char* DangerousGlobals[] = {
-			// 标准库危险入口。
-			"io", "os", "debug", "package", "require",
-			"dofile", "loadfile", "load", "loadstring", "coroutine",
-			// slua 注入的宿主桥接入口。
-			"import", "slua", "slua_profile", "getStringFromMD5", "pb",
+		// 安全全局白名单（base 精简子集 + 安全标准库）。
+		static const char* SafeGlobalNames[] = {
+			"assert", "error", "ipairs", "next", "pairs", "pcall", "xpcall",
+			"select", "tonumber", "tostring", "type",
+			"rawequal", "rawget", "rawlen", "rawset",
+			"print",
+			"table", "string", "math", "utf8",
 		};
 
-		// 原始值存入注册表，供 Shutdown 恢复（slua 内部清理依赖 os 等）。
+		// 1) 安全库表：从宿主 _G 引用白名单全局。
 		lua_newtable(L);
-		const int SavedTable = lua_gettop(L);
-		for (const char* Name : DangerousGlobals)
+		const int SafeGlobals = lua_gettop(L);
+		for (const char* Name : SafeGlobalNames)
 		{
 			lua_getglobal(L, Name);
-			lua_setfield(L, SavedTable, Name);
-
-			lua_pushnil(L);
-			lua_setglobal(L, Name);
+			lua_setfield(L, SafeGlobals, Name);
 		}
-		lua_setfield(L, LUA_REGISTRYINDEX, SavedGlobalsRegistryKey);
+
+		// 2) 沙盒 env 表（脚本的 _ENV）。
+		lua_newtable(L);
+		const int Env = lua_gettop(L);
+
+		// 3) env 元表：__index = 安全库表。
+		lua_newtable(L);
+		lua_pushvalue(L, SafeGlobals);
+		lua_setfield(L, -2, "__index");
+		lua_setmetatable(L, Env);
+
+		// 清理 safe_globals（已通过 env 元表被引用），仅留 env 在栈顶。
+		lua_remove(L, SafeGlobals);
+
+		// 存入注册表供 RunScript 使用。
+		lua_setfield(L, LUA_REGISTRYINDEX, SandboxEnvRegistryKey);
 	}
 
-	/** 关闭前恢复被移除的危险全局，确保 slua 内部清理（如 LuaProfiler::clean）正常执行。 */
-	void RestoreDangerousGlobals(lua_State* L)
+	/** 将栈顶 chunk 的 _ENV 上值替换为沙盒 env（无 _ENV 上值时弹出多余值）。 */
+	void SetChunkEnv(lua_State* L)
 	{
-		lua_getfield(L, LUA_REGISTRYINDEX, SavedGlobalsRegistryKey);
-		if (!lua_istable(L, -1))
+		lua_getfield(L, LUA_REGISTRYINDEX, SandboxEnvRegistryKey);
+		if (lua_setupvalue(L, -2, 1) == nullptr)
 		{
 			lua_pop(L, 1);
-			return;
 		}
-		lua_pushnil(L);
-		while (lua_next(L, -2) != 0)
-		{
-			const char* Name = lua_tostring(L, -2);
-			lua_pushvalue(L, -1);
-			lua_setglobal(L, Name);
-			lua_pop(L, 1);
-		}
-		lua_pop(L, 1);
 	}
 
 	/** 弹出栈顶字符串并返回。 */
@@ -158,7 +193,7 @@ bool FAkUGCSandbox::Initialize(const FAkUGCSandboxConfig& InConfig, FString* Out
 	Impl->bMemoryLimitExceeded = false;
 	Impl->bTimeout = false;
 
-	// 使用 slua 创建 Lua 虚拟机。
+	// 使用 slua 创建 Lua 虚拟机（参考 AkLuaRuntime 的 FLuaVirtualMachine）。
 	Impl->LuaStateOwner = MakeUnique<NS_SLUA::LuaState>("AkUGCSandbox");
 	if (!Impl->LuaStateOwner->init())
 	{
@@ -171,8 +206,8 @@ bool FAkUGCSandbox::Initialize(const FAkUGCSandboxConfig& InConfig, FString* Out
 	}
 	Impl->State = Impl->LuaStateOwner->getLuaState();
 
-	// slua 已打开全库并注入宿主桥接，此处清空危险入口，仅保留安全子集。
-	RemoveDangerousGlobals(Impl->State);
+	// 创建独立沙盒 env（不再清空宿主全局，宿主 _G 保持完整）。
+	CreateSandboxEnv(Impl->State);
 
 	// 记录基线内存，作为脚本增量配额基准（slua 初始化本身占用较大）。
 	Impl->BaseMemoryBytes = GetLuaMemoryBytes(Impl->State);
@@ -201,13 +236,8 @@ bool FAkUGCSandbox::Initialize(const FAkUGCSandboxConfig& InConfig, FString* Out
 
 void FAkUGCSandbox::Shutdown()
 {
-	if (Impl->State)
-	{
-		// 先恢复被移除的全局（如 os），确保 slua 内部清理正常执行。
-		RestoreDangerousGlobals(Impl->State);
-	}
-
 	// 释放 LuaState 会触发其析构 -> close() -> lua_close。
+	// 宿主 _G 全程保持完整，slua 内部清理（LuaProfiler::clean 等）可直接执行。
 	if (Impl->LuaStateOwner)
 	{
 		Impl->LuaStateOwner.Reset();
@@ -232,6 +262,7 @@ FAkUGCSandboxResult FAkUGCSandbox::RunScript(const FString& Source, const FStrin
 	}
 
 	lua_State* L = Impl->State;
+	FLuaStackScope Scope(L);
 
 	// 编译源码。
 	const auto SourceAnsi = StringCast<ANSICHAR>(*Source, Source.Len());
@@ -243,6 +274,9 @@ FAkUGCSandboxResult FAkUGCSandbox::RunScript(const FString& Source, const FStrin
 		Result.ErrorMessage = PopTopString(L);
 		return Result;
 	}
+
+	// 将 chunk 的 _ENV 指向沙盒独立环境表。
+	SetChunkEnv(L);
 
 	// 运行。
 	Impl->InstructionsExecuted = 0;
