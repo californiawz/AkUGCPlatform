@@ -535,7 +535,7 @@ P10 Android/DS 一致性验收
 
 ## 6. 近期提交计划
 
-P0–P8 已全部提交；P9（Lua 沙箱）基础已落地并持续推进。
+P0–P9 已全部提交，并通过编译与全量自动化测试验证。
 
 已提交：
 
@@ -568,11 +568,15 @@ P0–P8 已全部提交；P9（Lua 沙箱）基础已落地并持续推进。
 27. `功能：迁移 AkLuaRuntime 插件并让 AkUGCSandbox 复用其 VM 封装`（P9）
 28. `功能：新增沙箱受控 API 宿主接口与调用深度配额`（P9）
 29. `功能：落地受控 API 宿主桥接（get_health/apply_damage）`（P9）
+30. `功能：落地受控 API 宿主实现（spawn/get_wave_state/timer_after）`（P9）
+31. `完成 P9 收尾：落地 Capability/Effect 校验并修复 LogicEditing/RulesetEditing 回归`（P9）
 
-待推进（P9 起）：
+待推进（P10）：
 
-- Timer/Spawn/Ruleset 受控 API 宿主实现
-- Capability/Effect Validator 在 Client/Server 侧重复校验
+- Android SDK/NDK 验证、ASTC 编译、Cook、Package、真机加载 Logic Pack
+- Dedicated Server Package、自动加载签名 Pack、Headless 三波塔防测试
+- 多 Client 连接与 Join-in-progress
+- Win64 / Android / Dedicated Server 三平台一致性验收
 
 每个提交完成后执行：
 
