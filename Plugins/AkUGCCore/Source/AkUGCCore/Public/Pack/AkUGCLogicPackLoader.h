@@ -27,4 +27,10 @@ public:
 
 	/** 加载、完整性校验并验签发布包 JSON（需内置可信公钥）。 */
 	static FAkUGCLogicPackLoadResult LoadVerified(const FString& Json, const FString& TrustedPublicKeyHex);
+
+	/** 从磁盘文件加载并校验发布包 JSON（不含签名验签）。 */
+	static FAkUGCLogicPackLoadResult LoadFromFile(const FString& FilePath);
+
+	/** 从磁盘文件加载、完整性校验并验签发布包 JSON（需内置可信公钥）。 */
+	static FAkUGCLogicPackLoadResult LoadVerifiedFromFile(const FString& FilePath, const FString& TrustedPublicKeyHex);
 };

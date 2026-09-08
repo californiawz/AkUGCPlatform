@@ -1,5 +1,6 @@
 #include "Pack/AkUGCLogicPackLoader.h"
 
+#include "Misc/FileHelper.h"
 #include "Document/AkUGCDocument.h"
 #include "Logic/AkUGCLogicCompiler.h"
 #include "Pack/AkUGCLogicPackBuilder.h"
@@ -107,4 +108,38 @@ FAkUGCLogicPackLoadResult FAkUGCLogicPackLoader::LoadVerified(const FString& Jso
 		Result.ErrorMessage = MoveTemp(VerifyError);
 	}
 	return Result;
+}
+
+FAkUGCLogicPackLoadResult FAkUGCLogicPackLoader::LoadFromFile(const FString& FilePath)
+{
+	FAkUGCLogicPackLoadResult Result;
+
+	FString Json;
+	if (!FFileHelper::LoadFileToString(Json, *FilePath))
+	{
+		Result.ErrorMessage = FString::Printf(
+			TEXT("Logic Pack 加载失败：无法读取文件 %s。"),
+			*FilePath);
+		return Result;
+	}
+
+	return Load(Json);
+}
+
+FAkUGCLogicPackLoadResult FAkUGCLogicPackLoader::LoadVerifiedFromFile(
+	const FString& FilePath,
+	const FString& TrustedPublicKeyHex)
+{
+	FAkUGCLogicPackLoadResult Result;
+
+	FString Json;
+	if (!FFileHelper::LoadFileToString(Json, *FilePath))
+	{
+		Result.ErrorMessage = FString::Printf(
+			TEXT("Logic Pack 加载失败：无法读取文件 %s。"),
+			*FilePath);
+		return Result;
+	}
+
+	return LoadVerified(Json, TrustedPublicKeyHex);
 }
