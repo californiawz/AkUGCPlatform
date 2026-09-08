@@ -3,7 +3,10 @@
 #include "Document/AkUGCDocument.h"
 #include "Logic/AkUGCLogicCompiler.h"
 #include "Pack/AkUGCLogicPack.h"
+#include "Pack/AkUGCLogicPackBuilder.h"
+#include "Pack/AkUGCLogicPackCodec.h"
 #include "Pack/AkUGCLogicPackHasher.h"
+#include "Pack/AkUGCLogicPackLoader.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -107,6 +110,59 @@ namespace
         Manifest.AssetDependencies.Add(TEXT("/Game/Prefabs/Enemy.Enemy"));
         Manifest.ContentHash = TEXT("0000000000000000000000000000000000000000000000000000000000000000");
         return Manifest;
+    }
+
+    /** 构造一个能通过完整文档校验的可发布作品（含 enemy_spawn 与三波 Ruleset）。 */
+    FAkUGCProjectDocument MakePlayablePackDocument()
+    {
+        FAkUGCProjectDocument Document;
+        Document.Manifest.SchemaVersion = AkUGCSchema::CurrentProjectDocumentVersion;
+        Document.Manifest.ProjectId = FGuid(0x11111111, 0x22222222, 0x33333333, 0x44444444);
+        Document.Manifest.DisplayName = TEXT("Playable Pack");
+        Document.Manifest.TemplateId = TEXT("official.tower_defense");
+        Document.Manifest.Capabilities.Add(TEXT("logic"));
+        Document.Manifest.Capabilities.Add(TEXT("ruleset"));
+
+        FAkUGCSceneDocument& Scene = Document.Scenes.AddDefaulted_GetRef();
+        Scene.SceneId = FGuid(0xAAAAAAAA, 0xBBBBBBBB, 0xCCCCCCCC, 0xDDDDDDDD);
+        Scene.DisplayName = TEXT("Main");
+        Scene.Ruleset.WaveIntervalSeconds = 5.0;
+
+        FAkUGCEntityRecord& Spawn = Scene.Entities.AddDefaulted_GetRef();
+        Spawn.EntityId = FGuid(0x00000001, 0, 0, 0);
+        Spawn.PrefabId = TEXT("official.gameplay.enemy_spawn");
+        Spawn.Transform = FTransform::Identity;
+
+        FAkUGCComponentRecord& SpawnComponent = Spawn.Components.AddDefaulted_GetRef();
+        SpawnComponent.TypeId = TEXT("tower_defense.enemy_spawn");
+        SpawnComponent.SchemaVersion = 1;
+        FAkUGCValue EnemyPrefab;
+        EnemyPrefab.Type = EAkUGCValueType::Name;
+        EnemyPrefab.NameValue = FName(TEXT("official.gameplay.basic_enemy"));
+        SpawnComponent.Properties.Add(TEXT("enemyPrefab"), EnemyPrefab);
+
+        for (int32 WaveIndex = 0; WaveIndex < 3; ++WaveIndex)
+        {
+            FAkUGCTowerDefenseWave& Wave = Scene.Ruleset.Waves.AddDefaulted_GetRef();
+            Wave.WaveId = FGuid(10 + WaveIndex, 0, 0, 0);
+            Wave.SpawnPointEntityId = Spawn.EntityId;
+            Wave.StartDelaySeconds = WaveIndex * 5.0;
+        }
+
+        FAkUGCLogicNode& Start = Scene.LogicGraph.Nodes.AddDefaulted_GetRef();
+        Start.NodeId = FGuid(2, 0, 0, 0);
+        Start.Type = EAkUGCLogicNodeType::GameStart;
+
+        FAkUGCLogicNode& Message = Scene.LogicGraph.Nodes.AddDefaulted_GetRef();
+        Message.NodeId = FGuid(3, 0, 0, 0);
+        Message.Type = EAkUGCLogicNodeType::Message;
+        Message.Message = TEXT("Wave ready");
+
+        FAkUGCLogicConnection& Connection = Scene.LogicGraph.Connections.AddDefaulted_GetRef();
+        Connection.SourceNodeId = Start.NodeId;
+        Connection.TargetNodeId = Message.NodeId;
+
+        return Document;
     }
 }
 
@@ -246,6 +302,172 @@ bool FAkUGCLogicPackProgramHashTest::RunTest(const FString& Parameters)
         TestNotEqual(TEXT("Instruction change alters program hash"),
             FAkUGCLogicPackHasher::HashLogicProgram(Mutated), HashA);
     }
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FAkUGCLogicPackBuilderTest,
+    "AkUGC.Core.Pack.Builder",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCLogicPackBuilderTest::RunTest(const FString& Parameters)
+{
+    const FAkUGCProjectDocument Document = MakePlayablePackDocument();
+    const FAkUGCLogicPackBuildResult Build = FAkUGCLogicPackBuilder::Build(Document);
+
+    TestTrue(*Build.ErrorMessage, Build.bSucceeded);
+    if (!Build.bSucceeded)
+    {
+        return false;
+    }
+
+    const FAkUGCLogicPack& Pack = Build.Pack;
+    TestTrue(TEXT("ReleaseId is valid"), Pack.Manifest.ReleaseId.IsValid());
+    TestEqual(TEXT("SchemaVersion matches document"),
+        Pack.Manifest.SchemaVersion, AkUGCSchema::CurrentProjectDocumentVersion);
+    TestEqual(TEXT("ProjectId is propagated"), Pack.Manifest.ProjectId, Document.Manifest.ProjectId);
+    TestEqual(TEXT("TemplateId is propagated"), Pack.Manifest.TemplateId, Document.Manifest.TemplateId);
+    TestEqual(TEXT("Capabilities are propagated"),
+        Pack.Manifest.Capabilities.Num(), Document.Manifest.Capabilities.Num());
+    TestEqual(TEXT("ContentHash is 64 lowercase hex characters"), Pack.Manifest.ContentHash.Len(), 64);
+    TestEqual(TEXT("ContentHash matches recomputation"),
+        Pack.Manifest.ContentHash,
+        FAkUGCLogicPackBuilder::ComputeContentHash(Pack.Document, Pack.Program));
+    TestTrue(TEXT("AssetDependencies includes enemy_spawn"),
+        Pack.Manifest.AssetDependencies.Contains(TEXT("official.gameplay.enemy_spawn")));
+    TestTrue(TEXT("Program has instructions"), Pack.Program.Instructions.Num() > 0);
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FAkUGCLogicPackCodecTest,
+    "AkUGC.Core.Pack.Codec",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCLogicPackCodecTest::RunTest(const FString& Parameters)
+{
+    const FAkUGCLogicPackBuildResult Build = FAkUGCLogicPackBuilder::Build(MakePlayablePackDocument());
+    TestTrue(*Build.ErrorMessage, Build.bSucceeded);
+    if (!Build.bSucceeded)
+    {
+        return false;
+    }
+
+    FString Error;
+    FString Json;
+    TestTrue(*Error, FAkUGCLogicPackCodec::Serialize(Build.Pack, Json, &Error));
+    if (!Json.StartsWith(TEXT("{")) || !Json.EndsWith(TEXT("}")))
+    {
+        AddError(TEXT("Serialized pack must be a JSON object."));
+        return false;
+    }
+
+    FAkUGCLogicPack Decoded;
+    TestTrue(*Error, FAkUGCLogicPackCodec::Deserialize(Json, Decoded, &Error));
+    TestEqual(TEXT("Manifest ContentHash survives round-trip"),
+        Decoded.Manifest.ContentHash, Build.Pack.Manifest.ContentHash);
+    TestEqual(TEXT("ReleaseId survives round-trip"),
+        Decoded.Manifest.ReleaseId, Build.Pack.Manifest.ReleaseId);
+    TestEqual(TEXT("Document hash survives round-trip"),
+        FAkUGCLogicPackHasher::HashDocument(Decoded.Document),
+        FAkUGCLogicPackHasher::HashDocument(Build.Pack.Document));
+    TestEqual(TEXT("Program hash survives round-trip"),
+        FAkUGCLogicPackHasher::HashLogicProgram(Decoded.Program),
+        FAkUGCLogicPackHasher::HashLogicProgram(Build.Pack.Program));
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FAkUGCLogicPackLoadTest,
+    "AkUGC.Core.Pack.Load",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCLogicPackLoadTest::RunTest(const FString& Parameters)
+{
+    const FAkUGCLogicPackBuildResult Build = FAkUGCLogicPackBuilder::Build(MakePlayablePackDocument());
+    TestTrue(*Build.ErrorMessage, Build.bSucceeded);
+    if (!Build.bSucceeded)
+    {
+        return false;
+    }
+
+    FString Error;
+    FString Json;
+    TestTrue(*Error, FAkUGCLogicPackCodec::Serialize(Build.Pack, Json, &Error));
+
+    const FAkUGCLogicPackLoadResult Load = FAkUGCLogicPackLoader::Load(Json);
+    TestTrue(*Load.ErrorMessage, Load.bSucceeded);
+    if (!Load.bSucceeded)
+    {
+        return false;
+    }
+    TestEqual(TEXT("Loaded pack keeps content hash"),
+        Load.Pack.Manifest.ContentHash, Build.Pack.Manifest.ContentHash);
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FAkUGCLogicPackLoadTamperingTest,
+    "AkUGC.Core.Pack.LoadRejectsTampering",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCLogicPackLoadTamperingTest::RunTest(const FString& Parameters)
+{
+    const FAkUGCLogicPackBuildResult Build = FAkUGCLogicPackBuilder::Build(MakePlayablePackDocument());
+    TestTrue(*Build.ErrorMessage, Build.bSucceeded);
+    if (!Build.bSucceeded)
+    {
+        return false;
+    }
+
+    FString Error;
+
+    // 1. 篡改文档字段（不改 ContentHash）→ 哈希不匹配拒绝。
+    FAkUGCLogicPack TamperedDoc = Build.Pack;
+    TamperedDoc.Document.Manifest.DisplayName = TEXT("Hacked");
+    FString TamperedDocJson;
+    TestTrue(*Error, FAkUGCLogicPackCodec::Serialize(TamperedDoc, TamperedDocJson, &Error));
+    TestFalse(TEXT("Tampered document is rejected"),
+        FAkUGCLogicPackLoader::Load(TamperedDocJson).bSucceeded);
+
+    // 2. 篡改 Logic IR 指令（不改 ContentHash）→ 哈希不匹配拒绝。
+    FAkUGCLogicPack TamperedProg = Build.Pack;
+    if (TamperedProg.Program.Instructions.Num() > 0)
+    {
+        TamperedProg.Program.Instructions[0].Operand = TEXT("Hacked");
+    }
+    FString TamperedProgJson;
+    TestTrue(*Error, FAkUGCLogicPackCodec::Serialize(TamperedProg, TamperedProgJson, &Error));
+    TestFalse(TEXT("Tampered program is rejected"),
+        FAkUGCLogicPackLoader::Load(TamperedProgJson).bSucceeded);
+
+    // 3. 版本不兼容 → 拒绝。
+    FAkUGCLogicPack Incompatible = Build.Pack;
+    Incompatible.Manifest.SchemaVersion = AkUGCSchema::CurrentProjectDocumentVersion - 1;
+    FString IncompatibleJson;
+    TestTrue(*Error, FAkUGCLogicPackCodec::Serialize(Incompatible, IncompatibleJson, &Error));
+    TestFalse(TEXT("Incompatible version is rejected"),
+        FAkUGCLogicPackLoader::Load(IncompatibleJson).bSucceeded);
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FAkUGCLogicPackBuilderRejectsInvalidTest,
+    "AkUGC.Core.Pack.BuilderRejectsInvalid",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCLogicPackBuilderRejectsInvalidTest::RunTest(const FString& Parameters)
+{
+    // MakePackDocument 的波次引用 path_node 而非 enemy_spawn，无法通过完整校验。
+    const FAkUGCProjectDocument Invalid = MakePackDocument();
+    const FAkUGCLogicPackBuildResult Build = FAkUGCLogicPackBuilder::Build(Invalid);
+    TestFalse(TEXT("Invalid document is rejected by builder"), Build.bSucceeded);
+    TestFalse(TEXT("Rejection carries an error message"), Build.ErrorMessage.IsEmpty());
 
     return true;
 }

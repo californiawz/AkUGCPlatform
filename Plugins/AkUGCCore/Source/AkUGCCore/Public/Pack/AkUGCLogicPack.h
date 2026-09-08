@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Document/AkUGCDocument.h"
+#include "Logic/AkUGCLogicCompiler.h"
 #include "AkUGCLogicPack.generated.h"
 
 /**
@@ -45,4 +46,28 @@ struct AKUGCCORE_API FAkUGCLogicPackManifest
 	/** 内容确定性哈希（SHA-256 hex）。 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Pack")
 	FString ContentHash;
+};
+
+/**
+ * Logic Pack 发布包本体。
+ *
+ * 由发布清单、作者作品文档与编译后的 Logic IR 组成，
+ * 是可发布、不可变、可信加载的最小单元。
+ */
+USTRUCT(BlueprintType)
+struct AKUGCCORE_API FAkUGCLogicPack
+{
+	GENERATED_BODY()
+
+	/** 发布清单（含内容确定性哈希）。 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Pack")
+	FAkUGCLogicPackManifest Manifest;
+
+	/** 作者作品文档（唯一真源）。 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Pack")
+	FAkUGCProjectDocument Document;
+
+	/** 编译后的 Logic IR。 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Pack")
+	FAkUGCLogicProgram Program;
 };
