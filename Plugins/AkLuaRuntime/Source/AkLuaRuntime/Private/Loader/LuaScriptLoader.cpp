@@ -13,14 +13,15 @@ TArray<FString> FLuaScriptLoader::ResolveSearchRoots()
 
 	TArray<FString> Roots;
 
-	// Editor source must win over downloaded patches so local edits and newly added
-	// modules are always testable without clearing PersistentDownloadDir.
+	// In editor prefer the project's own Lua source folder so local edits and newly added
+	// modules are testable without cooking. Packaged builds instead load the compiled
+	// .luac emitted into Content/Lua by the build pipeline.
 #if WITH_EDITOR
-	if (Settings->bUseSiblingDirInEditor)
+	if (Settings->bUseProjectLuaDirInEditor)
 	{
-		const FString Sibling = FPaths::ConvertRelativePathToFull(
-			FPaths::Combine(FPaths::ProjectDir(), TEXT(".."), RootName));
-		Roots.Add(Sibling);
+		const FString ProjectLuaDir = FPaths::ConvertRelativePathToFull(
+			FPaths::Combine(FPaths::ProjectDir(), RootName));
+		Roots.Add(ProjectLuaDir);
 	}
 #endif
 

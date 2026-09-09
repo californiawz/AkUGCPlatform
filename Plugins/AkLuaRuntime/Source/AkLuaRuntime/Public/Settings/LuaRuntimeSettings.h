@@ -42,7 +42,8 @@ public:
 	UPROPERTY(EditAnywhere, config, Category = "Script Loading")
 	TArray<FString> ScriptExtensions;
 
-	/** In editor, prefer the project-sibling Lua/ folder so scripts hot-reload without cooking. */
+	/** In editor, load scripts from the project's own Lua/ folder (ProjectDir/Lua) so local
+	 *  edits hot-reload without cooking; packaged builds compile them to Content/Lua .luac. */
 	UPROPERTY(EditAnywhere, config, Category = "Script Loading")
-	bool bUseSiblingDirInEditor;
+	bool bUseProjectLuaDirInEditor;
 };

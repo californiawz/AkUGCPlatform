@@ -7,7 +7,7 @@ ULuaRuntimeSettings::ULuaRuntimeSettings()
 	, bAutoBootstrap(true)
 	, bEnableDefaultBridges(true)
 	, ScriptRootName(TEXT("Lua"))
-	, bUseSiblingDirInEditor(true)
+	, bUseProjectLuaDirInEditor(true)
 {
 	ScriptExtensions = { TEXT(".lua"), TEXT(".luac") };
 }
