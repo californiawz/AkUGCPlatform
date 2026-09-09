@@ -27,7 +27,7 @@
 | Damage / Death | ✅ 单平台确定性 | 通过 | `AkUGC.AssetRuntime.*`（塔攻击/击杀） |
 | Wave / Victory / Defeat | ✅ 单平台确定性 | 通过 | `AkUGC.AssetRuntime.*`（三波清空/基地归零） |
 | Join-in-progress 恢复完整状态 | ✅ 端到端 | 通过 | `AkUGC.Runtime.GameMode.JoinInProgress*` |
-| 玩法层最终状态哈希（路径/伤害/死亡/胜负） | ✅ Win64 跨 target | 通过（Editor 与 Client 哈希一致） | `AkUGC.Runtime.GameMode.TowerDefenseFinalStateHash` |
+| 玩法层最终状态哈希（路径/伤害/死亡/胜负） | ✅ Win64 跨 target | 通过（Editor / Client / Server 三 target 哈希一致） | `AkUGC.Runtime.GameMode.TowerDefenseFinalStateHash` |
 | 跨平台哈希一致性（Android 真机对比） | ⏳ 待真机 | 待验证 | — |
 
 ### 2.1 确定性验证说明
@@ -51,8 +51,9 @@
 |---|---|---|
 | Win64 Editor | `dc707b8c502803dc6c1f9bec2b23b2ef20cd22be9a7ad7a67d5195004df92b04` | `053fdb241c595c948b42fc3b6e6c915c95e613ca645a0fdc89d9c95f8d0d993c` |
 | Win64 Client | 同 Editor | 同 Editor |
+| Win64 Dedicated Server | 同 Editor | 同 Editor |
 
-> Win64 Dedicated Server 的自动化测试启动阶段因缺 Server 端 premade asset registry（`LoadResult==1` 版本不匹配）在引擎 `PreObjectSystemReady` 异步加载时崩溃，属引擎环境问题，与玩法层哈希无关；其玩法逻辑源码与 Client 完全一致，哈希应一致，留待补齐 Server 内容后复核。Android 真机对比仍待物理设备。
+> 三 target（Editor / Client / Dedicated Server）以同一 Pack 运行 `TowerDefenseFinalStateHash`，Defeat / Victory 哈希完全一致。其中 Server 端此前因 Development 未 Cook 二进制缺 Server 端 premade asset registry（`LoadResult==1` 版本不匹配）在引擎 `PreObjectSystemReady` 异步加载时崩溃，属引擎环境问题；已通过 `Build_Server_Win64.bat`（`win64-server` profile）补齐 Cook + Stage + Pak，用归档的 `AkUGCPlatformServer.exe` 复核通过。Android 真机对比仍待物理设备。
 
 ## 3. 本次修复的关键缺陷
 
@@ -86,4 +87,4 @@
 - 三平台（Win64 Client / Android Client / Win64 DS）的编译、Cook、Package 链路均已打通。
 - Logic IR 层与完整玩法层的**单平台确定性**已通过自动化测试验证。
 - 复制契约（Join-in-progress）已通过端到端测试验证，并修复了波次规则集未启动与 Defeat 边界不确定两个关键缺陷。
-- 玩法层最终状态哈希已实现，并在 Win64 PC 上验证 Editor 与 Client 跨 target 哈希一致；剩余工作集中在 **Android 真机验证**（含 Android 端哈希对比）。
+- 玩法层最终状态哈希已实现，并在 Win64 PC 上验证 Editor / Client / Dedicated Server 三 target 哈希一致；剩余工作集中在 **Android 真机验证**（含 Android 端哈希对比）。
