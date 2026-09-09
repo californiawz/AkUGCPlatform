@@ -23,7 +23,11 @@
     "buildProjectEditor": false,
     "forceBuildProjectEditor": false,
     "skipBuild": false,
-    "compileLua": false,
+    "compileLua": true,
+    "lua": {
+      "sourceDir": "Lua",
+      "targetDir": "Content/Lua"
+    },
     "usePak": true,
     "useIoStore": false,
     "customPakChunks": false,
