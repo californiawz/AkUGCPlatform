@@ -6,6 +6,8 @@
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "Game/AkUGCGameMode.h"
+#include "Game/AkUGCGameState.h"
+#include "Subsystem/AkUGCLogicRuntimeSubsystem.h"
 #include "Document/AkUGCDocument.h"
 #include "Pack/AkUGCLogicPack.h"
 #include "Pack/AkUGCLogicPackBuilder.h"
@@ -210,6 +212,143 @@ bool FAkUGCGameModePackRejectTest::RunTest(const FString& Parameters)
     TestFalse(TEXT("Content-invalid pack does not initialize a session"), GameMode->HasAuthoritySession());
     TestTrue(TEXT("Content-invalid rejection triggers tower defense validation"),
         Error.Contains(TEXT("Tower defense")) && Error.Contains(TEXT("base")));
+
+    AkUGCGameModePackLoadTest::DestroyTestWorld(World);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FAkUGCGameModeJoinInProgressMidWaveTest,
+    "AkUGC.Runtime.GameMode.JoinInProgressMidWave",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCGameModeJoinInProgressMidWaveTest::RunTest(const FString& Parameters)
+{
+    if (!GEngine)
+    {
+        AddError(TEXT("Engine is not available."));
+        return false;
+    }
+
+    FAkUGCProjectDocument Document;
+    FString Error;
+    TestTrue(*Error, AkUGCPlayableSceneFactory::MakePlayableTowerDefenseDocument(Document, &Error));
+
+    FAkUGCLogicPackKeyPair KeyPair;
+    TestTrue(*Error, FAkUGCLogicPackSigner::GenerateKeyPair(KeyPair, &Error));
+
+    AkUGCGameModePackLoadTest::FScopedTempFile TempFile(TEXT(".json"));
+    TestTrue(*Error, AkUGCGameModePackLoadTest::WriteSignedPackFile(Document, KeyPair, TempFile.Path, &Error));
+
+    UWorld* World = AkUGCGameModePackLoadTest::CreateTestWorld();
+    AAkUGCGameMode* GameMode = World->SpawnActor<AAkUGCGameMode>();
+    TestNotNull(TEXT("GameMode spawns in test world"), GameMode);
+    AAkUGCGameState* GameState = World->SpawnActor<AAkUGCGameState>();
+    TestNotNull(TEXT("GameState spawns in test world"), GameState);
+    if (!GameMode || !GameState)
+    {
+        AkUGCGameModePackLoadTest::DestroyTestWorld(World);
+        return false;
+    }
+
+    TestTrue(*Error, GameMode->LoadAndInitializeAuthoritySession(TempFile.Path, KeyPair.PublicKey, &Error));
+    TestTrue(TEXT("Authority session is ready before join"), GameMode->HasAuthoritySession());
+
+    UAkUGCLogicRuntimeSubsystem* Logic = World->GetSubsystem<UAkUGCLogicRuntimeSubsystem>();
+    TestNotNull(TEXT("Logic runtime subsystem is available"), Logic);
+    if (!Logic)
+    {
+        AkUGCGameModePackLoadTest::DestroyTestWorld(World);
+        return false;
+    }
+
+    // 推进 0.5s：第 1 波 3 个敌人已全部刷出、正在沿路径移动（尚未到达终点），模拟新客户端在此刻加入。
+    TestTrue(TEXT("Advance into first wave spawning"), Logic->AdvanceLogicTime(0.5).bSucceeded);
+
+    // 权威端把完整玩法状态投影到 GameState（等价于新客户端初始复制的全量快照）。
+    GameMode->ProjectStateToGameState(GameState);
+
+    // 新客户端仅凭复制快照恢复的完整状态。
+    const FAkUGCWaveRuntimeSnapshot Snapshot = GameState->GetWaveSnapshot();
+    TestEqual(TEXT("Join-in-progress restores wave state"),
+        Snapshot.State, EAkUGCWaveRuntimeState::WaitingForEnemies);
+    TestEqual(TEXT("Join-in-progress restores current wave index"),
+        Snapshot.CurrentWaveIndex, 0);
+    TestEqual(TEXT("Join-in-progress restores total wave count"),
+        Snapshot.TotalWaveCount, 3);
+    TestEqual(TEXT("Join-in-progress restores match result"),
+        GameState->GetMatchResult(), EAkUGCTowerDefenseMatchResult::InProgress);
+    TestEqual(TEXT("Join-in-progress restores base health before any goal reached"),
+        GameState->GetBaseHealthCurrent(), 25.0);
+    TestEqual(TEXT("Join-in-progress restores all three active enemies"),
+        GameState->GetActiveEnemyCount(), 3);
+
+    AkUGCGameModePackLoadTest::DestroyTestWorld(World);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FAkUGCGameModeJoinInProgressAfterDefeatTest,
+    "AkUGC.Runtime.GameMode.JoinInProgressAfterDefeat",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCGameModeJoinInProgressAfterDefeatTest::RunTest(const FString& Parameters)
+{
+    if (!GEngine)
+    {
+        AddError(TEXT("Engine is not available."));
+        return false;
+    }
+
+    FAkUGCProjectDocument Document;
+    FString Error;
+    TestTrue(*Error, AkUGCPlayableSceneFactory::MakePlayableTowerDefenseDocument(Document, &Error));
+
+    FAkUGCLogicPackKeyPair KeyPair;
+    TestTrue(*Error, FAkUGCLogicPackSigner::GenerateKeyPair(KeyPair, &Error));
+
+    AkUGCGameModePackLoadTest::FScopedTempFile TempFile(TEXT(".json"));
+    TestTrue(*Error, AkUGCGameModePackLoadTest::WriteSignedPackFile(Document, KeyPair, TempFile.Path, &Error));
+
+    UWorld* World = AkUGCGameModePackLoadTest::CreateTestWorld();
+    AAkUGCGameMode* GameMode = World->SpawnActor<AAkUGCGameMode>();
+    TestNotNull(TEXT("GameMode spawns in test world"), GameMode);
+    AAkUGCGameState* GameState = World->SpawnActor<AAkUGCGameState>();
+    TestNotNull(TEXT("GameState spawns in test world"), GameState);
+    if (!GameMode || !GameState)
+    {
+        AkUGCGameModePackLoadTest::DestroyTestWorld(World);
+        return false;
+    }
+
+    TestTrue(*Error, GameMode->LoadAndInitializeAuthoritySession(TempFile.Path, KeyPair.PublicKey, &Error));
+
+    UAkUGCLogicRuntimeSubsystem* Logic = World->GetSubsystem<UAkUGCLogicRuntimeSubsystem>();
+    TestNotNull(TEXT("Logic runtime subsystem is available"), Logic);
+    if (!Logic)
+    {
+        AkUGCGameModePackLoadTest::DestroyTestWorld(World);
+        return false;
+    }
+
+    // 无塔保护，三敌先后到达终点击穿基地，推进足够长时间抵达 Defeat 终局。
+    // 敌人从 spawn point (250,50) 出发、moveSpeed=300、总路径 750，第 3 个敌人在 t=3.0 到达终点；
+    // 推进 4.0s 留足余量，确保三敌全部到达、基地归零后进入稳定 Defeat 终局。
+    TestTrue(TEXT("Advance to base defeat"), Logic->AdvanceLogicTime(4.0).bSucceeded);
+
+    GameMode->ProjectStateToGameState(GameState);
+
+    // 终局后加入的新客户端仍能恢复完整终局状态。
+    TestEqual(TEXT("Join-in-progress restores defeat result"),
+        GameState->GetMatchResult(), EAkUGCTowerDefenseMatchResult::Defeat);
+    TestEqual(TEXT("Join-in-progress restores base health clamped to zero"),
+        GameState->GetBaseHealthCurrent(), 0.0);
+    TestEqual(TEXT("Join-in-progress restores wave index at defeat"),
+        GameState->GetWaveSnapshot().CurrentWaveIndex, 0);
+    TestEqual(TEXT("Join-in-progress restores total wave count at defeat"),
+        GameState->GetWaveSnapshot().TotalWaveCount, 3);
+    TestEqual(TEXT("Join-in-progress restores no active enemies after defeat"),
+        GameState->GetActiveEnemyCount(), 0);
 
     AkUGCGameModePackLoadTest::DestroyTestWorld(World);
     return true;

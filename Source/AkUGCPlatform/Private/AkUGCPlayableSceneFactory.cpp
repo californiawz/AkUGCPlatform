@@ -31,7 +31,7 @@ bool AkUGCPlayableSceneFactory::MakePlayableTowerDefenseDocument(
     if (!Registry.CreateEntityRecord(
         TEXT("official.gameplay.enemy_spawn"),
         SpawnPointId,
-        FTransform::Identity,
+        FTransform(FVector(250.0, 50.0, 0.0)),
         SpawnPoint,
         OutError))
     {
@@ -109,6 +109,21 @@ bool AkUGCPlayableSceneFactory::MakePlayableTowerDefenseDocument(
     FAkUGCLogicConnection& Connection = Scene.LogicGraph.Connections.AddDefaulted_GetRef();
     Connection.SourceNodeId = Start.NodeId;
     Connection.TargetNodeId = Message.NodeId;
+
+    // WaveStart 是波次规则集启动的必需入口节点：编译器据此记录 WaveStartEntryIndex，
+    // 运行时才能把 WaveConfig 初始化为三波状态机。缺少它会导致 TotalWaveCount 恒为 0。
+    FAkUGCLogicNode& WaveStart = Scene.LogicGraph.Nodes.AddDefaulted_GetRef();
+    WaveStart.NodeId = FGuid(4, 0, 0, 0);
+    WaveStart.Type = EAkUGCLogicNodeType::WaveStart;
+
+    FAkUGCLogicNode& WaveMessage = Scene.LogicGraph.Nodes.AddDefaulted_GetRef();
+    WaveMessage.NodeId = FGuid(5, 0, 0, 0);
+    WaveMessage.Type = EAkUGCLogicNodeType::Message;
+    WaveMessage.Message = TEXT("Wave started");
+
+    FAkUGCLogicConnection& WaveConnection = Scene.LogicGraph.Connections.AddDefaulted_GetRef();
+    WaveConnection.SourceNodeId = WaveStart.NodeId;
+    WaveConnection.TargetNodeId = WaveMessage.NodeId;
 
     return true;
 }
