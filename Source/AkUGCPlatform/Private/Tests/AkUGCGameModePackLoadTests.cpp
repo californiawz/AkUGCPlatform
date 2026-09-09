@@ -7,6 +7,7 @@
 #include "Engine/World.h"
 #include "Game/AkUGCGameMode.h"
 #include "Game/AkUGCGameState.h"
+#include "Gameplay/AkUGCTowerDefenseStateHasher.h"
 #include "Subsystem/AkUGCLogicRuntimeSubsystem.h"
 #include "Document/AkUGCDocument.h"
 #include "Pack/AkUGCLogicPack.h"
@@ -96,6 +97,169 @@ namespace AkUGCGameModePackLoadTest
         }
 
         return FFileHelper::SaveStringToFile(Json, *FilePath);
+    }
+
+    FAkUGCTowerDefenseFinalState CollectFinalState(
+        UAkUGCLogicRuntimeSubsystem* Logic,
+        AAkUGCGameState* GameState)
+    {
+        FAkUGCTowerDefenseFinalState State;
+        const FAkUGCWaveRuntimeSnapshot Wave = Logic->GetWaveRuntimeState();
+        State.WaveState = Wave.State;
+        State.MatchResult = Wave.Result;
+        State.CurrentWaveIndex = Wave.CurrentWaveIndex;
+        State.CurrentWaveId = Wave.CurrentWaveId;
+        State.TotalWaveCount = Wave.TotalWaveCount;
+        State.BaseCurrentHealth = GameState->GetBaseHealthCurrent();
+        State.BaseMaximumHealth = GameState->GetBaseHealthMaximum();
+        State.ActiveEnemyCount = GameState->GetActiveEnemyCount();
+        State.Messages = Logic->GetEmittedMessages();
+        State.Spawns = Logic->GetSpawnedEntities();
+        State.Goals = Logic->GetGoalReachedEntities();
+        State.Damages = Logic->GetDamageEvents();
+        State.Deaths = Logic->GetDeathEvents();
+        return State;
+    }
+
+    /** 基于标准场景加入强塔并压缩波次节奏，使其在数秒内收敛到 Victory 终局。 */
+    bool MakeVictoryDocument(
+        const FAkUGCProjectDocument& Standard,
+        FAkUGCProjectDocument& OutVictory,
+        FString* OutError)
+    {
+        FAkUGCPrefabRegistry Registry;
+        if (!FAkUGCOfficialPrefabCatalog::RegisterTowerDefense(Registry, OutError))
+        {
+            return false;
+        }
+
+        OutVictory = Standard;
+        FAkUGCSceneDocument& Scene = OutVictory.Scenes[0];
+
+        // 每波 1 敌，短延迟与短间隔，让三波在数秒内跑完到 Victory。
+        FAkUGCComponentRecord* SpawnConfig = nullptr;
+        for (FAkUGCEntityRecord& Entity : Scene.Entities)
+        {
+            SpawnConfig = Entity.Components.FindByPredicate([](const FAkUGCComponentRecord& Component)
+            {
+                return Component.TypeId == TEXT("tower_defense.spawn");
+            });
+            if (SpawnConfig)
+            {
+                SpawnConfig->Properties.FindChecked(TEXT("enemyCount")).IntegerValue = 1;
+                break;
+            }
+        }
+        if (!SpawnConfig)
+        {
+            if (OutError) { *OutError = TEXT("Missing enemy_spawn component in standard scene"); }
+            return false;
+        }
+
+        Scene.Ruleset.WaveIntervalSeconds = 0.2;
+        for (FAkUGCTowerDefenseWave& Wave : Scene.Ruleset.Waves)
+        {
+            Wave.StartDelaySeconds = 0.1;
+        }
+
+        // 强塔：1 击必杀，射程覆盖整条路径，确保全部波次清空后 Victory。
+        FAkUGCEntityRecord Tower;
+        if (!Registry.CreateEntityRecord(
+            TEXT("official.tower.basic"),
+            FGuid(0xE0000010, 0, 0, 0),
+            FTransform(FVector(600.0, 50.0, 0.0)),
+            Tower,
+            OutError))
+        {
+            return false;
+        }
+        if (FAkUGCComponentRecord* TowerConfig = Tower.Components.FindByPredicate(
+            [](const FAkUGCComponentRecord& Component)
+            { return Component.TypeId == TEXT("tower_defense.tower"); }))
+        {
+            TowerConfig->Properties.FindChecked(TEXT("attackRange")).NumberValue = 1000.0;
+            TowerConfig->Properties.FindChecked(TEXT("attackInterval")).NumberValue = 0.1;
+            TowerConfig->Properties.FindChecked(TEXT("attackDamage")).NumberValue = 1000.0;
+        }
+        Scene.Entities.Add(Tower);
+
+        return true;
+    }
+
+    /**
+     * 在独立 World 中把签名 Pack 推进到终局并返回玩法层最终状态哈希。
+     * bSmallDelta 为 true 时按 0.25s 步进推进，否则单次大步长推进。
+     */
+    bool RunTerminalHash(
+        const FAkUGCProjectDocument& Document,
+        const FAkUGCLogicPackKeyPair& KeyPair,
+        double AdvanceSeconds,
+        bool bSmallDelta,
+        FString& OutHash,
+        FString* OutError)
+    {
+        FScopedTempFile TempFile(TEXT(".json"));
+        if (!WriteSignedPackFile(Document, KeyPair, TempFile.Path, OutError))
+        {
+            return false;
+        }
+
+        UWorld* World = CreateTestWorld();
+        AAkUGCGameMode* GameMode = World->SpawnActor<AAkUGCGameMode>();
+        AAkUGCGameState* GameState = World->SpawnActor<AAkUGCGameState>();
+        if (!GameMode || !GameState)
+        {
+            if (OutError) { *OutError = TEXT("Failed to spawn GameMode or GameState"); }
+            DestroyTestWorld(World);
+            return false;
+        }
+
+        if (!GameMode->LoadAndInitializeAuthoritySession(TempFile.Path, KeyPair.PublicKey, OutError))
+        {
+            DestroyTestWorld(World);
+            return false;
+        }
+
+        UAkUGCLogicRuntimeSubsystem* Logic = World->GetSubsystem<UAkUGCLogicRuntimeSubsystem>();
+        if (!Logic)
+        {
+            if (OutError) { *OutError = TEXT("Logic runtime subsystem unavailable"); }
+            DestroyTestWorld(World);
+            return false;
+        }
+
+        if (bSmallDelta)
+        {
+            const double Step = 0.25;
+            double Remaining = AdvanceSeconds;
+            while (Remaining > 0.0)
+            {
+                const double Slice = FMath::Min(Step, Remaining);
+                if (!Logic->AdvanceLogicTime(Slice).bSucceeded)
+                {
+                    if (OutError) { *OutError = TEXT("Small-delta advance failed"); }
+                    DestroyTestWorld(World);
+                    return false;
+                }
+                Remaining -= Slice;
+            }
+        }
+        else
+        {
+            if (!Logic->AdvanceLogicTime(AdvanceSeconds).bSucceeded)
+            {
+                if (OutError) { *OutError = TEXT("Large-delta advance failed"); }
+                DestroyTestWorld(World);
+                return false;
+            }
+        }
+
+        GameMode->ProjectStateToGameState(GameState);
+        const FAkUGCTowerDefenseFinalState State = CollectFinalState(Logic, GameState);
+        OutHash = FAkUGCTowerDefenseStateHasher::HashFinalState(State);
+
+        DestroyTestWorld(World);
+        return true;
     }
 }
 
@@ -351,6 +515,50 @@ bool FAkUGCGameModeJoinInProgressAfterDefeatTest::RunTest(const FString& Paramet
         GameState->GetActiveEnemyCount(), 0);
 
     AkUGCGameModePackLoadTest::DestroyTestWorld(World);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FAkUGCTowerDefenseFinalStateHashTest,
+    "AkUGC.Runtime.GameMode.TowerDefenseFinalStateHash",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::ServerContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCTowerDefenseFinalStateHashTest::RunTest(const FString& Parameters)
+{
+    if (!GEngine)
+    {
+        AddError(TEXT("Engine is not available."));
+        return false;
+    }
+
+    FAkUGCLogicPackKeyPair KeyPair;
+    FString Error;
+    TestTrue(*Error, FAkUGCLogicPackSigner::GenerateKeyPair(KeyPair, &Error));
+
+    // 场景 1：标准三波场景（无塔）→ Defeat 终局，验证哈希与推进步长无关。
+    FAkUGCProjectDocument DefeatDocument;
+    TestTrue(*Error, AkUGCPlayableSceneFactory::MakePlayableTowerDefenseDocument(DefeatDocument, &Error));
+    FString DefeatLarge;
+    FString DefeatSmall;
+    TestTrue(*Error, AkUGCGameModePackLoadTest::RunTerminalHash(DefeatDocument, KeyPair, 4.0, false, DefeatLarge, &Error));
+    TestTrue(*Error, AkUGCGameModePackLoadTest::RunTerminalHash(DefeatDocument, KeyPair, 4.0, true, DefeatSmall, &Error));
+    TestEqual(TEXT("Defeat terminal hash is delta-independent"), DefeatLarge, DefeatSmall);
+
+    // 场景 2：标准场景 + 强塔 → Victory 终局，同样验证哈希与推进步长无关。
+    FAkUGCProjectDocument VictoryDocument;
+    TestTrue(*Error, AkUGCGameModePackLoadTest::MakeVictoryDocument(DefeatDocument, VictoryDocument, &Error));
+    FString VictoryLarge;
+    FString VictorySmall;
+    TestTrue(*Error, AkUGCGameModePackLoadTest::RunTerminalHash(VictoryDocument, KeyPair, 3.0, false, VictoryLarge, &Error));
+    TestTrue(*Error, AkUGCGameModePackLoadTest::RunTerminalHash(VictoryDocument, KeyPair, 3.0, true, VictorySmall, &Error));
+    TestEqual(TEXT("Victory terminal hash is delta-independent"), VictoryLarge, VictorySmall);
+
+    // 两种终局必然不同；日志输出哈希供 Win64 Client / DS 跨 target 对比。
+    TestTrue(TEXT("Victory and Defeat produce distinct hashes"), VictoryLarge != DefeatLarge);
+    UE_LOG(LogTemp, Display,
+        TEXT("[TowerDefenseFinalStateHash] Defeat=%s Victory=%s"),
+        *DefeatLarge, *VictoryLarge);
+
     return true;
 }
 

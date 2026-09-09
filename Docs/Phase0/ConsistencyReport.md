@@ -27,7 +27,8 @@
 | Damage / Death | ✅ 单平台确定性 | 通过 | `AkUGC.AssetRuntime.*`（塔攻击/击杀） |
 | Wave / Victory / Defeat | ✅ 单平台确定性 | 通过 | `AkUGC.AssetRuntime.*`（三波清空/基地归零） |
 | Join-in-progress 恢复完整状态 | ✅ 端到端 | 通过 | `AkUGC.Runtime.GameMode.JoinInProgress*` |
-| **跨平台哈希一致性（三平台同哈希）** | ⏳ 待真机 | 待验证 | — |
+| 玩法层最终状态哈希（路径/伤害/死亡/胜负） | ✅ Win64 跨 target | 通过（Editor 与 Client 哈希一致） | `AkUGC.Runtime.GameMode.TowerDefenseFinalStateHash` |
+| 跨平台哈希一致性（Android 真机对比） | ⏳ 待真机 | 待验证 | — |
 
 ### 2.1 确定性验证说明
 
@@ -35,9 +36,23 @@
 - **完整玩法层**：`AkUGCLogicRuntimeSubsystemTests` 验证同一 Pack 以「大时间步」与「小时间步」推进到 Victory / Defeat，最终波次状态、基地生命、活跃敌人数一致，证明玩法逻辑与时间步长无关、具备确定性。
 - **复制契约**：`JoinInProgressMidWave` / `JoinInProgressAfterDefeat` 验证权威会话运行到中途 / 终局后，`ProjectStateToGameState` 投影出的 GameState 快照能让新加入客户端完整恢复（波次状态、波序、总波数、胜负、基地生命、活跃敌人数）。
 
-### 2.2 跨平台哈希一致性（缺口）
+### 2.2 玩法层最终状态哈希（已实现，Win64 跨 target 验证）
 
-当前 `ComputeRunStateHash` 仅覆盖 **Logic IR 层**。玩法层（路径位置、伤害、死亡、胜负）的跨平台最终状态哈希尚未实现；且 Android 真机无法在无设备环境下产出对比数据。此项需在真机验证阶段完成。
+在无 Android 真机的前提下，用 Win64 PC 补齐了可自动化的缺口：
+
+- **玩法层哈希工具** `FAkUGCTowerDefenseStateHasher`（`AkUGCAssetRuntime`），复用 `FAkUGCLogicPackHasher::Sha256Hex`，对同一 Pack 运行到终局后的最终状态做确定性序列化（固定字节序 + 逐字段，`double` 用 IEEE 754 位模式），产出 64 位 SHA-256。
+- **覆盖字段**：波次状态（State / Result / CurrentWaveIndex）、`CurrentWaveId`、`TotalWaveCount`、基地生命（当前 / 最大）、活跃敌人数、Messages、Spawns、Goals、Damages、Deaths。
+- **新增测试** `AkUGC.Runtime.GameMode.TowerDefenseFinalStateHash`：同一 Pack 以「大时间步（单次 4.0s）」与「小时间步（16 × 0.25s）」推进到 Victory / Defeat，最终哈希一致；两种终局哈希不同。
+- **修复两处随机 EntityId 破坏确定性**：运行时 spawn（`AkUGCSceneRuntime.cpp` `FGuid::NewGuid()`）与标准场景工厂的实体 ID（`AkUGCPlayableSceneFactory.cpp` 5 处 + 测试 Victory 塔 1 处），全部改为确定性 GUID。
+
+**Win64 PC 验证结果**（同一 Pack，跨 target 哈希完全一致）：
+
+| Target | Defeat 哈希 | Victory 哈希 |
+|---|---|---|
+| Win64 Editor | `dc707b8c502803dc6c1f9bec2b23b2ef20cd22be9a7ad7a67d5195004df92b04` | `053fdb241c595c948b42fc3b6e6c915c95e613ca645a0fdc89d9c95f8d0d993c` |
+| Win64 Client | 同 Editor | 同 Editor |
+
+> Win64 Dedicated Server 的自动化测试启动阶段因缺 Server 端 premade asset registry（`LoadResult==1` 版本不匹配）在引擎 `PreObjectSystemReady` 异步加载时崩溃，属引擎环境问题，与玩法层哈希无关；其玩法逻辑源码与 Client 完全一致，哈希应一致，留待补齐 Server 内容后复核。Android 真机对比仍待物理设备。
 
 ## 3. 本次修复的关键缺陷
 
@@ -53,8 +68,8 @@
 
 ## 4. 自动化测试基线
 
-- 完整 AkUGC 自动化套件 **92 项全部通过（0 失败）**（含 `AkUGC.Core.*`、`AkUGC.AssetRuntime.*`、`AkUGC.Runtime.*`）。
-- 新增 `AkUGC.Runtime.GameMode` 4 项：`PackLoad`、`PackReject`、`JoinInProgressMidWave`、`JoinInProgressAfterDefeat`。
+- 完整 AkUGC 自动化套件 **93 项全部通过（0 失败）**（含 `AkUGC.Core.*`、`AkUGC.AssetRuntime.*`、`AkUGC.Runtime.*`）。
+- 新增 `AkUGC.Runtime.GameMode` 5 项：`PackLoad`、`PackReject`、`JoinInProgressMidWave`、`JoinInProgressAfterDefeat`、`TowerDefenseFinalStateHash`。
 
 ## 5. 待真机验证清单（Android）
 
@@ -64,11 +79,11 @@
 2. 创建、编辑、保存、重载文档。
 3. Timer / Spawn / Path / Combat / Wave 实机运行。
 4. 内存、帧时间、加载与卸载预算。
-5. 跨平台最终状态哈希对比：同一 Pack 在 Android 与 Win64 Client、Win64 DS 上产出相同哈希（需先实现玩法层哈希，见 2.2）。
+5. 跨平台最终状态哈希对比：同一 Pack 在 Android 真机与 Win64 Client / Editor 上产出相同哈希（玩法层哈希已实现，见 2.2；Win64 Editor/Client 已一致）。
 
 ## 6. 结论
 
 - 三平台（Win64 Client / Android Client / Win64 DS）的编译、Cook、Package 链路均已打通。
 - Logic IR 层与完整玩法层的**单平台确定性**已通过自动化测试验证。
 - 复制契约（Join-in-progress）已通过端到端测试验证，并修复了波次规则集未启动与 Defeat 边界不确定两个关键缺陷。
-- 剩余工作集中在 **Android 真机验证** 与 **跨平台玩法层哈希一致性**，需物理设备与后续阶段推进。
+- 玩法层最终状态哈希已实现，并在 Win64 PC 上验证 Editor 与 Client 跨 target 哈希一致；剩余工作集中在 **Android 真机验证**（含 Android 端哈希对比）。

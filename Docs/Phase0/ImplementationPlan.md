@@ -570,13 +570,14 @@ P0–P9 已全部提交，并通过编译与全量自动化测试验证。
 29. `功能：落地受控 API 宿主桥接（get_health/apply_damage）`（P9）
 30. `功能：落地受控 API 宿主实现（spawn/get_wave_state/timer_after）`（P9）
 31. `完成 P9 收尾：落地 Capability/Effect 校验并修复 LogicEditing/RulesetEditing 回归`（P9）
+32. `新增玩法层最终状态哈希工具并验证 Win64 跨 target 一致性`（P10）
 
-待推进（P10）：
+待推进（P10，仅剩 Android 真机项）：
 
-- Android SDK/NDK 验证、ASTC 编译、Cook、Package、真机加载 Logic Pack
-- Dedicated Server Package、自动加载签名 Pack、Headless 三波塔防测试
-- 多 Client 连接与 Join-in-progress
-- Win64 / Android / Dedicated Server 三平台一致性验收
+- Android 真机验证（加载签名 Pack、创建/编辑/保存/重载、Timer/Spawn/Path/Combat/Wave 实机、内存/帧时间预算）
+- Android 端跨平台玩法层哈希对比（玩法层哈希已在 Win64 PC 实现并验证 Editor/Client 一致，见 `ConsistencyReport.md` 2.2）
+
+> 已完成的 P10 项：Android SDK/NDK 与 ASTC 编译、Cook、Package（APK+OBB）；Dedicated Server Package、自动加载签名 Pack、Headless 三波塔防；多 Client 连接与 Join-in-progress；非法 Pack 拒绝；单平台确定性（Logic IR + 玩法层）；玩法层最终状态哈希 + Win64 跨 target 一致性。
 
 每个提交完成后执行：
 

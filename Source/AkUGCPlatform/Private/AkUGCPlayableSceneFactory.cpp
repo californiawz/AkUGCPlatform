@@ -26,7 +26,9 @@ bool AkUGCPlayableSceneFactory::MakePlayableTowerDefenseDocument(
     Scene.DisplayName = TEXT("Main");
     Scene.Ruleset.WaveIntervalSeconds = 5.0;
 
-    const FGuid SpawnPointId = FGuid::NewGuid();
+    // 确定性 EntityId：跨运行 / 跨 target（Editor / Client / Server）构造标准场景时
+    // 必须一致，否则玩法层最终状态哈希无法对齐（P10 一致性验收）。
+    const FGuid SpawnPointId(0xE0000001, 0, 0, 0);
     FAkUGCEntityRecord SpawnPoint;
     if (!Registry.CreateEntityRecord(
         TEXT("official.gameplay.enemy_spawn"),
@@ -57,13 +59,13 @@ bool AkUGCPlayableSceneFactory::MakePlayableTowerDefenseDocument(
     FAkUGCEntityRecord SecondPathNode;
     if (!Registry.CreateEntityRecord(
         TEXT("official.gameplay.path_node"),
-        FGuid::NewGuid(),
+        FGuid(0xE0000002, 0, 0, 0),
         FTransform(FVector(500.0, 50.0, 0.0)),
         FirstPathNode,
         OutError)
         || !Registry.CreateEntityRecord(
         TEXT("official.gameplay.path_node"),
-        FGuid::NewGuid(),
+        FGuid(0xE0000003, 0, 0, 0),
         FTransform(FVector(1000.0, 50.0, 0.0)),
         SecondPathNode,
         OutError))
@@ -79,13 +81,13 @@ bool AkUGCPlayableSceneFactory::MakePlayableTowerDefenseDocument(
     FAkUGCEntityRecord GoalEntity;
     if (!Registry.CreateEntityRecord(
         TEXT("official.gameplay.base"),
-        FGuid::NewGuid(),
+        FGuid(0xE0000004, 0, 0, 0),
         FTransform(FVector(1100.0, 50.0, 0.0)),
         BaseEntity,
         OutError)
         || !Registry.CreateEntityRecord(
         TEXT("official.gameplay.goal"),
-        FGuid::NewGuid(),
+        FGuid(0xE0000005, 0, 0, 0),
         FTransform(FVector(1000.0, 50.0, 0.0)),
         GoalEntity,
         OutError))

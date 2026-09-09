@@ -595,7 +595,11 @@ bool FAkUGCSceneRuntime::SpawnLogicPrefab(
         SpawnTransform = AnchorActor->GetActorTransform();
     }
 
-    OutEntityId = FGuid::NewGuid();
+    // 确定性 EntityId：以成功 spawn 序号为种子，保证同一 Pack 在跨运行、
+    // 跨平台（Win64 / Android / Dedicated Server）下玩法层最终状态哈希一致。
+    // 随机 GUID 会破坏 P10 一致性验收所需的跨平台确定性。
+    OutEntityId = FGuid::NewDeterministicGuid(
+        FString::Printf(TEXT("ugc-runtime-spawn-%d"), RuntimeSpawnedEntityIds.Num()));
     FAkUGCEntityRecord Entity;
     if (!Registry.CreateEntityRecord(
         SpawnEffect.PrefabId,
