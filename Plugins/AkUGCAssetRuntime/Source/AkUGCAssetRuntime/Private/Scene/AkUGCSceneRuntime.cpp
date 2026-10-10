@@ -1840,7 +1840,9 @@ bool FAkUGCSceneRuntime::SpawnEntity(
 
     UClass* ActorClass = AAkUGCRuntimeEntityActor::StaticClass();
     UStaticMesh* StaticMesh = nullptr;
-    if (const FSoftObjectPath* AssetPath = Registry.ResolveAsset(Entity.PrefabId, GetCurrentPlatformVariant()))
+    const FSoftObjectPath* AssetPath = RuntimeWorld->GetNetMode() != NM_DedicatedServer
+        ? Registry.ResolveAsset(Entity.PrefabId, GetCurrentPlatformVariant()) : nullptr;
+    if (AssetPath)
     {
         if (AssetPath->IsValid())
         {

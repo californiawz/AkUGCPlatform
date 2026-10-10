@@ -292,7 +292,7 @@ namespace
         }
         if (const FNameProperty* NameProp = CastField<FNameProperty>(Property))
         {
-            AppendJsonString(Out, NameProp->GetPropertyValue(ValuePtr).ToString());
+            AppendJsonString(Out, NameProp->GetPropertyValue(ValuePtr).ToString().ToLower());
             return true;
         }
 
@@ -384,7 +384,7 @@ namespace
         }
         Fields.Sort([](const FProperty& A, const FProperty& B)
         {
-            return A.GetName().Compare(B.GetName(), ESearchCase::CaseSensitive) < 0;
+            return A.GetName().ToLower().Compare(B.GetName().ToLower(), ESearchCase::CaseSensitive) < 0;
         });
 
         Out.AppendChar(TEXT('{'));
@@ -395,7 +395,7 @@ namespace
                 Out.AppendChar(TEXT(','));
             }
             FProperty* Field = Fields[Index];
-            AppendJsonString(Out, Field->GetName());
+            AppendJsonString(Out, Field->GetName().ToLower());
             Out.AppendChar(TEXT(':'));
             if (!AppendValue(Field, Field->ContainerPtrToValuePtr<void>(StructPtr), Out, Error))
             {

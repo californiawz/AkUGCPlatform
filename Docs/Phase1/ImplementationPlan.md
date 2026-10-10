@@ -124,11 +124,15 @@
 **实施状态（2026-10-10）**：视觉接入基础子步骤已实现并通过 Win64 测试；P12 正式资产验收未完成。
 - 官方基地/敌人/塔/刷怪点/路径点/终点填入 Win64、Android、Default 的 Engine BasicShapes 占位变体，Server 显式为空；可见标记纳入 Render 成本。
 - `PrefabId` RepNotify 与客户端 BeginPlay 按本机平台恢复官方 StaticMesh，空标识清理旧 Mesh；新增自动化覆盖六类资产实际加载、回调恢复、平台路径和 Server 不加载视觉。
-- `/Engine/BasicShapes` 加入显式 Cook 根。当前 Client/Server 测试使用已有 Cook 内容载体替换本轮二进制，未重新完整 Cook。
-- Editor/Client/Server Development 编译成功；Editor 全量 **102/102** 通过，Client/Server 各 **3/3** 运行测试通过；玩法终态哈希仍与 Editor 一致。
-- 证据：`Saved/Logs/P12BuildEditor2.log`、`P12BuildClient.log`、`P12BuildServer.log`、`P12Tests.log`、`P12ClientTests.log`、`P12ServerTests.log`。
+- `/Engine/BasicShapes` 加入显式 Cook 根。本轮 Win64 Client/Server 均执行非跳过的 Build/Cook/Stage/Package 并成功，不再沿用旧 Cook 内容替换二进制作为验收。
+- 新增 `Tools/Tests/verify_network_visuals.py`，生成签名前联网夹具、启动真实 Dedicated Server 与两个独立 Client；第二客户端在启动后 27.44 秒、首客户端已观察到敌人后加入。两端均收到 11 个实体、资源321、同一敌人 GUID，验证 Mesh 注册/可见、敌人移动与销毁、Victory、基地生命993；Server 实测两个连接且无 Mesh 加载。使用 NullRHI 验证对象与网络，不等于截图或美术效果验收。
+- 真实跨进程验收发现并修复 FName/反射属性显示大小写造成的内容哈希差异：名称和字段键按小写规范化，FString 内容仍大小写敏感。Editor/Client/Server 的固定文档哈希一致；旧算法签名包需由持有私钥的发布方重新构建签名，运行端不放松完整性或验签、不自动重签。
+- PackTool 写出之前新增完整 JSON 回环验签，显式联网夹具输出确定性诊断表示；Dedicated Server 运行模式禁止回退 Default 加载视觉。
+- Editor/Client/Server Development 构建成功；Editor 全量 **103/103** 通过；新 Cook Client/Server 的内容哈希回归各1项通过，真实网络测试 Client两次与Server一次均完成成功。联网测试只在显式 `-AkUGCNetworkVisual` 与配套夹具下执行，不计作常规单进程通过。
+- 证据：`Saved/NetworkVisualVerification/result.json`、`cook_client.log`、`cook_server.log`、`server.log`、`client1.log`、`client2_late.log`；`Saved/Logs/P12NetworkEditorGate.log`、`P12CanonicalClient.log`、`P12CanonicalServer.log`。定向 Lint 与 `git diff --check` 通过。
 - 同时修复 P11 提交后 adaptive build 回归 unity 模式时的模板辅助函数命名冲突。
-- 待完成：有授权的正式 Mesh/材质、Android LOD/材质降级与真机验收、新包完整 Cook、真实 DS→客户端网络复制视觉验收（当前只实测复制回调，未启动联机）。不得把 Engine 占位或回调测试标为正式视觉/网络验收。
+- 本轮执行教训：首次误将 UAT `-clean` 与 Editor 测试并行，导致引擎模块文件锁与部分清理；已移除不必要清理、串行完成恢复构建，再独立跑全量测试。引擎已恢复正常。
+- 待完成：有授权的正式 Mesh/材质、Android LOD/材质降级与真机验收、非 NullRHI 视觉效果验收。不得把 Engine 占位或网络对象测试标为正式美术验收。
 
 ---
 

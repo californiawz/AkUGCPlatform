@@ -7,6 +7,12 @@
 #include "Pack/AkUGCLogicPackBuilder.h"
 #include "Pack/AkUGCLogicPackCodec.h"
 #include "Pack/AkUGCLogicPackSignature.h"
+#include "Pack/AkUGCLogicPackHasher.h"
+#include "Pack/AkUGCLogicPackLoader.h"
+#include "Command/AkUGCCommandExecutor.h"
+#include "Prefab/AkUGCOfficialPrefabCatalog.h"
+#include "Prefab/AkUGCPrefabRegistry.h"
+#include "Template/AkUGCTowerDefenseTemplate.h"
 
 int32 UAkUGCPackToolCommandlet::Main(const FString& Params)
 {
@@ -23,7 +29,40 @@ int32 UAkUGCPackToolCommandlet::Main(const FString& Params)
     // 1. 构造完整塔防场景。
     FAkUGCProjectDocument Document;
     FString Error;
-    if (!AkUGCPlayableSceneFactory::MakePlayableTowerDefenseDocument(Document, &Error))
+    if (FParse::Param(*Params, TEXT("NetworkVisualFixture")))
+    {
+        FAkUGCPrefabRegistry Registry;
+        FAkUGCTowerDefenseParameters Parameters;
+        Parameters.Waves.SetNum(1);
+        Parameters.Waves[0].EnemyCount = 1;
+        Parameters.Waves[0].StartDelaySeconds = 20.0;
+        Parameters.Waves[0].EnemyMoveSpeed = 50.0;
+        Parameters.Waves[0].EnemyGoalDamage = 7.0;
+        Parameters.InitialResources = 321;
+        FAkUGCCommandTransaction Transaction;
+        if (!FAkUGCOfficialPrefabCatalog::RegisterTowerDefense(Registry, &Error)
+            || !FAkUGCTowerDefenseTemplate::CreateDefaultDocument(Registry, Document, &Error)
+            || !FAkUGCTowerDefenseTemplate::BuildTransaction(Document, Document.Scenes[0].SceneId,
+                Parameters, Registry, Transaction, &Error)
+            || !FAkUGCCommandExecutor::Apply(Document, Transaction).bSucceeded)
+        {
+            UE_LOG(LogTemp, Error, TEXT("[AkUGCPackTool] Network fixture failed: %s"), *Error);
+            return 2;
+        }
+        Document.Manifest.DisplayName = TEXT("Network Visual Verification");
+        for (FAkUGCEntityRecord& Entity : Document.Scenes[0].Entities)
+        {
+            if (Entity.PrefabId != TEXT("official.tower.basic")) { continue; }
+            for (FAkUGCComponentRecord& Component : Entity.Components)
+            {
+                if (Component.TypeId == TEXT("tower_defense.tower"))
+                {
+                    Component.Properties.FindChecked(TEXT("attackDamage")).NumberValue = 0.0;
+                }
+            }
+        }
+    }
+    else if (!AkUGCPlayableSceneFactory::MakePlayableTowerDefenseDocument(Document, &Error))
     {
         UE_LOG(LogTemp, Error, TEXT("[AkUGCPackTool] Scene construction failed: %s"), *Error);
         return 2;
@@ -61,12 +100,30 @@ int32 UAkUGCPackToolCommandlet::Main(const FString& Params)
         return 6;
     }
 
+    const FAkUGCLogicPackLoadResult Verification = FAkUGCLogicPackLoader::LoadVerified(Json, KeyPair.PublicKey);
+    if (!Verification.bSucceeded)
+    {
+        FString OriginalCanonical, RestoredCanonical;
+        FAkUGCLogicPackHasher::DeterministicSerialize(Pack.Document, OriginalCanonical);
+        FAkUGCLogicPackHasher::DeterministicSerialize(Verification.Pack.Document, RestoredCanonical);
+        FFileHelper::SaveStringToFile(OriginalCanonical, *(OutputPath + TEXT(".original.json")));
+        FFileHelper::SaveStringToFile(RestoredCanonical, *(OutputPath + TEXT(".restored.json")));
+        UE_LOG(LogTemp, Error, TEXT("[AkUGCPackTool] Serialized pack verification failed: %s"), *Verification.ErrorMessage);
+        return 9;
+    }
+
     if (!FFileHelper::SaveStringToFile(Json, *OutputPath))
     {
         UE_LOG(LogTemp, Error, TEXT("[AkUGCPackTool] Failed to write %s"), *OutputPath);
         return 7;
     }
     UE_LOG(LogTemp, Log, TEXT("[AkUGCPackTool] Wrote pack: %s"), *OutputPath);
+    if (FParse::Param(*Params, TEXT("NetworkVisualFixture")))
+    {
+        FString Canonical;
+        FAkUGCLogicPackHasher::DeterministicSerialize(Pack.Document, Canonical);
+        FFileHelper::SaveStringToFile(Canonical, *(OutputPath + TEXT(".canonical.json")));
+    }
 
     // 6. 写出可信公钥（供 DS 端 -LogicPackKey= 使用）。
     if (!PublicKeyPath.IsEmpty())

@@ -309,6 +309,27 @@ bool FAkUGCLogicPackProgramHashTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FAkUGCLogicPackCanonicalNamesTest,
+    "AkUGC.Core.Pack.CanonicalNamesAcrossTargets",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext
+        | EAutomationTestFlags::ServerContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCLogicPackCanonicalNamesTest::RunTest(const FString& Parameters)
+{
+    const FAkUGCProjectDocument Document = MakePackDocument();
+    FString Canonical, Error;
+    TestTrue(TEXT("Canonical document serializes"), FAkUGCLogicPackHasher::DeterministicSerialize(Document, Canonical, &Error));
+    TestTrue(TEXT("Reflection keys use stable lowercase"), Canonical.Contains(TEXT("\"projectid\":"), ESearchCase::CaseSensitive));
+    TestTrue(TEXT("FName capabilities use stable lowercase"), Canonical.Contains(TEXT("\"capabilities\":[\"logic\",\"ruleset\"]"), ESearchCase::CaseSensitive));
+    FAkUGCProjectDocument Changed = Document;
+    Changed.Manifest.DisplayName = Document.Manifest.DisplayName.ToLower();
+    TestNotEqual(TEXT("User FString casing remains significant"),
+        FAkUGCLogicPackHasher::HashDocument(Changed), FAkUGCLogicPackHasher::HashDocument(Document));
+    UE_LOG(LogTemp, Display, TEXT("[AkUGCCanonicalNames] DocumentHash=%s"), *FAkUGCLogicPackHasher::HashDocument(Document));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FAkUGCLogicPackBuilderTest,
     "AkUGC.Core.Pack.Builder",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
