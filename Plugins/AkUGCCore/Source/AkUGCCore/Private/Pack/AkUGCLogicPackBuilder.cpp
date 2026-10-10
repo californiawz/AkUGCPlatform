@@ -21,6 +21,15 @@ namespace
 				{
 					PrefabIds.Add(Entity.PrefabId);
 				}
+				for (const FAkUGCComponentRecord& Component : Entity.Components)
+				{
+					if (Component.TypeId != TEXT("tower_defense.spawn")) { continue; }
+					const FAkUGCValue* EnemyPrefab = Component.Properties.Find(TEXT("enemyPrefab"));
+					if (EnemyPrefab && EnemyPrefab->Type == EAkUGCValueType::Name && !EnemyPrefab->NameValue.IsNone())
+					{
+						PrefabIds.Add(EnemyPrefab->NameValue);
+					}
+				}
 			}
 			for (const FAkUGCLogicNode& Node : Scene.LogicGraph.Nodes)
 			{

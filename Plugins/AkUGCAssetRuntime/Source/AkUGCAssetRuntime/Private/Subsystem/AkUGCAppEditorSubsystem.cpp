@@ -117,23 +117,53 @@ void UAkUGCAppEditorSubsystem::Deinitialize()
 
 FAkUGCAppEditResult UAkUGCAppEditorSubsystem::NewTowerDefenseProject()
 {
+    if (!PrefabRegistry)
+    {
+        return Failure(TEXT("appEditor.prefabRegistry"), TEXT("Prefab registry is not initialized."));
+    }
     FAkUGCProjectDocument NewDocument;
-    NewDocument.Manifest.ProjectId = FGuid::NewGuid();
-    NewDocument.Manifest.DisplayName = TEXT("Tower Defense Project");
-    NewDocument.Manifest.TemplateId = TEXT("official.tower_defense");
-    NewDocument.Manifest.Capabilities = {
-        TEXT("world.spawn"),
-        TEXT("rules.wave"),
-        TEXT("combat.damage")};
-
-    FAkUGCSceneDocument& Scene = NewDocument.Scenes.AddDefaulted_GetRef();
-    Scene.SceneId = FGuid::NewGuid();
-    Scene.DisplayName = TEXT("Main");
-
     FString Error;
+    if (!FAkUGCTowerDefenseTemplate::CreateDefaultDocument(*PrefabRegistry, NewDocument, &Error))
+    {
+        return Failure(TEXT("appEditor.towerDefenseTemplate"), MoveTemp(Error));
+    }
     return OpenDocument(MoveTemp(NewDocument), Error)
         ? Success()
         : Failure(TEXT("appEditor.project"), MoveTemp(Error));
+}
+
+FAkUGCAppEditResult UAkUGCAppEditorSubsystem::ApplyTowerDefenseParameters(
+    const FAkUGCTowerDefenseParameters& Parameters)
+{
+    if (!CommandService || !PrefabRegistry)
+    {
+        return Failure(TEXT("appEditor.session"), TEXT("No UGC project is open."));
+    }
+    FAkUGCCommandTransaction Transaction;
+    FString Error;
+    if (!FAkUGCTowerDefenseTemplate::BuildTransaction(Document, ActiveSceneId, Parameters, *PrefabRegistry, Transaction, &Error))
+    {
+        return Failure(TEXT("appEditor.towerDefenseParameters"), MoveTemp(Error));
+    }
+    FAkUGCProjectDocument Candidate = Document;
+    const FAkUGCCommandExecutionResult CandidateResult = FAkUGCCommandExecutor::Apply(Candidate, Transaction);
+    if (!CandidateResult.bSucceeded)
+    {
+        return Failure(CandidateResult.ErrorPath, CandidateResult.ErrorMessage);
+    }
+    if (!ValidateDocumentBudgets(Candidate, Error))
+    {
+        return Failure(TEXT("appEditor.budget"), MoveTemp(Error));
+    }
+    return ExecuteResult(CommandService->ApplyTowerDefenseParameters(Parameters));
+}
+
+bool UAkUGCAppEditorSubsystem::GetTowerDefenseParameters(FAkUGCTowerDefenseParameters& OutParameters) const
+{
+    OutParameters = FAkUGCTowerDefenseParameters{};
+    FString Error;
+    return CommandService && PrefabRegistry
+        && FAkUGCTowerDefenseTemplate::ReadParameters(Document, ActiveSceneId, OutParameters, &Error);
 }
 
 FAkUGCAppEditResult UAkUGCAppEditorSubsystem::LoadProjectJson(const FString& Json)
@@ -485,13 +515,13 @@ FAkUGCAppEditResult UAkUGCAppEditorSubsystem::AddWave(const FAkUGCTowerDefenseWa
         return Failure(TEXT("appEditor.sceneId"), TEXT("Active scene does not exist."));
     }
 
-    if (Scene->Ruleset.Waves.Num() >= AkUGCTowerDefenseRulesetLimits::RequiredWaveCount)
+    if (Scene->Ruleset.Waves.Num() >= AkUGCTowerDefenseRulesetLimits::MaxWaveCount)
     {
         return Failure(
             TEXT("appEditor.ruleset.waves"),
             FString::Printf(
                 TEXT("Tower defense ruleset supports at most %d waves."),
-                AkUGCTowerDefenseRulesetLimits::RequiredWaveCount));
+                AkUGCTowerDefenseRulesetLimits::MaxWaveCount));
     }
 
     FString Error;
@@ -720,7 +750,12 @@ bool UAkUGCAppEditorSubsystem::ValidateMobileDocument(
                     {
                         return CandidateComponent.TypeId == RequiredProperty.ComponentTypeId;
                     });
-                if (!Component || !Component->Properties.Contains(RequiredProperty.PropertyId))
+                const bool bLegacyEnemyOverride = Entity.PrefabId == TEXT("official.gameplay.enemy_spawn")
+                    && RequiredProperty.ComponentTypeId == TEXT("tower_defense.spawn")
+                    && (RequiredProperty.PropertyId == TEXT("enemyMaxHealth")
+                        || RequiredProperty.PropertyId == TEXT("enemyMoveSpeed")
+                        || RequiredProperty.PropertyId == TEXT("enemyGoalDamage"));
+                if ((!Component || !Component->Properties.Contains(RequiredProperty.PropertyId)) && !bLegacyEnemyOverride)
                 {
                     OutError = FString::Printf(
                         TEXT("Required property '%s.%s' is missing from prefab '%s'."),
@@ -862,8 +897,15 @@ bool UAkUGCAppEditorSubsystem::ValidateMobileLogicGraph(
         return false;
     }
 
+    FAkUGCSceneDocument CandidateScene = Scene;
+    CandidateScene.LogicGraph = Graph;
+    const bool bTemplateOwnedLogic = FAkUGCTowerDefenseTemplate::IsTemplateOwnedLogicGraph(CandidateScene);
     for (const FAkUGCLogicNode& Node : Graph.Nodes)
     {
+        if (Node.Type == EAkUGCLogicNodeType::WaveStart && bTemplateOwnedLogic)
+        {
+            continue;
+        }
         if (!ValidateMobileLogicNode(Node, Scene, OutError))
         {
             return false;
@@ -876,6 +918,10 @@ bool UAkUGCAppEditorSubsystem::ValidateDocumentBudgets(
     const FAkUGCProjectDocument& Candidate,
     FString& OutError) const
 {
+    if (Candidate.Manifest.TemplateId == TEXT("official.tower_defense") && PrefabRegistry)
+    {
+        return FAkUGCTowerDefenseTemplate::ValidateDocumentBudgets(Candidate, *PrefabRegistry, &OutError);
+    }
     int64 EntityUnits = 0;
     int64 RenderUnits = 0;
     int64 PhysicsUnits = 0;

@@ -4,6 +4,16 @@
 #include "Document/AkUGCDocument.h"
 #include "AkUGCPrefabDefinition.generated.h"
 
+namespace AkUGCMobileBudgetLimits
+{
+    inline constexpr int32 MaxEntityUnits = 500;
+    inline constexpr int32 MaxRenderUnits = 1000;
+    inline constexpr int32 MaxPhysicsUnits = 500;
+    inline constexpr int32 MaxScriptUnits = 500;
+    inline constexpr int32 MaxLogicNodes = 64;
+    inline constexpr int32 MaxLogicConnections = 128;
+}
+
 UENUM(BlueprintType, meta = (Bitflags))
 enum class EAkUGCTargetPlatform : uint8
 {

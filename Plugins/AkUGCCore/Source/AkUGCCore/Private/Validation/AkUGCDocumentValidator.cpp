@@ -329,7 +329,7 @@ FAkUGCValidationResult FAkUGCDocumentValidator::ValidateLogicGraph(
     }
     if (Result.IsValid()
         && GameStartInstructionCount
-            + WaveStartInstructionCount * AkUGCTowerDefenseRulesetLimits::RequiredWaveCount
+            + WaveStartInstructionCount * AkUGCTowerDefenseRulesetLimits::MaxWaveCount
             > AkUGCLogicLimits::MaxExecutedInstructions)
     {
         Result.AddError(
@@ -477,18 +477,51 @@ FAkUGCValidationResult FAkUGCDocumentValidator::Validate(const FAkUGCProjectDocu
                     {
                         Result.AddError(PropertyPath + TEXT(".rotatorValue"), TEXT("Rotator field must be finite."));
                     }
+                    if (Component.TypeId == TEXT("tower_defense.spawn"))
+                    {
+                        double Minimum = 0.0;
+                        double Maximum = 0.0;
+                        if (Property.Key == TEXT("enemyMaxHealth"))
+                        {
+                            Minimum = 1.0;
+                            Maximum = 100000.0;
+                        }
+                        else if (Property.Key == TEXT("enemyMoveSpeed"))
+                        {
+                            Minimum = 10.0;
+                            Maximum = 2000.0;
+                        }
+                        else if (Property.Key == TEXT("enemyGoalDamage"))
+                        {
+                            Minimum = 0.0;
+                            Maximum = 100000.0;
+                        }
+                        if (Maximum > 0.0
+                            && (Property.Value.Type != EAkUGCValueType::Number
+                                || !FMath::IsFinite(Property.Value.NumberValue)
+                                || Property.Value.NumberValue < Minimum
+                                || Property.Value.NumberValue > Maximum))
+                        {
+                            Result.AddError(PropertyPath, TEXT("Enemy override must be a finite Number within its official property range."));
+                        }
+                    }
                 }
             }
         }
 
         const FString RulesetPath = ScenePath + TEXT(".ruleset");
-        if (Scene.Ruleset.Waves.Num() > AkUGCTowerDefenseRulesetLimits::RequiredWaveCount)
+        if (Scene.Ruleset.Waves.Num() > AkUGCTowerDefenseRulesetLimits::MaxWaveCount)
         {
             Result.AddError(
                 RulesetPath + TEXT(".waves"),
                 FString::Printf(
                     TEXT("Tower defense ruleset supports at most %d waves."),
-                    AkUGCTowerDefenseRulesetLimits::RequiredWaveCount));
+                    AkUGCTowerDefenseRulesetLimits::MaxWaveCount));
+        }
+        if (Scene.Ruleset.InitialResources < 0
+            || Scene.Ruleset.InitialResources > AkUGCTowerDefenseRulesetLimits::MaxInitialResources)
+        {
+            Result.AddError(RulesetPath + TEXT(".initialResources"), TEXT("Initial resources must be from 0 to 1000000."));
         }
         if (!FMath::IsFinite(Scene.Ruleset.WaveIntervalSeconds)
             || Scene.Ruleset.WaveIntervalSeconds < 0.0

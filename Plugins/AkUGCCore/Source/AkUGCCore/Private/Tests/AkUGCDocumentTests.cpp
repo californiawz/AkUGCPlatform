@@ -4,6 +4,7 @@
 #include "Document/AkUGCDocumentJson.h"
 #include "Document/AkUGCDocumentMigration.h"
 #include "Dom/JsonObject.h"
+#include "Pack/AkUGCLogicPackHasher.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "Validation/AkUGCDocumentValidator.h"
@@ -270,7 +271,7 @@ bool FAkUGCDocumentLegacyMigrationTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Migration succeeds"), Migration.bSucceeded);
     TestEqual(TEXT("Missing version is recognized as V0"), Migration.SourceVersion, 0);
     TestEqual(TEXT("Migration targets current version"), Migration.TargetVersion, AkUGCSchema::CurrentProjectDocumentVersion);
-    TestEqual(TEXT("V0 to current applies five migration steps"), Migration.AppliedSteps.Num(), 5);
+    TestEqual(TEXT("V0 to current applies six migration steps"), Migration.AppliedSteps.Num(), 6);
     if (Migrated.Scenes.IsEmpty()
         || Migrated.Scenes[0].Entities.IsEmpty()
         || Migrated.Scenes[0].Entities[0].Components.IsEmpty())
@@ -322,9 +323,9 @@ bool FAkUGCDocumentMigrationRejectionTest::RunTest(const FString& Parameters)
     FString Error;
     FAkUGCDocumentMigrationResult Migration;
 
-    const FString FutureJson = TEXT("{\"manifest\":{\"schemaVersion\":6},\"scenes\":[]}");
+    const FString FutureJson = TEXT("{\"manifest\":{\"schemaVersion\":7},\"scenes\":[]}");
     TestFalse(TEXT("Future project version is rejected"), FAkUGCDocumentJson::Deserialize(FutureJson, Output, &Error, &Migration));
-    TestEqual(TEXT("Future version is reported"), Migration.SourceVersion, 6);
+    TestEqual(TEXT("Future version is reported"), Migration.SourceVersion, 7);
     TestEqual(TEXT("Future version error path is precise"), Migration.ErrorPath, FString(TEXT("manifest.schemaVersion")));
     TestFalse(TEXT("Rejected output is reset instead of partially populated"), Output.Manifest.ProjectId.IsValid());
 
@@ -587,6 +588,158 @@ bool FAkUGCDocumentLogicLayoutMigrationTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("First node Y is initialized"), FirstNode->GetNumberField(TEXT("positionY")), 0.0);
     TestEqual(TEXT("Second node X is initialized"), SecondNode->GetNumberField(TEXT("positionX")), 0.0);
     TestEqual(TEXT("Second node Y is staggered below the first"), SecondNode->GetNumberField(TEXT("positionY")), 180.0);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FAkUGCDocumentInitialResourcesMigrationTest,
+    "AkUGC.Core.Document.Migration.InitialResourcesV5ToV6",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCDocumentInitialResourcesMigrationTest::RunTest(const FString& Parameters)
+{
+    FAkUGCProjectDocument Source;
+    Source.Manifest.ProjectId = FGuid::NewGuid();
+    Source.Manifest.DisplayName = TEXT("Resource migration");
+    Source.Manifest.TemplateId = TEXT("official.tower_defense");
+    FAkUGCSceneDocument& Scene = Source.Scenes.AddDefaulted_GetRef();
+    Scene.SceneId = FGuid::NewGuid();
+    Scene.DisplayName = TEXT("Author scene");
+    TestEqual(TEXT("New ruleset starts with 200 resources"), Scene.Ruleset.InitialResources, 200);
+    FAkUGCEntityRecord& Entity = Scene.Entities.AddDefaulted_GetRef();
+    Entity.EntityId = FGuid::NewGuid();
+    Entity.PrefabId = TEXT("official.gameplay.base");
+    Entity.Transform = FTransform(FVector(123.0, 456.0, 78.0));
+    Entity.Tags.Add(TEXT("creator.keep"));
+    FAkUGCLogicNode& Start = Scene.LogicGraph.Nodes.AddDefaulted_GetRef();
+    Start.NodeId = FGuid::NewGuid();
+    Start.Type = EAkUGCLogicNodeType::GameStart;
+    Start.PositionX = 91.0f;
+    Start.PositionY = 27.0f;
+    FString Json;
+    FString Error;
+    TestTrue(TEXT("V6 source serializes"), FAkUGCDocumentJson::Serialize(Source, Json, &Error));
+    TSharedPtr<FJsonObject> Root;
+    const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Json);
+    if (!FJsonSerializer::Deserialize(Reader, Root) || !Root.IsValid())
+    {
+        return false;
+    }
+    const TSharedPtr<FJsonObject> Manifest = Root->GetObjectField(TEXT("manifest"));
+    const TSharedPtr<FJsonObject> Ruleset = Root->GetArrayField(TEXT("scenes"))[0]->AsObject()->GetObjectField(TEXT("ruleset"));
+    Manifest->SetNumberField(TEXT("schemaVersion"), 5);
+    Ruleset->RemoveField(TEXT("initialResources"));
+    FString LegacyJson;
+    const TSharedRef<TJsonWriter<>> LegacyWriter = TJsonWriterFactory<>::Create(&LegacyJson);
+    TestTrue(TEXT("V5 fixture serializes"), FJsonSerializer::Serialize(Root.ToSharedRef(), LegacyWriter));
+    FAkUGCProjectDocument Migrated;
+    FAkUGCDocumentMigrationResult Migration;
+    TestTrue(TEXT("V5 fixture migrates"), FAkUGCDocumentJson::Deserialize(LegacyJson, Migrated, &Error, &Migration));
+    if (Migrated.Scenes.Num() != 1)
+    {
+        return false;
+    }
+    TestEqual(TEXT("V5 migration reports original version"), Migration.SourceVersion, 5);
+    TestEqual(TEXT("V5 migration applies one step"), Migration.AppliedSteps.Num(), 1);
+    TestTrue(TEXT("V5 to V6 step recorded"), Migration.AppliedSteps.Contains(TEXT("ProjectDocumentV5ToV6")));
+    TestEqual(TEXT("Migrated old ruleset retains zero-resource behavior"), Migrated.Scenes[0].Ruleset.InitialResources, 0);
+    Source.Scenes[0].Ruleset.InitialResources = 0;
+    TestEqual(TEXT("Migration preserves author scene, IDs, transforms, tags and logic layout"),
+        FAkUGCLogicPackHasher::HashDocument(Migrated), FAkUGCLogicPackHasher::HashDocument(Source));
+    Ruleset->SetNumberField(TEXT("initialResources"), 321);
+    FString ExplicitJson;
+    const TSharedRef<TJsonWriter<>> ExplicitWriter = TJsonWriterFactory<>::Create(&ExplicitJson);
+    TestTrue(TEXT("Explicit old resources fixture serializes"), FJsonSerializer::Serialize(Root.ToSharedRef(), ExplicitWriter));
+    TestTrue(TEXT("Explicit old resources migrate"), FAkUGCDocumentJson::Deserialize(ExplicitJson, Migrated, &Error));
+    if (Migrated.Scenes.Num() == 1)
+    {
+        TestEqual(TEXT("Explicit old resources are preserved"), Migrated.Scenes[0].Ruleset.InitialResources, 321);
+    }
+    Manifest->SetNumberField(TEXT("schemaVersion"), 6);
+    const TArray<TSharedPtr<FJsonValue>> InvalidValues = {
+        MakeShared<FJsonValueString>(TEXT("200")), MakeShared<FJsonValueBoolean>(true),
+        MakeShared<FJsonValueNumber>(-1), MakeShared<FJsonValueNumber>(0.5),
+        MakeShared<FJsonValueNumber>(1000001), MakeShared<FJsonValueNull>()};
+    for (const TSharedPtr<FJsonValue>& Invalid : InvalidValues)
+    {
+        Ruleset->SetField(TEXT("initialResources"), Invalid);
+        FString InvalidJson;
+        const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&InvalidJson);
+        TestTrue(TEXT("Malformed resources fixture serializes"), FJsonSerializer::Serialize(Root.ToSharedRef(), Writer));
+        TestFalse(TEXT("Resource JSON rejects wrong type or range"), FAkUGCDocumentJson::Deserialize(InvalidJson, Migrated, &Error));
+        TestTrue(TEXT("Rejected document output stays reset"), Migrated.Scenes.IsEmpty());
+    }
+    Ruleset->RemoveField(TEXT("initialResources"));
+    FString MissingJson;
+    const TSharedRef<TJsonWriter<>> MissingWriter = TJsonWriterFactory<>::Create(&MissingJson);
+    TestTrue(TEXT("Missing field fixture serializes"), FJsonSerializer::Serialize(Root.ToSharedRef(), MissingWriter));
+    TestFalse(TEXT("V6 initialResources is required"), FAkUGCDocumentJson::Deserialize(MissingJson, Migrated, &Error));
+    Ruleset->SetNumberField(TEXT("InitialResources"), 200);
+    const FAkUGCDocumentMigrationResult Alias = FAkUGCDocumentMigrator::Migrate(Root.ToSharedRef());
+    TestFalse(TEXT("Resource alias rejected before migration"), Alias.bSucceeded);
+    TestEqual(TEXT("Alias error has precise path"), Alias.ErrorPath, FString(TEXT("scenes[0].ruleset.initialResources")));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FAkUGCDocumentSpawnOverridesTest,
+    "AkUGC.Core.Document.SpawnOverridesValidationAndHash",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCDocumentSpawnOverridesTest::RunTest(const FString& Parameters)
+{
+    FAkUGCProjectDocument Document;
+    Document.Manifest.ProjectId = FGuid::NewGuid();
+    Document.Manifest.DisplayName = TEXT("Enemy overrides");
+    Document.Manifest.TemplateId = TEXT("official.tower_defense");
+    FAkUGCSceneDocument& Scene = Document.Scenes.AddDefaulted_GetRef();
+    Scene.SceneId = FGuid::NewGuid();
+    FAkUGCEntityRecord& Entity = Scene.Entities.AddDefaulted_GetRef();
+    Entity.EntityId = FGuid::NewGuid();
+    Entity.PrefabId = TEXT("official.gameplay.enemy_spawn");
+    FAkUGCComponentRecord& Spawn = Entity.Components.AddDefaulted_GetRef();
+    Spawn.TypeId = TEXT("tower_defense.spawn");
+    TestTrue(TEXT("Legacy spawn without override fields validates"), FAkUGCDocumentValidator::Validate(Document).IsValid());
+    const FString BeforeResources = FAkUGCLogicPackHasher::HashDocument(Document);
+    Scene.Ruleset.InitialResources += 1;
+    TestNotEqual(TEXT("InitialResources changes content hash"), FAkUGCLogicPackHasher::HashDocument(Document), BeforeResources);
+    const TArray<FName> Fields = {TEXT("enemyMaxHealth"), TEXT("enemyMoveSpeed"), TEXT("enemyGoalDamage")};
+    const TArray<double> Minima = {1.0, 10.0, 0.0};
+    const TArray<double> Maxima = {100000.0, 2000.0, 100000.0};
+    for (int32 Index = 0; Index < Fields.Num(); ++Index)
+    {
+        const FString BeforeOverride = FAkUGCLogicPackHasher::HashDocument(Document);
+        FAkUGCValue Value;
+        Value.Type = EAkUGCValueType::Number;
+        Value.NumberValue = Minima[Index];
+        Spawn.Properties.Add(Fields[Index], Value);
+        TestTrue(TEXT("Override lower bound validates"), FAkUGCDocumentValidator::Validate(Document).IsValid());
+        TestNotEqual(TEXT("Enemy override changes content hash"), FAkUGCLogicPackHasher::HashDocument(Document), BeforeOverride);
+        Value.NumberValue = Maxima[Index];
+        Spawn.Properties.Add(Fields[Index], Value);
+        TestTrue(TEXT("Override upper bound validates"), FAkUGCDocumentValidator::Validate(Document).IsValid());
+        Value.NumberValue = Maxima[Index] + 1.0;
+        Spawn.Properties.Add(Fields[Index], Value);
+        TestFalse(TEXT("Override beyond upper bound rejected"), FAkUGCDocumentValidator::Validate(Document).IsValid());
+        Value.NumberValue = Minima[Index] - 1.0;
+        Spawn.Properties.Add(Fields[Index], Value);
+        TestFalse(TEXT("Override below lower bound rejected"), FAkUGCDocumentValidator::Validate(Document).IsValid());
+        Value.Type = EAkUGCValueType::Integer;
+        Value.NumberValue = Minima[Index];
+        Spawn.Properties.Add(Fields[Index], Value);
+        TestFalse(TEXT("Override wrong typed value rejected"), FAkUGCDocumentValidator::Validate(Document).IsValid());
+        Value.Type = EAkUGCValueType::Number;
+        Value.NumberValue = Minima[Index];
+        Spawn.Properties.Add(Fields[Index], Value);
+        FString Json;
+        FString Error;
+        TestTrue(TEXT("Enemy override serializes"), FAkUGCDocumentJson::Serialize(Document, Json, &Error));
+        FAkUGCProjectDocument Restored;
+        TestTrue(TEXT("Enemy override deserializes"), FAkUGCDocumentJson::Deserialize(Json, Restored, &Error));
+        TestEqual(TEXT("Enemy override survives JSON without hash drift"),
+            FAkUGCLogicPackHasher::HashDocument(Restored), FAkUGCLogicPackHasher::HashDocument(Document));
+        Spawn.Properties.Remove(Fields[Index]);
+    }
     return true;
 }
 

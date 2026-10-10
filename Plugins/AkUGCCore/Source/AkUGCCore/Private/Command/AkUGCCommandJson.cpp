@@ -1,7 +1,11 @@
 #include "Command/AkUGCCommandJson.h"
 
 #include "Command/AkUGCCommand.h"
+#include "Document/AkUGCDocumentJson.h"
+#include "Dom/JsonObject.h"
 #include "JsonObjectConverter.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
 #include "String/LexFromString.h"
 #include "UObject/UnrealType.h"
 
@@ -86,11 +90,70 @@ bool FAkUGCCommandJson::Deserialize(
     FString* OutError)
 {
     OutTransaction = FAkUGCCommandTransaction{};
+    if (!FAkUGCDocumentJson::ValidateNoDuplicateFields(Json, OutError))
+    {
+        return false;
+    }
+    TSharedPtr<FJsonObject> Root;
+    const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Json);
+    if (!FJsonSerializer::Deserialize(Reader, Root) || !Root.IsValid())
+    {
+        if (OutError)
+        {
+            *OutError = TEXT("Failed to parse UGC command transaction JSON.");
+        }
+        return false;
+    }
+    const TArray<TSharedPtr<FJsonValue>>* Commands = nullptr;
+    if (!Root->TryGetArrayField(TEXT("commands"), Commands) || !Commands)
+    {
+        if (OutError)
+        {
+            *OutError = TEXT("commands: Field must be an array.");
+        }
+        return false;
+    }
+    for (int32 Index = 0; Index < Commands->Num(); ++Index)
+    {
+        const TSharedPtr<FJsonValue>& Value = (*Commands)[Index];
+        if (!Value.IsValid() || Value->Type != EJson::Object || !Value->AsObject().IsValid())
+        {
+            if (OutError)
+            {
+                *OutError = FString::Printf(TEXT("commands[%d]: Command must be an object."), Index);
+            }
+            return false;
+        }
+        for (const auto& Pair : Value->AsObject()->Values)
+        {
+            const FString Key(Pair.Key.ToView());
+            if (!Key.Equals(TEXT("initialResources"), ESearchCase::IgnoreCase))
+            {
+                continue;
+            }
+            const double Resources = Pair.Value.IsValid() && Pair.Value->Type == EJson::Number
+                ? Pair.Value->AsNumber() : -2.0;
+            if (Key != TEXT("initialResources")
+                || !FMath::IsFinite(Resources)
+                || Resources != FMath::TruncToDouble(Resources)
+                || Resources < INDEX_NONE
+                || Resources > AkUGCTowerDefenseRulesetLimits::MaxInitialResources)
+            {
+                if (OutError)
+                {
+                    *OutError = FString::Printf(
+                        TEXT("commands[%d].initialResources: Expected canonical integer from 0 to 1000000 or -1 to preserve resources."), Index);
+                }
+                return false;
+            }
+        }
+    }
     const FJsonObjectConverter::CustomImportCallback ImportCallback =
         FJsonObjectConverter::CustomImportCallback::CreateStatic(&ImportCommandProperty);
+    FAkUGCCommandTransaction ParsedTransaction;
     const bool bSucceeded = FJsonObjectConverter::JsonObjectStringToUStruct(
         Json,
-        &OutTransaction,
+        &ParsedTransaction,
         0,
         0,
         false,
@@ -99,6 +162,10 @@ bool FAkUGCCommandJson::Deserialize(
     if (!bSucceeded && OutError)
     {
         *OutError = TEXT("Failed to deserialize UGC command transaction.");
+    }
+    if (bSucceeded)
+    {
+        OutTransaction = MoveTemp(ParsedTransaction);
     }
     return bSucceeded;
 }

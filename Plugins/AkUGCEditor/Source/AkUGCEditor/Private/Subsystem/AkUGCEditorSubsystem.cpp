@@ -83,19 +83,68 @@ void UAkUGCEditorSubsystem::Deinitialize()
 
 bool UAkUGCEditorSubsystem::NewTowerDefenseProject(FString* OutError)
 {
+    if (!PrefabRegistry)
+    {
+        if (OutError)
+        {
+            *OutError = TEXT("Prefab registry is not initialized.");
+        }
+        return false;
+    }
     FAkUGCProjectDocument NewDocument;
-    NewDocument.Manifest.ProjectId = FGuid::NewGuid();
-    NewDocument.Manifest.DisplayName = TEXT("Tower Defense Project");
-    NewDocument.Manifest.TemplateId = TEXT("official.tower_defense");
-    NewDocument.Manifest.Capabilities = {
-        TEXT("world.spawn"),
-        TEXT("rules.wave"),
-        TEXT("combat.damage")};
-
-    FAkUGCSceneDocument& Scene = NewDocument.Scenes.AddDefaulted_GetRef();
-    Scene.SceneId = FGuid::NewGuid();
-    Scene.DisplayName = TEXT("Main");
+    if (!FAkUGCTowerDefenseTemplate::CreateDefaultDocument(*PrefabRegistry, NewDocument, OutError))
+    {
+        return false;
+    }
     return OpenDocument(MoveTemp(NewDocument), OutError);
+}
+
+bool UAkUGCEditorSubsystem::GetTowerDefenseParameters(
+    FAkUGCTowerDefenseParameters& OutParameters, FString* OutError) const
+{
+    if (!HasOpenProject())
+    {
+        if (OutError)
+        {
+            *OutError = TEXT("No UGC project is open.");
+        }
+        return false;
+    }
+    return FAkUGCTowerDefenseTemplate::ReadParameters(Document, ActiveSceneId, OutParameters, OutError);
+}
+
+bool UAkUGCEditorSubsystem::ApplyTowerDefenseParameters(
+    const FAkUGCTowerDefenseParameters& Parameters, FString* OutError)
+{
+    if (!CommandService)
+    {
+        if (OutError)
+        {
+            *OutError = NoSessionResult().ErrorMessage;
+        }
+        return false;
+    }
+    TGuardValue<bool> ApplyingGuard(bApplyingUGCTransaction, true);
+    const FAkUGCCommandExecutionResult Result = CommandService->ApplyTowerDefenseParameters(Parameters);
+    if (!Result.bSucceeded)
+    {
+        if (OutError)
+        {
+            *OutError = Result.ErrorPath.IsEmpty() ? Result.ErrorMessage
+                : FString::Printf(TEXT("%s: %s"), *Result.ErrorPath, *Result.ErrorMessage);
+        }
+        return false;
+    }
+    if (SelectedEntityId.IsValid() && !FindEntity(SelectedEntityId))
+    {
+        SelectedEntityId.Invalidate();
+    }
+    ++DocumentRevision;
+    if (OutError)
+    {
+        OutError->Reset();
+    }
+    return true;
 }
 
 bool UAkUGCEditorSubsystem::SaveProject(const FString& FilePath, FString* OutError) const

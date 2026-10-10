@@ -3,6 +3,10 @@
 #include "Command/AkUGCCommandHistory.h"
 #include "Command/AkUGCCommandJson.h"
 #include "Document/AkUGCDocument.h"
+#include "Dom/JsonObject.h"
+#include "Pack/AkUGCLogicPackHasher.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -269,6 +273,95 @@ bool FAkUGCRulesetCommandAtomicReferenceTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Redo atomic Ruleset delete succeeds"), History.Redo(Document).bSucceeded);
     TestTrue(TEXT("Redo removes Wave"), Document.Scenes[0].Ruleset.Waves.IsEmpty());
     TestTrue(TEXT("Redo removes Spawn Point"), Document.Scenes[0].Entities.IsEmpty());
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FAkUGCInitialResourcesCommandTest,
+    "AkUGC.Core.Command.InitialResourcesUndoRedo",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCInitialResourcesCommandTest::RunTest(const FString& Parameters)
+{
+    FGuid SceneId;
+    FAkUGCProjectDocument Document = MakeDocument(SceneId);
+    Document.Scenes[0].Ruleset.InitialResources = 0;
+    const FString OriginalHash = FAkUGCLogicPackHasher::HashDocument(Document);
+    FAkUGCCommand Settings = MakeCommand(EAkUGCCommandType::SetRulesetSettings, SceneId, {});
+    Settings.InitialResources = 450;
+    Settings.WaveIntervalSeconds = 12.0;
+    FAkUGCCommandHistory History;
+    const FAkUGCCommandTransaction Source = MakeTransaction(TEXT("Set initial resources"), {Settings});
+    FString Json;
+    FString Error;
+    TestTrue(TEXT("Settings serialize"), FAkUGCCommandJson::Serialize(Source, Json, &Error));
+    FAkUGCCommandTransaction Restored;
+    TestTrue(TEXT("Settings deserialize"), FAkUGCCommandJson::Deserialize(Json, Restored, &Error));
+    if (Restored.Commands.Num() != 1)
+    {
+        return false;
+    }
+    TestEqual(TEXT("Initial resources round-trip"), Restored.Commands[0].InitialResources, 450);
+    TestTrue(TEXT("Settings execute"), History.Execute(Document, Restored).bSucceeded);
+    TestEqual(TEXT("Initial resources apply"), Document.Scenes[0].Ruleset.InitialResources, 450);
+    TestTrue(TEXT("Settings undo"), History.Undo(Document).bSucceeded);
+    TestEqual(TEXT("Undo restores migrated zero resources"), Document.Scenes[0].Ruleset.InitialResources, 0);
+    TestEqual(TEXT("Undo restores interval"), Document.Scenes[0].Ruleset.WaveIntervalSeconds, 5.0);
+    TestEqual(TEXT("Undo restores exact document hash"), FAkUGCLogicPackHasher::HashDocument(Document), OriginalHash);
+    TestTrue(TEXT("Settings redo"), History.Redo(Document).bSucceeded);
+    TestEqual(TEXT("Redo restores resources"), Document.Scenes[0].Ruleset.InitialResources, 450);
+    for (const int32 Invalid : {-2, AkUGCTowerDefenseRulesetLimits::MaxInitialResources + 1})
+    {
+        Settings.InitialResources = Invalid;
+        TestFalse(TEXT("Invalid resources reject atomically"), History.Execute(
+            Document, MakeTransaction(TEXT("Invalid initial resources"), {Settings})).bSucceeded);
+        TestEqual(TEXT("Rejected resources preserve document"), Document.Scenes[0].Ruleset.InitialResources, 450);
+    }
+    Settings.InitialResources = INDEX_NONE;
+    Settings.WaveIntervalSeconds = 3.0;
+    TestTrue(TEXT("Old C++ settings call keeps resources"), History.Execute(
+        Document, MakeTransaction(TEXT("Legacy settings"), {Settings})).bSucceeded);
+    TestEqual(TEXT("Legacy settings do not reset resources"), Document.Scenes[0].Ruleset.InitialResources, 450);
+    const TArray<FString> DuplicateJsonInputs = {
+        TEXT("{\"commands\":[{\"initialResources\":\"invalid\",\"initialResources\":450}]}"),
+        TEXT("{\"commands\":[{\"initialResources\":450,\"initialResources\":450}]}"),
+        TEXT("{\"commands\":[{\"initialResources\":450,\"entity\":{\"\":1,\"\":2}}]}"),
+        TEXT("{\"commands\":[],\"commands\":[{\"initialResources\":450}]}")};
+    for (const FString& DuplicateJson : DuplicateJsonInputs)
+    {
+        TestFalse(TEXT("Duplicate command JSON fields reject before overwrite"),
+            FAkUGCCommandJson::Deserialize(DuplicateJson, Restored, &Error));
+        TestTrue(TEXT("Duplicate JSON error is explicit"), Error.Contains(TEXT("duplicated")));
+        TestTrue(TEXT("Duplicate JSON output stays reset"), Restored.Commands.IsEmpty());
+    }
+    TSharedPtr<FJsonObject> Root;
+    const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Json);
+    if (!FJsonSerializer::Deserialize(Reader, Root) || !Root.IsValid())
+    {
+        return false;
+    }
+    const TSharedPtr<FJsonObject> CommandObject = Root->GetArrayField(TEXT("commands"))[0]->AsObject();
+    const TArray<TSharedPtr<FJsonValue>> InvalidJsonValues = {
+        MakeShared<FJsonValueString>(TEXT("450")), MakeShared<FJsonValueBoolean>(true),
+        MakeShared<FJsonValueNumber>(0.5), MakeShared<FJsonValueNumber>(1000001), MakeShared<FJsonValueNumber>(-2)};
+    for (const TSharedPtr<FJsonValue>& Invalid : InvalidJsonValues)
+    {
+        CommandObject->SetField(TEXT("initialResources"), Invalid);
+        FString BadJson;
+        const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&BadJson);
+        TestTrue(TEXT("Invalid fixture serializes"), FJsonSerializer::Serialize(Root.ToSharedRef(), Writer));
+        TestFalse(TEXT("Malformed resource JSON is rejected"), FAkUGCCommandJson::Deserialize(BadJson, Restored, &Error));
+        TestTrue(TEXT("Failed command output is reset"), Restored.Commands.IsEmpty());
+    }
+    CommandObject->RemoveField(TEXT("initialResources"));
+    FString LegacyJson;
+    const TSharedRef<TJsonWriter<>> LegacyWriter = TJsonWriterFactory<>::Create(&LegacyJson);
+    TestTrue(TEXT("Legacy fixture serializes"), FJsonSerializer::Serialize(Root.ToSharedRef(), LegacyWriter));
+    TestTrue(TEXT("Old JSON command loads"), FAkUGCCommandJson::Deserialize(LegacyJson, Restored, &Error));
+    if (Restored.Commands.Num() == 1)
+    {
+        TestEqual(TEXT("Missing resource field retains preserve sentinel"), Restored.Commands[0].InitialResources, INDEX_NONE);
+    }
     return true;
 }
 

@@ -3,6 +3,7 @@
 #include "Command/AkUGCCommand.h"
 #include "Prefab/AkUGCPrefabRegistry.h"
 #include "Session/AkUGCDocumentRuntimeSession.h"
+#include "Template/AkUGCTowerDefenseTemplate.h"
 
 namespace
 {
@@ -479,6 +480,18 @@ FAkUGCCommandExecutionResult FAkUGCRuntimeCommandService::SetEntityProperty(
     return Execute(MoveTemp(Transaction));
 }
 
+FAkUGCCommandExecutionResult FAkUGCRuntimeCommandService::ApplyTowerDefenseParameters(
+    const FAkUGCTowerDefenseParameters& Parameters)
+{
+    FAkUGCCommandTransaction Transaction;
+    FString Error;
+    if (!FAkUGCTowerDefenseTemplate::BuildTransaction(Document, SceneId, Parameters, Registry, Transaction, &Error))
+    {
+        return Failure(TEXT("commandService.towerDefenseParameters"), MoveTemp(Error));
+    }
+    return Execute(MoveTemp(Transaction));
+}
+
 FAkUGCCommandExecutionResult FAkUGCRuntimeCommandService::AddWave(
     const FAkUGCTowerDefenseWave& Wave,
     int32 WaveIndex)
@@ -706,5 +719,16 @@ const FAkUGCSceneDocument* FAkUGCRuntimeCommandService::FindScene() const
 
 FAkUGCCommandExecutionResult FAkUGCRuntimeCommandService::Execute(FAkUGCCommandTransaction&& Transaction)
 {
+    if (Document.Manifest.TemplateId == TEXT("official.tower_defense"))
+    {
+        FAkUGCProjectDocument Candidate = Document;
+        const FAkUGCCommandExecutionResult Result = FAkUGCCommandExecutor::Apply(Candidate, Transaction);
+        if (!Result.bSucceeded) { return Result; }
+        FString Error;
+        if (!FAkUGCTowerDefenseTemplate::ValidateDocumentBudgets(Candidate, Registry, &Error))
+        {
+            return Failure(TEXT("commandService.budget"), MoveTemp(Error));
+        }
+    }
     return Session.Execute(Document, Transaction);
 }

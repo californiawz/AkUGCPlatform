@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "Document/AkUGCDocument.h"
 #include "Prefab/AkUGCPrefabDefinition.h"
+#include "Template/AkUGCTowerDefenseTemplate.h"
 #include "Widgets/SCompoundWidget.h"
 #include "Widgets/Views/SListView.h"
 #include "Widgets/Views/STreeView.h"
@@ -16,6 +17,37 @@ struct FAkUGCEntityTreeItem
 {
     FGuid EntityId;
     TArray<TSharedPtr<FAkUGCEntityTreeItem>> Children;
+};
+
+class SAkUGCTowerDefenseParameterForm final : public SCompoundWidget
+{
+public:
+    SLATE_BEGIN_ARGS(SAkUGCTowerDefenseParameterForm) {}
+    SLATE_END_ARGS()
+
+    void Construct(const FArguments& InArgs, UAkUGCEditorSubsystem* InSubsystem);
+    virtual void Tick(const FGeometry& AllottedGeometry, double InCurrentTime, float InDeltaTime) override;
+    const FAkUGCTowerDefenseParameters& GetDisplayedParameters() const { return Draft; }
+    bool HasReadableParameters() const { return bReadable; }
+
+private:
+    void RefreshParameters();
+    void RebuildFields();
+    void AddNumberField(const TCHAR* Label, double Minimum, double Maximum,
+        TFunction<double()> ReadValue, TFunction<void(double)> WriteValue);
+    void AddIntegerField(const TCHAR* Label, int32 Minimum, int32 Maximum,
+        TFunction<int32()> ReadValue, TFunction<void(int32)> WriteValue);
+    FReply ApplyParameters();
+    FReply ResetParameters();
+
+    TWeakObjectPtr<UAkUGCEditorSubsystem> Subsystem;
+    TSharedPtr<SVerticalBox> FieldsBox;
+    FAkUGCTowerDefenseParameters Draft;
+    FString Status;
+    uint64 ObservedDocumentRevision = MAX_uint64;
+    bool bReadable = false;
+    bool bDirty = false;
+    bool bRebuildRequested = false;
 };
 
 class SAkUGCCreatorPanel final : public SCompoundWidget

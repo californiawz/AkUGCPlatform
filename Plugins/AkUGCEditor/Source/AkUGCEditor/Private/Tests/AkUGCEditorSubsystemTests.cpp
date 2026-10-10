@@ -1,12 +1,14 @@
 #include "Misc/AutomationTest.h"
 
 #include "Containers/Ticker.h"
+#include "Document/AkUGCDocumentJson.h"
 #include "Editor.h"
 #include "GameFramework/Actor.h"
 #include "Misc/App.h"
 #include "HAL/FileManager.h"
 #include "Misc/Paths.h"
 #include "Subsystem/AkUGCEditorSubsystem.h"
+#include "Widgets/SAkUGCCreatorPanel.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -27,7 +29,14 @@ bool FAkUGCEditorSubsystemWorkflowTest::RunTest(const FString& Parameters)
     }
 
     FString Error;
-    TestTrue(TEXT("Tower defense project is created"), Subsystem->NewTowerDefenseProject(&Error));
+    if (!Subsystem->NewTowerDefenseProject(&Error))
+    {
+        AddError(FString::Printf(TEXT("Failed to create project: %s"), *Error));
+        return false;
+    }
+    const int32 TemplateEntityCount = Subsystem->GetDocument().Scenes[0].Entities.Num();
+    TestTrue(TEXT("Default tower defense template is not empty"), TemplateEntityCount > 0);
+    TestFalse(TEXT("New template starts with no edit history"), Subsystem->CanUndo());
 
     FGuid EntityId;
     const FAkUGCCommandExecutionResult PlaceResult = Subsystem->PlacePrefab(
@@ -35,7 +44,7 @@ bool FAkUGCEditorSubsystemWorkflowTest::RunTest(const FString& Parameters)
         FTransform(FVector(100.0, 0.0, 0.0)),
         EntityId);
     TestTrue(TEXT("Official prefab is placed"), PlaceResult.bSucceeded);
-    TestEqual(TEXT("Document contains placed entity"), Subsystem->GetDocument().Scenes[0].Entities.Num(), 1);
+    TestEqual(TEXT("Document contains placed entity"), Subsystem->GetDocument().Scenes[0].Entities.Num(), TemplateEntityCount + 1);
     if (!IsRunningCommandlet() && !FApp::IsUnattended())
     {
         TestEqual(TEXT("Placed entity is selected in the editor"), Subsystem->GetSelectedEntityId(), EntityId);
@@ -47,25 +56,25 @@ bool FAkUGCEditorSubsystemWorkflowTest::RunTest(const FString& Parameters)
     {
         TestEqual(TEXT("Duplicate is selected"), Subsystem->GetSelectedEntityId(), DuplicateId);
     }
-    TestEqual(TEXT("Document contains duplicate"), Subsystem->GetDocument().Scenes[0].Entities.Num(), 2);
+    TestEqual(TEXT("Document contains duplicate"), Subsystem->GetDocument().Scenes[0].Entities.Num(), TemplateEntityCount + 2);
     TestTrue(TEXT("Duplicate deletes"), Subsystem->DeleteEntity(DuplicateId).bSucceeded);
-    TestEqual(TEXT("Delete removes duplicate"), Subsystem->GetDocument().Scenes[0].Entities.Num(), 1);
+    TestEqual(TEXT("Delete removes duplicate"), Subsystem->GetDocument().Scenes[0].Entities.Num(), TemplateEntityCount + 1);
     TestTrue(TEXT("Undo delete restores duplicate"), Subsystem->Undo().bSucceeded);
-    TestEqual(TEXT("Undo delete restores document entity"), Subsystem->GetDocument().Scenes[0].Entities.Num(), 2);
+    TestEqual(TEXT("Undo delete restores document entity"), Subsystem->GetDocument().Scenes[0].Entities.Num(), TemplateEntityCount + 2);
     TestTrue(TEXT("Undo duplicate removes duplicate"), Subsystem->Undo().bSucceeded);
-    TestEqual(TEXT("Undo duplicate restores one entity"), Subsystem->GetDocument().Scenes[0].Entities.Num(), 1);
+    TestEqual(TEXT("Undo duplicate restores one entity"), Subsystem->GetDocument().Scenes[0].Entities.Num(), TemplateEntityCount + 1);
 
     TestTrue(TEXT("Creator undo succeeds"), Subsystem->Undo().bSucceeded);
-    TestEqual(TEXT("Undo removes document entity"), Subsystem->GetDocument().Scenes[0].Entities.Num(), 0);
+    TestEqual(TEXT("Undo removes document entity"), Subsystem->GetDocument().Scenes[0].Entities.Num(), TemplateEntityCount);
     TestTrue(TEXT("Creator redo succeeds"), Subsystem->Redo().bSucceeded);
-    TestEqual(TEXT("Redo restores document entity"), Subsystem->GetDocument().Scenes[0].Entities.Num(), 1);
+    TestEqual(TEXT("Redo restores document entity"), Subsystem->GetDocument().Scenes[0].Entities.Num(), TemplateEntityCount + 1);
 
     const FString TestPath = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Automation/CreatorStudioWorkflow.json"));
     TestTrue(TEXT("Creator project saves"), Subsystem->SaveProject(TestPath, &Error));
     Subsystem->CloseProject();
     TestFalse(TEXT("Close clears active project"), Subsystem->HasOpenProject());
     TestTrue(TEXT("Creator project loads"), Subsystem->LoadProject(TestPath, &Error));
-    TestEqual(TEXT("Loaded project restores entity"), Subsystem->GetDocument().Scenes[0].Entities.Num(), 1);
+    TestEqual(TEXT("Loaded project restores entity"), Subsystem->GetDocument().Scenes[0].Entities.Num(), TemplateEntityCount + 1);
 
     Subsystem->CloseProject();
     IFileManager::Get().Delete(*TestPath, false, true);
@@ -347,7 +356,28 @@ bool FAkUGCEditorLogicListEditingTest::RunTest(const FString& Parameters)
     }
 
     FString Error;
-    TestTrue(TEXT("Tower defense project is created"), Subsystem->NewTowerDefenseProject(&Error));
+    if (!Subsystem->NewTowerDefenseProject(&Error))
+    {
+        AddError(FString::Printf(TEXT("Failed to create project: %s"), *Error));
+        return false;
+    }
+    TArray<FGuid> InitialNodeIds;
+    for (const FAkUGCLogicNode& Node : Subsystem->GetLogicGraph()->Nodes)
+    {
+        InitialNodeIds.Add(Node.NodeId);
+    }
+    for (const FGuid& NodeId : InitialNodeIds)
+    {
+        const FAkUGCCommandExecutionResult Result = Subsystem->DeleteLogicNode(NodeId);
+        if (!Result.bSucceeded)
+        {
+            AddError(FString::Printf(TEXT("Failed to prepare isolated advanced Logic test graph: %s"), *Result.ErrorMessage));
+            Subsystem->CloseProject();
+            return false;
+        }
+    }
+    const int32 TemplateNodeCount = Subsystem->GetLogicGraph()->Nodes.Num();
+    const int32 TemplateConnectionCount = Subsystem->GetLogicGraph()->Connections.Num();
 
     FGuid AnchorId;
     TestTrue(
@@ -383,8 +413,8 @@ bool FAkUGCEditorLogicListEditingTest::RunTest(const FString& Parameters)
         TestNotNull(TEXT("Logic graph is exposed"), Graph);
         if (Graph)
         {
-            TestEqual(TEXT("Logic graph lists three nodes"), Graph->Nodes.Num(), 3);
-            TestEqual(TEXT("Logic graph lists two connections"), Graph->Connections.Num(), 2);
+            TestEqual(TEXT("Logic graph lists three nodes"), Graph->Nodes.Num(), TemplateNodeCount + 3);
+            TestEqual(TEXT("Logic graph lists two connections"), Graph->Connections.Num(), TemplateConnectionCount + 2);
         }
     }
 
@@ -410,7 +440,7 @@ bool FAkUGCEditorLogicListEditingTest::RunTest(const FString& Parameters)
         const FAkUGCLogicGraph* Graph = Subsystem->GetLogicGraph();
         if (Graph)
         {
-            TestEqual(TEXT("Disconnect leaves one connection"), Graph->Connections.Num(), 1);
+            TestEqual(TEXT("Disconnect leaves one connection"), Graph->Connections.Num(), TemplateConnectionCount + 1);
         }
     }
     TestTrue(TEXT("Undo disconnect succeeds"), Subsystem->Undo().bSucceeded);
@@ -418,7 +448,7 @@ bool FAkUGCEditorLogicListEditingTest::RunTest(const FString& Parameters)
         const FAkUGCLogicGraph* Graph = Subsystem->GetLogicGraph();
         if (Graph)
         {
-            TestEqual(TEXT("Undo restores two connections"), Graph->Connections.Num(), 2);
+            TestEqual(TEXT("Undo restores two connections"), Graph->Connections.Num(), TemplateConnectionCount + 2);
         }
     }
     TestTrue(TEXT("Redo disconnect succeeds"), Subsystem->Redo().bSucceeded);
@@ -426,7 +456,7 @@ bool FAkUGCEditorLogicListEditingTest::RunTest(const FString& Parameters)
         const FAkUGCLogicGraph* Graph = Subsystem->GetLogicGraph();
         if (Graph)
         {
-            TestEqual(TEXT("Redo disconnect leaves one connection"), Graph->Connections.Num(), 1);
+            TestEqual(TEXT("Redo disconnect leaves one connection"), Graph->Connections.Num(), TemplateConnectionCount + 1);
         }
     }
 
@@ -439,8 +469,8 @@ bool FAkUGCEditorLogicListEditingTest::RunTest(const FString& Parameters)
         const FAkUGCLogicGraph* Graph = Subsystem->GetLogicGraph();
         if (Graph)
         {
-            TestEqual(TEXT("Delete removes spawn node"), Graph->Nodes.Num(), 2);
-            TestEqual(TEXT("Delete cascades spawn connection"), Graph->Connections.Num(), 1);
+            TestEqual(TEXT("Delete removes spawn node"), Graph->Nodes.Num(), TemplateNodeCount + 2);
+            TestEqual(TEXT("Delete cascades spawn connection"), Graph->Connections.Num(), TemplateConnectionCount + 1);
         }
     }
     TestTrue(TEXT("Undo delete node succeeds"), Subsystem->Undo().bSucceeded);
@@ -448,8 +478,8 @@ bool FAkUGCEditorLogicListEditingTest::RunTest(const FString& Parameters)
         const FAkUGCLogicGraph* Graph = Subsystem->GetLogicGraph();
         if (Graph)
         {
-            TestEqual(TEXT("Undo restores three nodes"), Graph->Nodes.Num(), 3);
-            TestEqual(TEXT("Undo restores spawn connection"), Graph->Connections.Num(), 2);
+            TestEqual(TEXT("Undo restores three nodes"), Graph->Nodes.Num(), TemplateNodeCount + 3);
+            TestEqual(TEXT("Undo restores spawn connection"), Graph->Connections.Num(), TemplateConnectionCount + 2);
         }
     }
 
@@ -462,6 +492,146 @@ bool FAkUGCEditorLogicListEditingTest::RunTest(const FString& Parameters)
         FAkUGCDocumentValidator::ValidateLogicGraph(InvalidGraph).IsValid());
 
     Subsystem->CloseProject();
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FAkUGCEditorTowerDefenseParameterWorkflowTest,
+    "AkUGC.Editor.CreatorStudio.TowerDefenseParameterWorkflow",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCEditorTowerDefenseParameterWorkflowTest::RunTest(const FString& Parameters)
+{
+    UAkUGCEditorSubsystem* Subsystem = GEditor ? GEditor->GetEditorSubsystem<UAkUGCEditorSubsystem>() : nullptr;
+    TestNotNull(TEXT("Creator Studio subsystem exists"), Subsystem);
+    if (!Subsystem)
+    {
+        return false;
+    }
+    FString Error;
+    if (!Subsystem->NewTowerDefenseProject(&Error))
+    {
+        AddError(FString::Printf(TEXT("Failed to create default template: %s"), *Error));
+        return false;
+    }
+    FAkUGCTowerDefenseParameters DefaultParameters;
+    if (!Subsystem->GetTowerDefenseParameters(DefaultParameters, &Error))
+    {
+        AddError(FString::Printf(TEXT("Failed to read default template: %s"), *Error));
+        Subsystem->CloseProject();
+        return false;
+    }
+    TestEqual(TEXT("Default template exposes three waves"), DefaultParameters.Waves.Num(), 3);
+    TestTrue(TEXT("Default template contains scene entities"), !Subsystem->GetDocument().Scenes[0].Entities.IsEmpty());
+    TestFalse(TEXT("Default template has no Undo history"), Subsystem->CanUndo());
+    for (const FAkUGCEntityRecord& Entity : Subsystem->GetDocument().Scenes[0].Entities)
+    {
+        TestNotNull(TEXT("Default template entity has an editor projection"), Subsystem->FindRuntimeActor(Entity.EntityId));
+    }
+    const auto Snapshot = [Subsystem]()
+    {
+        FString Json;
+        FAkUGCDocumentJson::Serialize(Subsystem->GetDocument(), Json);
+        return Json;
+    };
+    const FString OriginalDocument = Snapshot();
+    const TSharedRef<SAkUGCTowerDefenseParameterForm> Form = SNew(SAkUGCTowerDefenseParameterForm, Subsystem);
+    TestTrue(TEXT("Simple form reads current document on construction"), Form->HasReadableParameters());
+    TestEqual(TEXT("Simple form initially displays three waves"), Form->GetDisplayedParameters().Waves.Num(), 3);
+    FAkUGCTowerDefenseParameters Edited = DefaultParameters;
+    Edited.Waves.SetNum(2);
+    Edited.BaseMaxHealth = 1700.0;
+    Edited.InitialResources = 425;
+    Edited.WaveIntervalSeconds = 7.5;
+    for (int32 Index = 0; Index < Edited.Waves.Num(); ++Index)
+    {
+        FAkUGCTowerDefenseWaveParameters& Wave = Edited.Waves[Index];
+        Wave.EnemyPrefabId = TEXT("official.unit.basic_enemy");
+        Wave.EnemyCount = 4 + Index;
+        Wave.SpawnIntervalSeconds = 0.75 + Index;
+        Wave.StartDelaySeconds = 1.25 + Index;
+        Wave.EnemyMaxHealth = 120.0 + Index * 30.0;
+        Wave.EnemyMoveSpeed = 280.0 + Index * 20.0;
+        Wave.EnemyGoalDamage = 12.0 + Index;
+    }
+    const uint64 RevisionBeforeApply = Subsystem->GetDocumentRevision();
+    TestTrue(TEXT("Parameter form applies through runtime command service"), Subsystem->ApplyTowerDefenseParameters(Edited, &Error));
+    TestEqual(TEXT("One apply advances revision once"), Subsystem->GetDocumentRevision(), RevisionBeforeApply + 1);
+    Form->Tick(FGeometry(), 0.0, 0.0f);
+    TestEqual(TEXT("Simple form refreshes applied wave count"), Form->GetDisplayedParameters().Waves.Num(), 2);
+    TestEqual(TEXT("Simple form refreshes applied base life"), Form->GetDisplayedParameters().BaseMaxHealth, Edited.BaseMaxHealth);
+    FAkUGCTowerDefenseParameters ReadBack;
+    TestTrue(TEXT("Applied parameters read from current document"), Subsystem->GetTowerDefenseParameters(ReadBack, &Error));
+    TestEqual(TEXT("Two wave configuration is read"), ReadBack.Waves.Num(), 2);
+    TestEqual(TEXT("Base life is applied"), ReadBack.BaseMaxHealth, Edited.BaseMaxHealth);
+    TestEqual(TEXT("Initial resources are applied"), ReadBack.InitialResources, Edited.InitialResources);
+    TestEqual(TEXT("Wave interval is applied"), ReadBack.WaveIntervalSeconds, Edited.WaveIntervalSeconds);
+    TestTrue(TEXT("Defeat rule is preserved"), ReadBack.DefeatCondition == Edited.DefeatCondition);
+    TestTrue(TEXT("Victory rule is preserved"), ReadBack.VictoryCondition == Edited.VictoryCondition);
+    for (int32 Index = 0; Index < ReadBack.Waves.Num() && Edited.Waves.IsValidIndex(Index); ++Index)
+    {
+        const FAkUGCTowerDefenseWaveParameters& Expected = Edited.Waves[Index];
+        const FAkUGCTowerDefenseWaveParameters& Actual = ReadBack.Waves[Index];
+        TestEqual(TEXT("Enemy whitelist value is preserved"), Actual.EnemyPrefabId, Expected.EnemyPrefabId);
+        TestEqual(TEXT("Enemy count is applied"), Actual.EnemyCount, Expected.EnemyCount);
+        TestEqual(TEXT("Spawn interval is applied"), Actual.SpawnIntervalSeconds, Expected.SpawnIntervalSeconds);
+        TestEqual(TEXT("Start delay is applied"), Actual.StartDelaySeconds, Expected.StartDelaySeconds);
+        TestEqual(TEXT("Enemy health is applied"), Actual.EnemyMaxHealth, Expected.EnemyMaxHealth);
+        TestEqual(TEXT("Enemy speed is applied"), Actual.EnemyMoveSpeed, Expected.EnemyMoveSpeed);
+        TestEqual(TEXT("Goal damage is applied"), Actual.EnemyGoalDamage, Expected.EnemyGoalDamage);
+    }
+    const FString AppliedDocument = Snapshot();
+    const uint64 RevisionBeforeRejected = Subsystem->GetDocumentRevision();
+    FAkUGCTowerDefenseParameters Invalid = Edited;
+    Invalid.Waves[0].EnemyPrefabId = TEXT("untrusted.enemy");
+    TestFalse(TEXT("Unsupported enemy is rejected"), Subsystem->ApplyTowerDefenseParameters(Invalid, &Error));
+    TestFalse(TEXT("Rejected apply returns readable error"), Error.IsEmpty());
+    TestEqual(TEXT("Rejected enemy leaves document unchanged"), Snapshot(), AppliedDocument);
+    Invalid = Edited;
+    Invalid.Waves[0].EnemyCount = 0;
+    TestFalse(TEXT("Invalid enemy count is rejected"), Subsystem->ApplyTowerDefenseParameters(Invalid, &Error));
+    TestEqual(TEXT("Rejected count leaves document unchanged"), Snapshot(), AppliedDocument);
+    Invalid = Edited;
+    Invalid.Waves.SetNum(4);
+    TestFalse(TEXT("More than three waves are rejected"), Subsystem->ApplyTowerDefenseParameters(Invalid, &Error));
+    TestEqual(TEXT("Rejected wave count leaves revision unchanged"), Subsystem->GetDocumentRevision(), RevisionBeforeRejected);
+    TestTrue(TEXT("One Undo restores all parameter changes"), Subsystem->Undo().bSucceeded);
+    Form->Tick(FGeometry(), 1.0, 0.0f);
+    TestEqual(TEXT("Undo refreshes simple form to original waves"), Form->GetDisplayedParameters().Waves.Num(), 3);
+    TestEqual(TEXT("Undo refreshes simple form to original base life"), Form->GetDisplayedParameters().BaseMaxHealth, DefaultParameters.BaseMaxHealth);
+    TestEqual(TEXT("Undo restores original full document"), Snapshot(), OriginalDocument);
+    TestFalse(TEXT("Apply consumed exactly one history entry"), Subsystem->CanUndo());
+    TestTrue(TEXT("Undo refreshes parameter readback"), Subsystem->GetTowerDefenseParameters(ReadBack, &Error));
+    TestEqual(TEXT("Undo reads original three waves"), ReadBack.Waves.Num(), 3);
+    TestEqual(TEXT("Undo reads original base life"), ReadBack.BaseMaxHealth, DefaultParameters.BaseMaxHealth);
+    TestTrue(TEXT("Redo restores all parameter changes"), Subsystem->Redo().bSucceeded);
+    Form->Tick(FGeometry(), 2.0, 0.0f);
+    TestEqual(TEXT("Redo refreshes simple form wave count"), Form->GetDisplayedParameters().Waves.Num(), 2);
+    TestEqual(TEXT("Redo refreshes simple form base life"), Form->GetDisplayedParameters().BaseMaxHealth, Edited.BaseMaxHealth);
+    TestEqual(TEXT("Redo restores applied full document"), Snapshot(), AppliedDocument);
+    const FString TestPath = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Automation/CreatorStudioTowerDefenseParameters.json"));
+    TestTrue(TEXT("Parameter project saves"), Subsystem->SaveProject(TestPath, &Error));
+    Subsystem->CloseProject();
+    if (Subsystem->LoadProject(TestPath, &Error))
+    {
+        TestEqual(TEXT("Save and reload preserve applied document"), Snapshot(), AppliedDocument);
+        TestTrue(TEXT("Reload reads current parameters"), Subsystem->GetTowerDefenseParameters(ReadBack, &Error));
+        TestEqual(TEXT("Reload preserves base life"), ReadBack.BaseMaxHealth, Edited.BaseMaxHealth);
+        TestEqual(TEXT("Reload preserves resources"), ReadBack.InitialResources, Edited.InitialResources);
+        FAkUGCTowerDefenseParameters OneWave = ReadBack;
+        OneWave.Waves.SetNum(1);
+        TestTrue(TEXT("One-wave project applies"), Subsystem->ApplyTowerDefenseParameters(OneWave, &Error));
+        TestTrue(TEXT("One-wave project reads"), Subsystem->GetTowerDefenseParameters(ReadBack, &Error));
+        TestEqual(TEXT("One-wave lower bound is supported"), ReadBack.Waves.Num(), 1);
+    }
+    else
+    {
+        AddError(FString::Printf(TEXT("Parameter reload failed: %s"), *Error));
+    }
+    Subsystem->CloseProject();
+    IFileManager::Get().Delete(*TestPath, false, true);
+    TestFalse(TEXT("Closed project cannot read parameters"), Subsystem->GetTowerDefenseParameters(ReadBack, &Error));
+    TestFalse(TEXT("Closed project cannot apply parameters"), Subsystem->ApplyTowerDefenseParameters(Edited, &Error));
     return true;
 }
 

@@ -14,6 +14,7 @@ void AAkUGCGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutL
     DOREPLIFETIME(AAkUGCGameState, ReplicatedBaseHealthCurrent);
     DOREPLIFETIME(AAkUGCGameState, ReplicatedBaseHealthMaximum);
     DOREPLIFETIME(AAkUGCGameState, ReplicatedActiveEnemyCount);
+    DOREPLIFETIME(AAkUGCGameState, ReplicatedResources);
 }
 
 void AAkUGCGameState::ProjectWaveSnapshot(const FAkUGCWaveRuntimeSnapshot& Snapshot)
@@ -30,6 +31,22 @@ void AAkUGCGameState::ProjectBaseHealth(double Current, double Maximum)
 void AAkUGCGameState::ProjectActiveEnemyCount(int32 Count)
 {
     ReplicatedActiveEnemyCount = Count;
+}
+
+void AAkUGCGameState::InitializeResources(int32 InitialResources)
+{
+    if (!HasAuthority() || bResourcesInitialized || InitialResources < 0
+        || InitialResources > AkUGCTowerDefenseRulesetLimits::MaxInitialResources)
+    {
+        return;
+    }
+    ReplicatedResources = InitialResources;
+    bResourcesInitialized = true;
+}
+
+int32 AAkUGCGameState::GetResources() const
+{
+    return ReplicatedResources;
 }
 
 FAkUGCWaveRuntimeSnapshot AAkUGCGameState::GetWaveSnapshot() const

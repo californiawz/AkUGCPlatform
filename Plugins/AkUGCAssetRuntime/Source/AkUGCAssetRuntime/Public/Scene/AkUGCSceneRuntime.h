@@ -50,6 +50,7 @@ public:
     int32 GetActiveEnemyMovementCount() const;
     double GetBaseCurrentHealth() const;
     double GetBaseMaximumHealth() const;
+    int32 GetInitialResources() const;
     FGuid GetTowerDefenseBaseEntityId() const;
     FGuid GetTowerDefenseGoalEntityId() const;
     bool GetRuntimeHealth(const FGuid& EntityId, FAkUGCRuntimeHealth& OutHealth) const;
@@ -159,11 +160,13 @@ private:
     FAkUGCTowerDefensePath TowerDefensePath;
     FGuid TowerDefenseBaseEntityId;
     FGuid TowerDefenseGoalEntityId;
+    int32 InitialResources = 0;
     TMap<FGuid, FAkUGCRuntimeHealth> RuntimeHealthByEntityId;
     TSet<FGuid> DeadEntityIds;
     TMap<FGuid, FAkUGCTowerDefenseBasicTowerAttack> BasicTowerAttacks;
     TMap<FGuid, FAkUGCTowerDefenseEnemyMovement> EnemyMovements;
     TSet<FGuid> RuntimeSpawnedEntityIds;
+    int32 SuccessfulSpawnSequence = 0;
     TArray<FAkUGCTowerDefenseGoalReached> GoalReachedEvents;
     TMap<FGuid, TWeakObjectPtr<AActor>> Actors;
     TSet<FGuid> ExternallyDeletedEntityIds;

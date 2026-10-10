@@ -81,6 +81,7 @@ bool AAkUGCGameMode::InitializeAuthoritySession(FAkUGCProjectDocument& Document,
         return false;
     }
 
+    ProjectStateToGameState(GetGameState<AAkUGCGameState>());
     return true;
 }
 
@@ -198,6 +199,7 @@ void AAkUGCGameMode::ProjectStateToGameState(AAkUGCGameState* InGameState)
         LastProjectedActiveEnemyCount = EnemyCount;
     }
 
+    InGameState->InitializeResources(SceneRuntime->GetInitialResources());
     bHasProjectedState = true;
 }
 

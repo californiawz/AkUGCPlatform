@@ -52,7 +52,8 @@ FAkUGCLogicRuntimeResult UAkUGCLogicRuntimeSubsystem::RunGameStartForOwner(
     }
     ActiveProgram = CompileResult.Program;
     if (ActiveProgram.WaveStartEntryIndex != INDEX_NONE
-        && WaveConfig.Waves.Num() == AkUGCTowerDefenseRulesetLimits::RequiredWaveCount
+        && WaveConfig.Waves.Num() >= AkUGCTowerDefenseRulesetLimits::MinWaveCount
+        && WaveConfig.Waves.Num() <= AkUGCTowerDefenseRulesetLimits::MaxWaveCount
         && ActiveEnemyCountHandler)
     {
         WaveState.CurrentWaveIndex = 0;
@@ -480,12 +481,13 @@ bool UAkUGCLogicRuntimeSubsystem::ConfigureTowerDefenseWavesForOwner(
         }
         return false;
     }
-    if (Config.Waves.Num() != AkUGCTowerDefenseRulesetLimits::RequiredWaveCount
+    if (Config.Waves.Num() < AkUGCTowerDefenseRulesetLimits::MinWaveCount
+        || Config.Waves.Num() > AkUGCTowerDefenseRulesetLimits::MaxWaveCount
         || !InActiveEnemyCountHandler)
     {
         if (OutError)
         {
-            *OutError = TEXT("Wave configuration requires exactly three waves and an active enemy handler.");
+            *OutError = TEXT("Wave configuration requires one to three waves and an active enemy handler.");
         }
         return false;
     }

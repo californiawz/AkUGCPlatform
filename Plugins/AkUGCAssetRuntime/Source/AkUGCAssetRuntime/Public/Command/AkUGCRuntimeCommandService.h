@@ -5,6 +5,7 @@
 
 class FAkUGCDocumentRuntimeSession;
 class FAkUGCPrefabRegistry;
+struct FAkUGCTowerDefenseParameters;
 
 enum class EAkUGCEditingClient : uint8
 {
@@ -52,6 +53,7 @@ public:
         FName ComponentTypeId,
         FName PropertyId,
         const FAkUGCValue& Value);
+    FAkUGCCommandExecutionResult ApplyTowerDefenseParameters(const FAkUGCTowerDefenseParameters& Parameters);
     FAkUGCCommandExecutionResult AddWave(const FAkUGCTowerDefenseWave& Wave, int32 WaveIndex = INDEX_NONE);
     FAkUGCCommandExecutionResult UpdateWave(const FAkUGCTowerDefenseWave& Wave);
     FAkUGCCommandExecutionResult DeleteWave(const FGuid& WaveId);

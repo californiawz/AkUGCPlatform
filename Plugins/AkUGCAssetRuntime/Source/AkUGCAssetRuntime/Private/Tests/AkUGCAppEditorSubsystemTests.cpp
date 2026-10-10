@@ -8,6 +8,21 @@
 
 #if WITH_DEV_AUTOMATION_TESTS
 
+namespace
+{
+    bool OpenEmptyEditingFixture(UAkUGCAppEditorSubsystem& Subsystem)
+    {
+        FAkUGCProjectDocument Fixture = Subsystem.GetDocument();
+        Fixture.Scenes[0].Entities.Reset();
+        Fixture.Scenes[0].LogicGraph = FAkUGCLogicGraph{};
+        Fixture.Scenes[0].Ruleset.Waves.Reset();
+        FString Json;
+        FString Error;
+        return FAkUGCDocumentJson::Serialize(Fixture, Json, &Error)
+            && Subsystem.LoadProjectJson(Json).bSucceeded;
+    }
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FAkUGCAppEditorSubsystemWorkflowTest,
     "AkUGC.Runtime.AppEditor.BlueprintWorkflow",
@@ -46,6 +61,21 @@ bool FAkUGCAppEditorSubsystemWorkflowTest::RunTest(const FString& Parameters)
     }
 
     TestTrue(TEXT("App creates tower defense project"), Subsystem->NewTowerDefenseProject().bSucceeded);
+    FAkUGCTowerDefenseParameters TemplateParameters;
+    TestTrue(TEXT("App reads default shared parameters"), Subsystem->GetTowerDefenseParameters(TemplateParameters));
+    TestEqual(TEXT("Default template supplies three waves"), TemplateParameters.Waves.Num(), 3);
+    TestEqual(TEXT("Default template supplies initial resources"), TemplateParameters.InitialResources, 200);
+    TemplateParameters.Waves.SetNum(1);
+    TemplateParameters.InitialResources = 310;
+    TestTrue(TEXT("App applies shared parameters in one operation"), Subsystem->ApplyTowerDefenseParameters(TemplateParameters).bSucceeded);
+    TestEqual(TEXT("Mobile Apply updates Ruleset wave count"), Subsystem->GetDocument().Scenes[0].Ruleset.Waves.Num(), 1);
+    TestTrue(TEXT("One mobile Undo restores template"), Subsystem->Undo().bSucceeded);
+    TestEqual(TEXT("One mobile Undo restores all waves"), Subsystem->GetDocument().Scenes[0].Ruleset.Waves.Num(), 3);
+    TestTrue(TEXT("One mobile Redo restores parameter Apply"), Subsystem->Redo().bSucceeded);
+    FString SharedTemplateJson;
+    TestTrue(TEXT("Mobile exports shared template with controlled WaveStart"), Subsystem->ExportProjectJson(SharedTemplateJson).bSucceeded);
+    TestTrue(TEXT("Mobile reloads shared template with controlled WaveStart"), Subsystem->LoadProjectJson(SharedTemplateJson).bSucceeded);
+    TestTrue(TEXT("Legacy editing workflow opens an explicit empty fixture"), OpenEmptyEditingFixture(*Subsystem));
     TestTrue(TEXT("App project is open"), Subsystem->HasOpenProject());
     TestEqual(TEXT("App exposes official prefabs"), Subsystem->GetAvailablePrefabIds().Num(), 11);
 
@@ -230,6 +260,7 @@ bool FAkUGCAppEditorLogicEditingTest::RunTest(const FString& Parameters)
     }
 
     TestTrue(TEXT("App creates tower defense project"), Subsystem->NewTowerDefenseProject().bSucceeded);
+    TestTrue(TEXT("Legacy editing workflow opens an explicit empty fixture"), OpenEmptyEditingFixture(*Subsystem));
 
     FGuid SpawnPointId;
     const FAkUGCAppEditResult SpawnPointPlacement = Subsystem->PlacePrefab(
@@ -379,6 +410,7 @@ bool FAkUGCAppEditorRulesetEditingTest::RunTest(const FString& Parameters)
     }
 
     TestTrue(TEXT("App creates tower defense project"), Subsystem->NewTowerDefenseProject().bSucceeded);
+    TestTrue(TEXT("Legacy editing workflow opens an explicit empty fixture"), OpenEmptyEditingFixture(*Subsystem));
 
     FGuid SpawnPointA;
     FGuid SpawnPointB;

@@ -562,10 +562,21 @@ FAkUGCCommandExecutionResult FAkUGCCommandExecutor::ApplySingle(
         {
             return FAkUGCCommandExecutionResult::Failure(TEXT("waveIntervalSeconds"), TEXT("Wave interval must be finite."));
         }
+        if (Command.InitialResources != INDEX_NONE
+            && (Command.InitialResources < 0
+                || Command.InitialResources > AkUGCTowerDefenseRulesetLimits::MaxInitialResources))
+        {
+            return FAkUGCCommandExecutionResult::Failure(TEXT("initialResources"), TEXT("Initial resources must be from 0 to 1000000."));
+        }
         OutInverse = MakeInverse(Command, EAkUGCCommandType::SetRulesetSettings);
+        OutInverse.InitialResources = Scene->Ruleset.InitialResources;
         OutInverse.WaveIntervalSeconds = Scene->Ruleset.WaveIntervalSeconds;
         OutInverse.DefeatCondition = Scene->Ruleset.DefeatCondition;
         OutInverse.VictoryCondition = Scene->Ruleset.VictoryCondition;
+        if (Command.InitialResources != INDEX_NONE)
+        {
+            Scene->Ruleset.InitialResources = Command.InitialResources;
+        }
         Scene->Ruleset.WaveIntervalSeconds = Command.WaveIntervalSeconds;
         Scene->Ruleset.DefeatCondition = Command.DefeatCondition;
         Scene->Ruleset.VictoryCondition = Command.VictoryCondition;

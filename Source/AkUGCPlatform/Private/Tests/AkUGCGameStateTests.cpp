@@ -129,6 +129,12 @@ bool FAkUGCGameStateProjectionTest::RunTest(const FString& Parameters)
     GameState->ProjectActiveEnemyCount(5);
     TestEqual(TEXT("Projected active enemy count is observable"),
         GameState->GetActiveEnemyCount(), 5);
+    GameState->InitializeResources(-1);
+    TestEqual(TEXT("Invalid initial resources do not initialize state"), GameState->GetResources(), 0);
+    GameState->InitializeResources(350);
+    TestEqual(TEXT("Authority initializes resources"), GameState->GetResources(), 350);
+    GameState->InitializeResources(200);
+    TestEqual(TEXT("Later projections do not reset authoritative resources"), GameState->GetResources(), 350);
 
     AkUGCGameStateTest::DestroyTestWorld(World);
     return true;

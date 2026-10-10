@@ -56,6 +56,33 @@ bool FAkUGCOfficialPrefabCatalogTest::RunTest(const FString& Parameters)
             SpawnInterval && SpawnInterval->ValueType == EAkUGCValueType::Number
                 && SpawnInterval->bHasMinimum && SpawnInterval->bHasMaximum
                 && SpawnInterval->Minimum == 0.1 && SpawnInterval->Maximum == 60.0);
+        const TArray<FName> OverrideIds = {TEXT("enemyMaxHealth"), TEXT("enemyMoveSpeed"), TEXT("enemyGoalDamage")};
+        const TArray<double> OverrideDefaults = {100.0, 300.0, 10.0};
+        const TArray<double> OverrideMinima = {1.0, 10.0, 0.0};
+        const TArray<double> OverrideMaxima = {100000.0, 2000.0, 100000.0};
+        FAkUGCEntityRecord SpawnRecord;
+        TestTrue(TEXT("Spawn defaults instantiate"), Registry.CreateEntityRecord(
+            TEXT("official.gameplay.enemy_spawn"), FGuid::NewGuid(), FTransform::Identity, SpawnRecord, &Error));
+        const FAkUGCComponentRecord* Spawn = SpawnRecord.Components.FindByPredicate([](const FAkUGCComponentRecord& Component)
+        {
+            return Component.TypeId == TEXT("tower_defense.spawn");
+        });
+        for (int32 Index = 0; Index < OverrideIds.Num(); ++Index)
+        {
+            const FAkUGCPropertyDefinition* Override = EnemySpawn->EditableProperties.FindByPredicate(
+                [&OverrideIds, Index](const FAkUGCPropertyDefinition& Property)
+                {
+                    return Property.ComponentTypeId == TEXT("tower_defense.spawn") && Property.PropertyId == OverrideIds[Index];
+                });
+            TestTrue(TEXT("Enemy override is optional mobile Number with official limits"),
+                Override && Override->ValueType == EAkUGCValueType::Number
+                    && !Override->bRequired && Override->bMobileEditable
+                    && Override->bHasMinimum && Override->bHasMaximum
+                    && Override->Minimum == OverrideMinima[Index] && Override->Maximum == OverrideMaxima[Index]);
+            const FAkUGCValue* Default = Spawn ? Spawn->Properties.Find(OverrideIds[Index]) : nullptr;
+            TestTrue(TEXT("Spawn record receives override default"),
+                Default && Default->Type == EAkUGCValueType::Number && Default->NumberValue == OverrideDefaults[Index]);
+        }
     }
 
     FAkUGCEntityRecord BaseEntity;

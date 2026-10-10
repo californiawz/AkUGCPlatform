@@ -33,6 +33,7 @@ public:
     void ProjectWaveSnapshot(const FAkUGCWaveRuntimeSnapshot& Snapshot);
     void ProjectBaseHealth(double Current, double Maximum);
     void ProjectActiveEnemyCount(int32 Count);
+    void InitializeResources(int32 InitialResources);
 
     // ---- Blueprint 只读查询 ----
 
@@ -50,6 +51,9 @@ public:
 
     UFUNCTION(BlueprintPure, Category = "UGC|Replication")
     int32 GetActiveEnemyCount() const;
+
+    UFUNCTION(BlueprintPure, Category = "UGC|Replication")
+    int32 GetResources() const;
 
     // ---- 复制回调事件（Blueprint 可监听）----
 
@@ -90,6 +94,11 @@ protected:
 
     UPROPERTY(ReplicatedUsing = OnRep_ActiveEnemyCount)
     int32 ReplicatedActiveEnemyCount = 0;
+
+    UPROPERTY(Replicated)
+    int32 ReplicatedResources = 0;
+
+    bool bResourcesInitialized = false;
 
     // 每个客户端本地维护，确保终局事件只广播一次。
     bool bMatchEndedBroadcast = false;

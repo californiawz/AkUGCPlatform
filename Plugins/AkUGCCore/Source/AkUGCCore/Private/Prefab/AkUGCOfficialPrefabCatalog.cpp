@@ -139,6 +139,9 @@ TArray<FAkUGCPrefabDefinition> FAkUGCOfficialPrefabCatalog::BuildTowerDefenseDef
         AddProperty(Definition, TEXT("tower_defense.spawn"), TEXT("enemyPrefab"), EAkUGCValueType::Name, NameValue(TEXT("official.unit.basic_enemy")));
         AddProperty(Definition, TEXT("tower_defense.spawn"), TEXT("spawnInterval"), EAkUGCValueType::Number, NumberValue(1.0), true, 0.1, 60.0);
         AddProperty(Definition, TEXT("tower_defense.spawn"), TEXT("enemyCount"), EAkUGCValueType::Integer, IntegerValue(10), true, 1.0, 500.0);
+        AddProperty(Definition, TEXT("tower_defense.spawn"), TEXT("enemyMaxHealth"), EAkUGCValueType::Number, NumberValue(100.0), true, 1.0, 100000.0);
+        AddProperty(Definition, TEXT("tower_defense.spawn"), TEXT("enemyMoveSpeed"), EAkUGCValueType::Number, NumberValue(300.0), true, 10.0, 2000.0);
+        AddProperty(Definition, TEXT("tower_defense.spawn"), TEXT("enemyGoalDamage"), EAkUGCValueType::Number, NumberValue(10.0), true, 0.0, 100000.0);
         Definitions.Add(MoveTemp(Definition));
     }
     {

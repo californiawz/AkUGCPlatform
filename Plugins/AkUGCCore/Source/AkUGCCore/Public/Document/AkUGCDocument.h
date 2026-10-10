@@ -6,12 +6,15 @@
 namespace AkUGCSchema
 {
     inline constexpr int32 OldestSupportedProjectDocumentVersion = 0;
-    inline constexpr int32 CurrentProjectDocumentVersion = 5;
+    inline constexpr int32 CurrentProjectDocumentVersion = 6;
 }
 
 namespace AkUGCTowerDefenseRulesetLimits
 {
     inline constexpr int32 RequiredWaveCount = 3;
+    inline constexpr int32 MinWaveCount = 1;
+    inline constexpr int32 MaxWaveCount = 3;
+    inline constexpr int32 MaxInitialResources = 1000000;
     inline constexpr int32 MaxTotalEnemyCount = 500;
     inline constexpr double MaxStartDelaySeconds = 3600.0;
     inline constexpr double MaxWaveIntervalSeconds = 3600.0;
@@ -206,6 +209,9 @@ struct AKUGCCORE_API FAkUGCTowerDefenseRuleset
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Ruleset")
     TArray<FAkUGCTowerDefenseWave> Waves;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Ruleset", meta = (ClampMin = "0", ClampMax = "1000000"))
+    int32 InitialResources = 200;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Ruleset", meta = (ClampMin = "0.0", ClampMax = "3600.0"))
     double WaveIntervalSeconds = 5.0;

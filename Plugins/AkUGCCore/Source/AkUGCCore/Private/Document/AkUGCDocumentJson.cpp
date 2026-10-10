@@ -274,6 +274,7 @@ namespace
 
         const TSet<FString> RulesetFields = {
             TEXT("waves"),
+            TEXT("initialResources"),
             TEXT("waveIntervalSeconds"),
             TEXT("defeatCondition"),
             TEXT("victoryCondition")};
@@ -309,6 +310,18 @@ namespace
             if (!(*Ruleset)->TryGetArrayField(TEXT("waves"), Waves) || !Waves)
             {
                 OutError = RulesetPath + TEXT(".waves: Field must be an array.");
+                return false;
+            }
+            double InitialResources = 0.0;
+            const TSharedPtr<FJsonValue> ResourcesValue = (*Ruleset)->TryGetField(TEXT("initialResources"));
+            if (!ResourcesValue.IsValid() || ResourcesValue->Type != EJson::Number
+                || !(*Ruleset)->TryGetNumberField(TEXT("initialResources"), InitialResources)
+                || !FMath::IsFinite(InitialResources)
+                || InitialResources != FMath::TruncToDouble(InitialResources)
+                || InitialResources < 0.0
+                || InitialResources > AkUGCTowerDefenseRulesetLimits::MaxInitialResources)
+            {
+                OutError = RulesetPath + TEXT(".initialResources: Field must be an integer from 0 to 1000000.");
                 return false;
             }
             double WaveIntervalSeconds = 0.0;
@@ -368,6 +381,17 @@ namespace
         }
         return true;
     }
+}
+
+bool FAkUGCDocumentJson::ValidateNoDuplicateFields(const FString& Json, FString* OutError)
+{
+    FString Error;
+    const bool bSucceeded = ValidateNoDuplicateJsonFields(Json, Error);
+    if (!bSucceeded && OutError)
+    {
+        *OutError = Error.IsEmpty() ? TEXT("Invalid JSON field structure.") : MoveTemp(Error);
+    }
+    return bSucceeded;
 }
 
 bool FAkUGCDocumentJson::Serialize(

@@ -11,6 +11,7 @@
 #include "Logic/AkUGCLogicRunner.h"
 #include "Prefab/AkUGCPrefabRegistry.h"
 #include "Subsystem/AkUGCLogicRuntimeSubsystem.h"
+#include "Template/AkUGCTowerDefenseTemplate.h"
 
 namespace
 {
@@ -26,6 +27,46 @@ namespace
     UAkUGCEntityBindingComponent* FindBinding(AActor* Actor)
     {
         return Actor ? Actor->FindComponentByClass<UAkUGCEntityBindingComponent>() : nullptr;
+    }
+
+    bool ApplyEnemySpawnOverrides(
+        const FAkUGCComponentRecord& SpawnComponent,
+        FAkUGCEntityRecord& Enemy,
+        FString& OutError)
+    {
+        const auto ApplyNumber = [&SpawnComponent, &Enemy, &OutError](
+            FName SpawnProperty, FName ComponentType, FName EnemyProperty, double Minimum, double Maximum)
+        {
+            const FAkUGCValue* Override = SpawnComponent.Properties.Find(SpawnProperty);
+            if (!Override)
+            {
+                return true;
+            }
+            if (Override->Type != EAkUGCValueType::Number
+                || !FMath::IsFinite(Override->NumberValue)
+                || Override->NumberValue < Minimum
+                || Override->NumberValue > Maximum)
+            {
+                OutError = FString::Printf(TEXT("Enemy Spawn %s must be a finite Number from %.0f to %.0f."),
+                    *SpawnProperty.ToString(), Minimum, Maximum);
+                return false;
+            }
+            FAkUGCComponentRecord* Component = Enemy.Components.FindByPredicate(
+                [ComponentType](const FAkUGCComponentRecord& Candidate)
+                {
+                    return Candidate.TypeId == ComponentType;
+                });
+            if (!Component || !Component->Properties.Contains(EnemyProperty))
+            {
+                OutError = TEXT("Enemy Spawn override requires the official Enemy health and movement components.");
+                return false;
+            }
+            Component->Properties.Add(EnemyProperty, *Override);
+            return true;
+        };
+        return ApplyNumber(TEXT("enemyMaxHealth"), TEXT("core.health"), TEXT("maxHealth"), 1.0, 100000.0)
+            && ApplyNumber(TEXT("enemyMoveSpeed"), TEXT("tower_defense.enemy"), TEXT("moveSpeed"), 10.0, 2000.0)
+            && ApplyNumber(TEXT("enemyGoalDamage"), TEXT("tower_defense.enemy"), TEXT("goalDamage"), 0.0, 100000.0);
     }
 }
 
@@ -274,13 +315,20 @@ bool FAkUGCSceneRuntime::ValidateTowerDefenseGameplay(
         return Fail(OutError, TEXT("Tower defense Goal must contain exactly one tower_defense.goal component."));
     }
 
-    if (Scene.Ruleset.Waves.Num() != AkUGCTowerDefenseRulesetLimits::RequiredWaveCount)
+    if (Scene.Ruleset.Waves.Num() < AkUGCTowerDefenseRulesetLimits::MinWaveCount
+        || Scene.Ruleset.Waves.Num() > AkUGCTowerDefenseRulesetLimits::MaxWaveCount)
     {
         return Fail(
             OutError,
             FString::Printf(
-                TEXT("Playable tower defense requires exactly %d waves."),
-                AkUGCTowerDefenseRulesetLimits::RequiredWaveCount));
+                TEXT("Playable tower defense requires %d to %d waves."),
+                AkUGCTowerDefenseRulesetLimits::MinWaveCount,
+                AkUGCTowerDefenseRulesetLimits::MaxWaveCount));
+    }
+    if (Scene.Ruleset.InitialResources < 0
+        || Scene.Ruleset.InitialResources > AkUGCTowerDefenseRulesetLimits::MaxInitialResources)
+    {
+        return Fail(OutError, TEXT("Tower defense initial resources exceed the supported range."));
     }
     if (!FMath::IsFinite(Scene.Ruleset.WaveIntervalSeconds)
         || Scene.Ruleset.WaveIntervalSeconds < 0.0
@@ -372,6 +420,10 @@ bool FAkUGCSceneRuntime::ValidateTowerDefenseGameplay(
         {
             return Fail(OutError, WavePrefix + TEXT(" Enemy Prefab defaults are invalid: ") + EnemyDefaultsError);
         }
+        if (!ApplyEnemySpawnOverrides(*SpawnComponent, EnemyDefaults, EnemyDefaultsError))
+        {
+            return Fail(OutError, WavePrefix + TEXT(" ") + EnemyDefaultsError);
+        }
         const FAkUGCComponentRecord* EnemyHealth = EnemyDefaults.Components.FindByPredicate([](const FAkUGCComponentRecord& Component)
         {
             return Component.TypeId == TEXT("core.health");
@@ -426,7 +478,9 @@ bool FAkUGCSceneRuntime::ValidateTowerDefenseGameplay(
                     NodeIndex));
         }
     }
-    return true;
+    FAkUGCProjectDocument BudgetDocument;
+    BudgetDocument.Scenes.Add(Scene);
+    return FAkUGCTowerDefenseTemplate::ValidateDocumentBudgets(BudgetDocument, Registry, OutError);
 }
 
 bool FAkUGCSceneRuntime::InitializeTowerDefenseGameplay(
@@ -450,6 +504,7 @@ bool FAkUGCSceneRuntime::InitializeTowerDefenseGameplay(
     ResetTowerDefenseGameplay();
     TowerDefenseBaseEntityId = Base->EntityId;
     TowerDefenseGoalEntityId = Goal->EntityId;
+    InitialResources = Scene.Ruleset.InitialResources;
     FString GameplayError;
     if (!InitializeRuntimeHealth(*Base, GameplayError))
     {
@@ -476,9 +531,11 @@ void FAkUGCSceneRuntime::ResetTowerDefenseGameplay()
         RemoveEntity(EntityId);
     }
     RuntimeSpawnedEntityIds.Reset();
+    SuccessfulSpawnSequence = 0;
     ResetTowerDefenseMovement();
     TowerDefenseBaseEntityId.Invalidate();
     TowerDefenseGoalEntityId.Invalidate();
+    InitialResources = 0;
     RuntimeHealthByEntityId.Reset();
     DeadEntityIds.Reset();
     BasicTowerAttacks.Reset();
@@ -552,9 +609,15 @@ bool FAkUGCSceneRuntime::BuildLogicSpawnPlan(
         OutError = TEXT("Enemy Spawn spawnInterval must be a Number from 0.1 to 60 seconds.");
         return false;
     }
-    if (!Registry.Find(EnemyPrefab->NameValue))
+    if (EnemyPrefab->NameValue != TEXT("official.unit.basic_enemy") || !Registry.Find(EnemyPrefab->NameValue))
     {
-        OutError = FString::Printf(TEXT("Enemy Prefab '%s' is not registered."), *EnemyPrefab->NameValue.ToString());
+        OutError = TEXT("Enemy Spawn requires the supported official.unit.basic_enemy Prefab.");
+        return false;
+    }
+    FAkUGCEntityRecord Enemy;
+    if (!Registry.CreateEntityRecord(EnemyPrefab->NameValue, FGuid::NewGuid(), FTransform::Identity, Enemy, &OutError)
+        || !ApplyEnemySpawnOverrides(*SpawnComponent, Enemy, OutError))
+    {
         return false;
     }
 
@@ -599,15 +662,35 @@ bool FAkUGCSceneRuntime::SpawnLogicPrefab(
     // 跨平台（Win64 / Android / Dedicated Server）下玩法层最终状态哈希一致。
     // 随机 GUID 会破坏 P10 一致性验收所需的跨平台确定性。
     OutEntityId = FGuid::NewDeterministicGuid(
-        FString::Printf(TEXT("ugc-runtime-spawn-%d"), RuntimeSpawnedEntityIds.Num()));
+        FString::Printf(TEXT("ugc-runtime-spawn-%d"), SuccessfulSpawnSequence));
     FAkUGCEntityRecord Entity;
     if (!Registry.CreateEntityRecord(
         SpawnEffect.PrefabId,
         OutEntityId,
         SpawnTransform,
         Entity,
-        &OutError)
-        || !SpawnEntity(Entity, Registry, &OutError))
+        &OutError))
+    {
+        OutEntityId.Invalidate();
+        return false;
+    }
+    if (Entity.PrefabId == TEXT("official.unit.basic_enemy") && SpawnEffect.SpawnAtEntityId.IsValid())
+    {
+        const UAkUGCEntityBindingComponent* AnchorBinding = FindBinding(FindActor(SpawnEffect.SpawnAtEntityId));
+        const FAkUGCComponentRecord* SpawnComponent = AnchorBinding
+            && AnchorBinding->PrefabId == TEXT("official.gameplay.enemy_spawn")
+            ? AnchorBinding->SourceRecord.Components.FindByPredicate([](const FAkUGCComponentRecord& Component)
+            {
+                return Component.TypeId == TEXT("tower_defense.spawn");
+            })
+            : nullptr;
+        if (SpawnComponent && !ApplyEnemySpawnOverrides(*SpawnComponent, Entity, OutError))
+        {
+            OutEntityId.Invalidate();
+            return false;
+        }
+    }
+    if (!SpawnEntity(Entity, Registry, &OutError))
     {
         OutEntityId.Invalidate();
         return false;
@@ -620,6 +703,7 @@ bool FAkUGCSceneRuntime::SpawnLogicPrefab(
         return false;
     }
     RuntimeSpawnedEntityIds.Add(OutEntityId);
+    ++SuccessfulSpawnSequence;
     return true;
 }
 
@@ -1182,6 +1266,11 @@ double FAkUGCSceneRuntime::GetBaseMaximumHealth() const
     return Health ? Health->Maximum : 0.0;
 }
 
+int32 FAkUGCSceneRuntime::GetInitialResources() const
+{
+    return InitialResources;
+}
+
 bool FAkUGCSceneRuntime::GetRuntimeHealth(
     const FGuid& EntityId,
     FAkUGCRuntimeHealth& OutHealth) const
@@ -1260,9 +1349,13 @@ bool FAkUGCSceneRuntime::GetEnemyRemainingPathDistance(
     OutDistance = 0.0;
     const FAkUGCTowerDefenseEnemyMovement* Movement = EnemyMovements.Find(EntityId);
     const AActor* Actor = FindActor(EntityId);
-    if (!Movement || !Actor || Movement->NextPathNodeIndex >= TowerDefensePath.Num())
+    if (!Movement || !Actor)
     {
         return false;
+    }
+    if (Movement->NextPathNodeIndex >= TowerDefensePath.Num())
+    {
+        return true;
     }
 
     OutDistance = FVector::Distance(

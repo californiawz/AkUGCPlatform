@@ -11,6 +11,7 @@
 #include "Widgets/Input/SNumericEntryBox.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
+#include "Widgets/Layout/SExpandableArea.h"
 #include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/Layout/SSeparator.h"
 #include "Widgets/Layout/SSplitter.h"
@@ -18,6 +19,196 @@
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Views/STableRow.h"
+
+void SAkUGCTowerDefenseParameterForm::Construct(const FArguments& InArgs, UAkUGCEditorSubsystem* InSubsystem)
+{
+    Subsystem = InSubsystem;
+    ChildSlot
+    [
+        SNew(SVerticalBox)
+        + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 4.0f)
+        [SNew(STextBlock).Text(FText::FromString(TEXT("塔防简单参数 · 无需编辑 Logic")))]
+        + SVerticalBox::Slot().AutoHeight()
+        [SNew(STextBlock).Text(FText::FromString(TEXT("新建即包含可玩场景。修改先保留在表单中，点击应用一次写入项目；Undo / Redo 会重新读取当前项目。"))).AutoWrapText(true)]
+        + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 6.0f)
+        [SAssignNew(FieldsBox, SVerticalBox)]
+        + SVerticalBox::Slot().AutoHeight()
+        [
+            SNew(SHorizontalBox)
+            + SHorizontalBox::Slot().AutoWidth().Padding(2.0f)
+            [SNew(SButton).Text(FText::FromString(TEXT("应用参数（一次撤销）")))
+                .IsEnabled_Lambda([this]() { return bReadable && bDirty; })
+                .OnClicked(this, &SAkUGCTowerDefenseParameterForm::ApplyParameters)]
+            + SHorizontalBox::Slot().AutoWidth().Padding(2.0f)
+            [SNew(SButton).Text(FText::FromString(TEXT("重新读取项目 / 放弃草稿")))
+                .IsEnabled_Lambda([this]() { return Subsystem.IsValid() && Subsystem->HasOpenProject(); })
+                .OnClicked(this, &SAkUGCTowerDefenseParameterForm::ResetParameters)]
+        ]
+        + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 4.0f)
+        [SNew(STextBlock).Text_Lambda([this]() { return FText::FromString(Status); }).AutoWrapText(true)]
+    ];
+    RefreshParameters();
+}
+
+void SAkUGCTowerDefenseParameterForm::Tick(const FGeometry& AllottedGeometry, double InCurrentTime, float InDeltaTime)
+{
+    SCompoundWidget::Tick(AllottedGeometry, InCurrentTime, InDeltaTime);
+    if (Subsystem.IsValid() && ObservedDocumentRevision != Subsystem->GetDocumentRevision())
+    {
+        const bool bHadDraft = bDirty;
+        RefreshParameters();
+        if (bReadable && bHadDraft)
+        {
+            Status = TEXT("项目已变化（包括 Undo / Redo）；已重新读取当前参数，旧草稿已放弃。");
+        }
+    }
+    else if (bRebuildRequested)
+    {
+        RebuildFields();
+    }
+}
+
+void SAkUGCTowerDefenseParameterForm::RefreshParameters()
+{
+    bReadable = false;
+    bDirty = false;
+    Status = TEXT("请先新建可玩塔防项目，或加载已有塔防项目。");
+    if (Subsystem.IsValid())
+    {
+        ObservedDocumentRevision = Subsystem->GetDocumentRevision();
+        if (Subsystem->HasOpenProject())
+        {
+            FString Error;
+            bReadable = Subsystem->GetTowerDefenseParameters(Draft, &Error);
+            Status = bReadable ? TEXT("已读取当前项目参数。修改后请显式应用；保存不会自动应用草稿。")
+                : FString::Printf(TEXT("无法读取简单参数：%s。项目未修改，可使用高级编辑修复。"), *Error);
+        }
+    }
+    RebuildFields();
+}
+
+void SAkUGCTowerDefenseParameterForm::AddNumberField(
+    const TCHAR* Label, double Minimum, double Maximum,
+    TFunction<double()> ReadValue, TFunction<void(double)> WriteValue)
+{
+    FieldsBox->AddSlot().AutoHeight().Padding(0.0f, 2.0f)
+    [
+        SNew(SHorizontalBox)
+        + SHorizontalBox::Slot().FillWidth(0.45f).VAlign(VAlign_Center)
+        [SNew(STextBlock).Text(FText::FromString(Label))]
+        + SHorizontalBox::Slot().FillWidth(0.55f)
+        [
+            SNew(SNumericEntryBox<double>)
+            .MinValue(Minimum).MaxValue(Maximum).MinSliderValue(Minimum).MaxSliderValue(Maximum)
+            .AllowSpin(true)
+            .Value_Lambda([ReadValue]() { return TOptional<double>(ReadValue()); })
+            .OnValueChanged_Lambda([this, WriteValue](double Value) { WriteValue(Value); bDirty = true; })
+            .OnValueCommitted_Lambda([this, WriteValue](double Value, ETextCommit::Type) { WriteValue(Value); bDirty = true; })
+        ]
+    ];
+}
+
+void SAkUGCTowerDefenseParameterForm::AddIntegerField(
+    const TCHAR* Label, int32 Minimum, int32 Maximum,
+    TFunction<int32()> ReadValue, TFunction<void(int32)> WriteValue)
+{
+    FieldsBox->AddSlot().AutoHeight().Padding(0.0f, 2.0f)
+    [
+        SNew(SHorizontalBox)
+        + SHorizontalBox::Slot().FillWidth(0.45f).VAlign(VAlign_Center)
+        [SNew(STextBlock).Text(FText::FromString(Label))]
+        + SHorizontalBox::Slot().FillWidth(0.55f)
+        [
+            SNew(SNumericEntryBox<int32>)
+            .MinValue(Minimum).MaxValue(Maximum).MinSliderValue(Minimum).MaxSliderValue(Maximum)
+            .AllowSpin(true)
+            .Value_Lambda([ReadValue]() { return TOptional<int32>(ReadValue()); })
+            .OnValueChanged_Lambda([this, WriteValue](int32 Value) { WriteValue(Value); bDirty = true; })
+            .OnValueCommitted_Lambda([this, WriteValue](int32 Value, ETextCommit::Type) { WriteValue(Value); bDirty = true; })
+        ]
+    ];
+}
+
+void SAkUGCTowerDefenseParameterForm::RebuildFields()
+{
+    bRebuildRequested = false;
+    FieldsBox->ClearChildren();
+    if (!bReadable)
+    {
+        return;
+    }
+    AddIntegerField(TEXT("波数（1–3，默认 3）"), 1, 3,
+        [this]() { return Draft.Waves.Num(); }, [this](int32 Value)
+        {
+            const int32 Count = FMath::Clamp(Value, 1, 3);
+            if (Count != Draft.Waves.Num())
+            {
+                Draft.Waves.SetNum(Count);
+                bRebuildRequested = true;
+            }
+        });
+    AddNumberField(TEXT("基地生命"), 1.0, 100000.0,
+        [this]() { return Draft.BaseMaxHealth; }, [this](double Value) { Draft.BaseMaxHealth = Value; });
+    AddIntegerField(TEXT("初始资源"), 0, AkUGCTowerDefenseRulesetLimits::MaxInitialResources,
+        [this]() { return Draft.InitialResources; }, [this](int32 Value) { Draft.InitialResources = Value; });
+    AddNumberField(TEXT("波间隔（秒）"), 0.0, AkUGCTowerDefenseRulesetLimits::MaxWaveIntervalSeconds,
+        [this]() { return Draft.WaveIntervalSeconds; }, [this](double Value) { Draft.WaveIntervalSeconds = Value; });
+    FieldsBox->AddSlot().AutoHeight().Padding(0.0f, 4.0f)
+    [SNew(STextBlock).Text(FText::FromString(TEXT("失败规则：基地生命耗尽（BaseHealthDepleted，当前唯一规则）\n胜利规则：全部波次敌人清除（AllWavesCleared，当前唯一规则）"))).AutoWrapText(true)];
+    for (int32 WaveIndex = 0; WaveIndex < Draft.Waves.Num(); ++WaveIndex)
+    {
+        FieldsBox->AddSlot().AutoHeight().Padding(0.0f, 8.0f, 0.0f, 4.0f)
+        [SNew(STextBlock).Text(FText::FromString(FString::Printf(TEXT("第 %d 波"), WaveIndex + 1)))];
+        FieldsBox->AddSlot().AutoHeight().Padding(0.0f, 2.0f)
+        [SNew(STextBlock).Text(FText::FromString(FString::Printf(TEXT("官方敌人：基础敌人（%s，白名单只读）"), *Draft.Waves[WaveIndex].EnemyPrefabId.ToString()))).AutoWrapText(true)];
+        AddIntegerField(TEXT("敌人数量（各波总计 ≤ 500）"), 1, 500,
+            [this, WaveIndex]() { return Draft.Waves.IsValidIndex(WaveIndex) ? Draft.Waves[WaveIndex].EnemyCount : 1; },
+            [this, WaveIndex](int32 Value) { if (Draft.Waves.IsValidIndex(WaveIndex)) Draft.Waves[WaveIndex].EnemyCount = Value; });
+        const auto AddWaveNumber = [this, WaveIndex](const TCHAR* Label, double Minimum, double Maximum,
+            double FAkUGCTowerDefenseWaveParameters::* Member)
+        {
+            AddNumberField(Label, Minimum, Maximum,
+                [this, WaveIndex, Member]() { return Draft.Waves.IsValidIndex(WaveIndex) ? Draft.Waves[WaveIndex].*Member : 0.0; },
+                [this, WaveIndex, Member](double Value) { if (Draft.Waves.IsValidIndex(WaveIndex)) Draft.Waves[WaveIndex].*Member = Value; });
+        };
+        AddWaveNumber(TEXT("刷怪间隔（秒）"), 0.1, 60.0, &FAkUGCTowerDefenseWaveParameters::SpawnIntervalSeconds);
+        AddWaveNumber(TEXT("起始延迟（秒）"), 0.0, AkUGCTowerDefenseRulesetLimits::MaxStartDelaySeconds, &FAkUGCTowerDefenseWaveParameters::StartDelaySeconds);
+        AddWaveNumber(TEXT("敌人生命"), 1.0, 100000.0, &FAkUGCTowerDefenseWaveParameters::EnemyMaxHealth);
+        AddWaveNumber(TEXT("移动速度（厘米 / 秒）"), 10.0, 2000.0, &FAkUGCTowerDefenseWaveParameters::EnemyMoveSpeed);
+        AddWaveNumber(TEXT("到达基地伤害"), 0.0, 100000.0, &FAkUGCTowerDefenseWaveParameters::EnemyGoalDamage);
+    }
+}
+
+FReply SAkUGCTowerDefenseParameterForm::ApplyParameters()
+{
+    if (!Subsystem.IsValid() || !bReadable)
+    {
+        return FReply::Handled();
+    }
+    if (ObservedDocumentRevision != Subsystem->GetDocumentRevision())
+    {
+        RefreshParameters();
+        Status = TEXT("项目已变化；已读取最新参数，请确认后重新修改并应用。");
+        return FReply::Handled();
+    }
+    FString Error;
+    if (!Subsystem->ApplyTowerDefenseParameters(Draft, &Error))
+    {
+        Status = FString::Printf(TEXT("应用失败，项目未修改：%s"), *Error);
+    }
+    else
+    {
+        RefreshParameters();
+        Status = TEXT("全部参数已作为一次事务应用。可一次 Undo / Redo，保存会保留这些参数。");
+    }
+    return FReply::Handled();
+}
+
+FReply SAkUGCTowerDefenseParameterForm::ResetParameters()
+{
+    RefreshParameters();
+    return FReply::Handled();
+}
 
 void SAkUGCCreatorPanel::Construct(const FArguments& InArgs, UAkUGCEditorSubsystem* InSubsystem)
 {
@@ -47,7 +238,7 @@ void SAkUGCCreatorPanel::Construct(const FArguments& InArgs, UAkUGCEditorSubsyst
             .AutoHeight()
             [
                 SNew(STextBlock)
-                .Text(FText::FromString(TEXT("AkUGC Creator Studio - Phase 0")))
+                .Text(FText::FromString(TEXT("AkUGC Creator Studio · 塔防创作")))
             ]
             + SVerticalBox::Slot()
             .AutoHeight()
@@ -55,7 +246,7 @@ void SAkUGCCreatorPanel::Construct(const FArguments& InArgs, UAkUGCEditorSubsyst
             [
                 SNew(SHorizontalBox)
                 + SHorizontalBox::Slot().AutoWidth().Padding(2.0f)
-                [SNew(SButton).Text(FText::FromString(TEXT("New Tower Defense"))).OnClicked(this, &SAkUGCCreatorPanel::NewProject)]
+                [SNew(SButton).Text(FText::FromString(TEXT("新建默认可玩塔防"))).OnClicked(this, &SAkUGCCreatorPanel::NewProject)]
                 + SHorizontalBox::Slot().AutoWidth().Padding(2.0f)
                 [SNew(SButton).Text(FText::FromString(TEXT("Save"))).OnClicked(this, &SAkUGCCreatorPanel::SaveProject)]
                 + SHorizontalBox::Slot().AutoWidth().Padding(2.0f)
@@ -73,6 +264,22 @@ void SAkUGCCreatorPanel::Construct(const FArguments& InArgs, UAkUGCEditorSubsyst
             [SNew(SSeparator)]
             + SVerticalBox::Slot().FillHeight(1.0f)
             [
+                SNew(SScrollBox)
+                + SScrollBox::Slot()
+                [
+                    SNew(SVerticalBox)
+                    + SVerticalBox::Slot().AutoHeight()
+                    [SNew(SAkUGCTowerDefenseParameterForm, Subsystem.Get())]
+                    + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 8.0f)
+                    [
+                        SNew(SExpandableArea)
+                        .InitiallyCollapsed(true)
+                        .HeaderContent()
+                        [SNew(STextBlock).Text(FText::FromString(TEXT("高级编辑：场景 / 实体属性 / Logic（可选）")))]
+                        .BodyContent()
+                        [
+                            SNew(SBox).HeightOverride(620.0f)
+                            [
                 SNew(SSplitter)
                 + SSplitter::Slot()
                 .Value(0.42f)
@@ -176,6 +383,10 @@ void SAkUGCCreatorPanel::Construct(const FArguments& InArgs, UAkUGCEditorSubsyst
                         SNew(SScrollBox)
                         + SScrollBox::Slot()
                         [SAssignNew(DetailsBox, SVerticalBox)]
+                    ]
+                ]
+                            ]
+                        ]
                     ]
                 ]
             ]
@@ -727,7 +938,7 @@ FReply SAkUGCCreatorPanel::NewProject()
 {
     FString Error;
     Status = Subsystem.IsValid() && Subsystem->NewTowerDefenseProject(&Error)
-        ? TEXT("Created a new tower defense project.")
+        ? TEXT("已新建默认可玩塔防（三波）。直接修改简单参数即可；高级 Logic 无需操作。")
         : Error;
     PlacementIndex = 0;
     return FReply::Handled();

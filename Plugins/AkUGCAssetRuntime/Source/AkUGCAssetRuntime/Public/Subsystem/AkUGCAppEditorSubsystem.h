@@ -4,6 +4,7 @@
 #include "Document/AkUGCDocument.h"
 #include "Prefab/AkUGCPrefabDefinition.h"
 #include "Subsystems/WorldSubsystem.h"
+#include "Template/AkUGCTowerDefenseTemplate.h"
 #include "AkUGCAppEditorSubsystem.generated.h"
 
 struct FAkUGCCommandExecutionResult;
@@ -39,6 +40,12 @@ public:
 
     UFUNCTION(BlueprintCallable, Category = "UGC|App Editor")
     FAkUGCAppEditResult NewTowerDefenseProject();
+
+    UFUNCTION(BlueprintCallable, Category = "UGC|App Editor")
+    FAkUGCAppEditResult ApplyTowerDefenseParameters(const FAkUGCTowerDefenseParameters& Parameters);
+
+    UFUNCTION(BlueprintPure, Category = "UGC|App Editor")
+    bool GetTowerDefenseParameters(FAkUGCTowerDefenseParameters& OutParameters) const;
 
     UFUNCTION(BlueprintCallable, Category = "UGC|App Editor")
     FAkUGCAppEditResult LoadProjectJson(const FString& Json);

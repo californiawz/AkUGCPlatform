@@ -1,6 +1,10 @@
 #include "Misc/AutomationTest.h"
 
 #include "Command/AkUGCRuntimeCommandService.h"
+#include "Document/AkUGCDocumentJson.h"
+#include "Template/AkUGCTowerDefenseTemplate.h"
+
+#include <limits>
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "Prefab/AkUGCOfficialPrefabCatalog.h"
@@ -309,6 +313,117 @@ bool FAkUGCRulesetCommandServiceWorkflowTest::RunTest(const FString& Parameters)
         TestEqual(TEXT("Restored wave returns to original position"), Document.Scenes[0].Ruleset.Waves[1].WaveId, WaveIds[0]);
     }
 
+    GEngine->DestroyWorldContext(World);
+    World->DestroyWorld(false);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FAkUGCTowerDefenseParametersCommandTest,
+    "AkUGC.Runtime.CommandService.TowerDefenseParametersAtomicApply",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCTowerDefenseParametersCommandTest::RunTest(const FString& Parameters)
+{
+    if (!GEngine)
+    {
+        AddError(TEXT("Engine is not available."));
+        return false;
+    }
+    UWorld* World = UWorld::CreateWorld(EWorldType::Game, false, TEXT("AkUGCTowerDefenseParametersTest"));
+    if (!World)
+    {
+        AddError(TEXT("Failed to create test world."));
+        return false;
+    }
+    FWorldContext& Context = GEngine->CreateNewWorldContext(EWorldType::Game);
+    Context.SetCurrentWorld(World);
+    FAkUGCPrefabRegistry Registry;
+    FAkUGCProjectDocument Document;
+    FString Error;
+    if (!FAkUGCOfficialPrefabCatalog::RegisterTowerDefense(Registry, &Error)
+        || !FAkUGCTowerDefenseTemplate::CreateDefaultDocument(Registry, Document, &Error))
+    {
+        AddError(Error);
+        GEngine->DestroyWorldContext(World);
+        World->DestroyWorld(false);
+        return false;
+    }
+    const FGuid SceneId = Document.Scenes[0].SceneId;
+    {
+        FAkUGCSceneRuntime Runtime(World);
+        FAkUGCDocumentRuntimeSession Session(Runtime, Registry, SceneId);
+        TestTrue(TEXT("Template edit session initializes"), Session.Initialize(Document).bSucceeded);
+        FAkUGCRuntimeCommandService Service(Document, Session, Registry, SceneId);
+        FAkUGCTowerDefenseParameters Updated;
+        TestTrue(TEXT("Shared parameters read from template"),
+            FAkUGCTowerDefenseTemplate::ReadParameters(Document, SceneId, Updated, &Error));
+        FString BeforeJson;
+        TestTrue(TEXT("Before snapshot serializes"), FAkUGCDocumentJson::Serialize(Document, BeforeJson, &Error));
+        Updated.Waves.SetNum(2);
+        Updated.InitialResources = 420;
+        Updated.BaseMaxHealth = 750.0;
+        Updated.WaveIntervalSeconds = 1.5;
+        for (int32 Index = 0; Index < Updated.Waves.Num(); ++Index)
+        {
+            Updated.Waves[Index].EnemyPrefabId = TEXT("official.unit.basic_enemy");
+            Updated.Waves[Index].EnemyCount = Index + 1;
+            Updated.Waves[Index].EnemyMaxHealth = 150.0 + Index * 100.0;
+            Updated.Waves[Index].EnemyMoveSpeed = 100.0 + Index * 100.0;
+            Updated.Waves[Index].EnemyGoalDamage = 3.0 + Index * 2.0;
+        }
+        TestTrue(TEXT("One Apply succeeds"), Service.ApplyTowerDefenseParameters(Updated).bSucceeded);
+        TestEqual(TEXT("Apply updates wave count"), Document.Scenes[0].Ruleset.Waves.Num(), 2);
+        TestEqual(TEXT("Apply updates resources"), Document.Scenes[0].Ruleset.InitialResources, 420);
+        TestEqual(TEXT("All actors project together"), Runtime.Num(), Document.Scenes[0].Entities.Num());
+        FString AppliedJson;
+        TestTrue(TEXT("Applied snapshot serializes"), FAkUGCDocumentJson::Serialize(Document, AppliedJson, &Error));
+        TestTrue(TEXT("One Undo succeeds"), Service.Undo().bSucceeded);
+        FString UndoneJson;
+        TestTrue(TEXT("Undo snapshot serializes"), FAkUGCDocumentJson::Serialize(Document, UndoneJson, &Error));
+        TestEqual(TEXT("One Undo restores the entire document"), UndoneJson, BeforeJson);
+        TestFalse(TEXT("Only one Apply history entry exists"), Service.CanUndo());
+        TestTrue(TEXT("One Redo succeeds"), Service.Redo().bSucceeded);
+        FString RedoneJson;
+        TestTrue(TEXT("Redo snapshot serializes"), FAkUGCDocumentJson::Serialize(Document, RedoneJson, &Error));
+        TestEqual(TEXT("One Redo restores the entire Apply"), RedoneJson, AppliedJson);
+
+        FAkUGCTowerDefenseParameters Invalid = Updated;
+        Invalid.Waves[0].EnemyCount = 500;
+        Invalid.Waves[1].EnemyCount = 1;
+        TestFalse(TEXT("Total 501 is rejected before Apply"), Service.ApplyTowerDefenseParameters(Invalid).bSucceeded);
+        Invalid = Updated;
+        Invalid.Waves[0].EnemyPrefabId = TEXT("unknown.enemy");
+        TestFalse(TEXT("Unknown enemy is rejected before Apply"), Service.ApplyTowerDefenseParameters(Invalid).bSucceeded);
+        Invalid = Updated;
+        Invalid.Waves[0].EnemyMoveSpeed = std::numeric_limits<double>::quiet_NaN();
+        TestFalse(TEXT("NaN is rejected before Apply"), Service.ApplyTowerDefenseParameters(Invalid).bSucceeded);
+        Invalid.Waves[0].EnemyMoveSpeed = std::numeric_limits<double>::infinity();
+        TestFalse(TEXT("Infinity is rejected before Apply"), Service.ApplyTowerDefenseParameters(Invalid).bSucceeded);
+        FString RejectedJson;
+        TestTrue(TEXT("Rejected snapshot serializes"), FAkUGCDocumentJson::Serialize(Document, RejectedJson, &Error));
+        TestEqual(TEXT("Rejected inputs preserve authored document"), RejectedJson, AppliedJson);
+
+        const FAkUGCEntityRecord* Base = Service.FindScene()->Entities.FindByPredicate([](const FAkUGCEntityRecord& Entity)
+        {
+            return Entity.PrefabId == TEXT("official.gameplay.base");
+        });
+        if (Base)
+        {
+            const FGuid BaseId = Base->EntityId;
+            TestTrue(TEXT("Projection failure fixture removes only runtime base"), Runtime.RemoveEntity(BaseId));
+            Updated.BaseMaxHealth = 900.0;
+            TestFalse(TEXT("Projection failure rejects entire Apply"), Service.ApplyTowerDefenseParameters(Updated).bSucceeded);
+            FString RollbackJson;
+            TestTrue(TEXT("Rollback snapshot serializes"), FAkUGCDocumentJson::Serialize(Document, RollbackJson, &Error));
+            TestEqual(TEXT("Projection failure rolls back authored document"), RollbackJson, AppliedJson);
+            TestNotNull(TEXT("Projection rollback restores runtime base"), Runtime.FindActor(BaseId));
+        }
+        else
+        {
+            AddError(TEXT("Template has no base."));
+        }
+    }
     GEngine->DestroyWorldContext(World);
     World->DestroyWorld(false);
     return true;

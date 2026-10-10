@@ -9,6 +9,8 @@
 #include "Session/AkUGCDocumentRuntimeSession.h"
 #include "Subsystem/AkUGCLogicRuntimeSubsystem.h"
 
+#include <limits>
+
 #if WITH_DEV_AUTOMATION_TESTS
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -368,7 +370,7 @@ bool FAkUGCLogicRuntimeTimerSpawnTest::RunTest(const FString& Parameters)
             Registry,
             Scene.SceneId,
             EAkUGCRuntimeSessionMode::Preview);
-        TestFalse(TEXT("Preview rejects an incomplete three-wave Ruleset"),
+        TestTrue(TEXT("Preview accepts a valid two-wave Ruleset"),
             PreviewSession.Initialize(IncompleteRulesetDocument).bSucceeded);
     }
     {
@@ -380,8 +382,23 @@ bool FAkUGCLogicRuntimeTimerSpawnTest::RunTest(const FString& Parameters)
             Registry,
             Scene.SceneId,
             EAkUGCRuntimeSessionMode::PlayAuthority);
-        TestFalse(TEXT("Play Authority rejects an incomplete three-wave Ruleset"),
+        TestTrue(TEXT("Play Authority accepts a valid two-wave Ruleset"),
             AuthoritySession.Initialize(IncompleteRulesetDocument).bSucceeded);
+    }
+    const double InvalidOverrides[] = {std::numeric_limits<double>::quiet_NaN(),
+        std::numeric_limits<double>::infinity(), 0.0, 100001.0};
+    for (double InvalidOverride : InvalidOverrides)
+    {
+        FAkUGCProjectDocument InvalidOverrideDocument = Document;
+        FAkUGCValue Value;
+        Value.Type = EAkUGCValueType::Number;
+        Value.NumberValue = InvalidOverride;
+        InvalidOverrideDocument.Scenes[0].Entities[0].Components[0].Properties.Add(TEXT("enemyMaxHealth"), Value);
+        FAkUGCSceneRuntime Runtime(World);
+        FAkUGCDocumentRuntimeSession Session(
+            Runtime, Registry, Scene.SceneId, EAkUGCRuntimeSessionMode::PlayAuthority);
+        TestFalse(TEXT("Invalid enemy overrides are rejected before execution"), Session.Initialize(InvalidOverrideDocument).bSucceeded);
+        TestEqual(TEXT("Invalid enemy overrides spawn no actors"), Runtime.Num(), 0);
     }
     {
         FAkUGCProjectDocument OverBudgetDocument = Document;
@@ -651,6 +668,61 @@ bool FAkUGCLogicRuntimeTimerSpawnTest::RunTest(const FString& Parameters)
         }
     }
 
+    for (int32 OverrideMode = 0; OverrideMode < 2; ++OverrideMode)
+    {
+        FAkUGCProjectDocument OverrideDocument = Document;
+        FAkUGCComponentRecord& OverrideSpawn = OverrideDocument.Scenes[0].Entities[0].Components[0];
+        OverrideSpawn.Properties.FindChecked(TEXT("enemyCount")).IntegerValue = 1;
+        const auto SetNumber = [&OverrideSpawn](FName Property, double Number)
+        {
+            FAkUGCValue Value;
+            Value.Type = EAkUGCValueType::Number;
+            Value.NumberValue = Number;
+            OverrideSpawn.Properties.Add(Property, Value);
+        };
+        if (OverrideMode == 0)
+        {
+            SetNumber(TEXT("enemyMaxHealth"), 240.0);
+            SetNumber(TEXT("enemyMoveSpeed"), 100.0);
+            SetNumber(TEXT("enemyGoalDamage"), 7.0);
+        }
+        else
+        {
+            OverrideSpawn.Properties.Remove(TEXT("enemyMaxHealth"));
+            OverrideSpawn.Properties.Remove(TEXT("enemyMoveSpeed"));
+            OverrideSpawn.Properties.Remove(TEXT("enemyGoalDamage"));
+        }
+        FAkUGCSceneRuntime Runtime(World);
+        FAkUGCDocumentRuntimeSession Session(
+            Runtime, Registry, Scene.SceneId, EAkUGCRuntimeSessionMode::PlayAuthority);
+        TestTrue(TEXT("Optional enemy overrides initialize"), Session.Initialize(OverrideDocument).bSucceeded);
+        TestTrue(TEXT("Override fixture spawns enemy"), Subsystem->AdvanceLogicTime(1.0).bSucceeded);
+        const TArray<FAkUGCLogicRuntimeSpawn> Spawns = Subsystem->GetSpawnedEntities();
+        if (Spawns.Num() == 1)
+        {
+            FAkUGCRuntimeHealth Health;
+            TestTrue(TEXT("Override enemy health is initialized"), Runtime.GetRuntimeHealth(Spawns[0].EntityId, Health));
+            TestEqual(TEXT("Max health override or legacy fallback takes effect"), Health.Maximum, OverrideMode == 0 ? 240.0 : 100.0);
+            TestTrue(TEXT("Override fixture movement advances"), Subsystem->AdvanceLogicTime(0.5).bSucceeded);
+            const AActor* Enemy = Runtime.FindActor(Spawns[0].EntityId);
+            TestNotNull(TEXT("Override enemy remains alive"), Enemy);
+            if (Enemy)
+            {
+                TestEqual(TEXT("Move speed override or legacy fallback takes effect"),
+                    Enemy->GetActorLocation(), FVector(OverrideMode == 0 ? 300.0 : 400.0, 50.0, 0.0));
+            }
+            TestTrue(TEXT("Override fixture enemy reaches goal"), Subsystem->AdvanceLogicTime(10.0).bSucceeded);
+            TestEqual(TEXT("Goal damage override or legacy fallback takes effect"), Runtime.GetBaseCurrentHealth(), OverrideMode == 0 ? 18.0 : 15.0);
+            TestEqual(TEXT("Enemy gameplay does not add authored entities"), OverrideDocument.Scenes[0].Entities.Num(), 5);
+            TestEqual(TEXT("Enemy gameplay leaves authored base maximum intact"),
+                OverrideDocument.Scenes[0].Entities[3].Components[0].Properties.FindChecked(TEXT("maxHealth")).NumberValue, 25.0);
+        }
+        else
+        {
+            AddError(TEXT("Override fixture did not spawn exactly one enemy."));
+        }
+    }
+
     {
         FAkUGCSceneRuntime Runtime(World);
         {
@@ -853,6 +925,78 @@ bool FAkUGCLogicRuntimeTimerSpawnTest::RunTest(const FString& Parameters)
             WaveTowerConfig->Properties.FindChecked(TEXT("attackDamage")).NumberValue = 100.0;
         }
         WaveScene.Entities.Add(WaveTower);
+
+        {
+            FAkUGCProjectDocument PerWaveDocument = WaveDocument;
+            FAkUGCSceneDocument& PerWaveScene = PerWaveDocument.Scenes[0];
+            PerWaveScene.Entities.RemoveAll([](const FAkUGCEntityRecord& Entity)
+            {
+                return Entity.PrefabId == TEXT("official.tower.basic");
+            });
+            for (int32 Index = 0; Index < PerWaveScene.Ruleset.Waves.Num(); ++Index)
+            {
+                FAkUGCEntityRecord SpawnRecord = SpawnPoint;
+                SpawnRecord.EntityId = FGuid::NewGuid();
+                FAkUGCComponentRecord& Config = SpawnRecord.Components[0];
+                Config.Properties.FindChecked(TEXT("enemyCount")).IntegerValue = 1;
+                const auto SetNumber = [&Config](FName Property, double Number)
+                {
+                    FAkUGCValue Value;
+                    Value.Type = EAkUGCValueType::Number;
+                    Value.NumberValue = Number;
+                    Config.Properties.Add(Property, Value);
+                };
+                SetNumber(TEXT("enemyMaxHealth"), 150.0 + Index * 100.0);
+                SetNumber(TEXT("enemyMoveSpeed"), 1000.0);
+                SetNumber(TEXT("enemyGoalDamage"), Index + 1.0);
+                PerWaveScene.Ruleset.Waves[Index].SpawnPointEntityId = SpawnRecord.EntityId;
+                PerWaveScene.Entities.Add(MoveTemp(SpawnRecord));
+            }
+            FAkUGCSceneRuntime Runtime(World);
+            FAkUGCDocumentRuntimeSession Session(
+                Runtime, Registry, Scene.SceneId, EAkUGCRuntimeSessionMode::PlayAuthority);
+            TestTrue(TEXT("Distinct per-wave overrides initialize"), Session.Initialize(PerWaveDocument).bSucceeded);
+            int32 ObservedSpawns = 0;
+            for (int32 Step = 0; Step < 100; ++Step)
+            {
+                TestTrue(TEXT("Distinct per-wave gameplay advances"), Subsystem->AdvanceLogicTime(0.05).bSucceeded);
+                const TArray<FAkUGCLogicRuntimeSpawn> Spawns = Subsystem->GetSpawnedEntities();
+                if (Spawns.Num() > ObservedSpawns)
+                {
+                    FAkUGCRuntimeHealth Health;
+                    TestTrue(TEXT("Every wave initializes runtime health"),
+                        Runtime.GetRuntimeHealth(Spawns.Last().EntityId, Health));
+                    TestEqual(TEXT("Each wave consumes its own max-health override"), Health.Maximum, 150.0 + ObservedSpawns * 100.0);
+                    ObservedSpawns = Spawns.Num();
+                }
+            }
+            TestEqual(TEXT("All distinct configured waves spawn"), ObservedSpawns, 3);
+            TestEqual(TEXT("Each wave consumes its own goal-damage override"), Runtime.GetBaseCurrentHealth(), 19.0);
+            TestEqual(TEXT("Configured waves finish in Victory"),
+                Subsystem->GetWaveRuntimeState().Result, EAkUGCTowerDefenseMatchResult::Victory);
+            TestEqual(TEXT("Per-wave runtime leaves authored base unchanged"),
+                PerWaveScene.Entities[3].Components[0].Properties.FindChecked(TEXT("maxHealth")).NumberValue, 25.0);
+        }
+
+        for (int32 WaveCount = AkUGCTowerDefenseRulesetLimits::MinWaveCount;
+            WaveCount <= AkUGCTowerDefenseRulesetLimits::MaxWaveCount; ++WaveCount)
+        {
+            FAkUGCProjectDocument VariableWaveDocument = WaveDocument;
+            VariableWaveDocument.Scenes[0].Ruleset.Waves.SetNum(WaveCount);
+            VariableWaveDocument.Scenes[0].Ruleset.InitialResources = 375;
+            FAkUGCSceneRuntime Runtime(World);
+            FAkUGCDocumentRuntimeSession Session(
+                Runtime, Registry, Scene.SceneId, EAkUGCRuntimeSessionMode::PlayAuthority);
+            TestTrue(TEXT("One to three waves initialize"), Session.Initialize(VariableWaveDocument).bSucceeded);
+            TestEqual(TEXT("Ruleset initial resources are consumed"), Runtime.GetInitialResources(), 375);
+            TestEqual(TEXT("Configured wave count reaches runtime snapshot"),
+                Subsystem->GetWaveRuntimeState().TotalWaveCount, WaveCount);
+            TestTrue(TEXT("Variable wave configuration advances to terminal state"),
+                Subsystem->AdvanceLogicTime(2.0).bSucceeded);
+            TestEqual(TEXT("Variable wave configuration wins"),
+                Subsystem->GetWaveRuntimeState().Result, EAkUGCTowerDefenseMatchResult::Victory);
+            TestEqual(TEXT("Variable configuration spawns each wave"), Subsystem->GetSpawnedEntities().Num(), WaveCount);
+        }
 
         {
             FAkUGCSceneRuntime Runtime(World);

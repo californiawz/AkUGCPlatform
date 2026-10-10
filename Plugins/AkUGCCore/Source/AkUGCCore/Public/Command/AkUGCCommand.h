@@ -87,6 +87,9 @@ struct AKUGCCORE_API FAkUGCCommand
     int32 WaveIndex = INDEX_NONE;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Ruleset")
+    int32 InitialResources = INDEX_NONE;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Ruleset")
     double WaveIntervalSeconds = 5.0;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UGC|Ruleset")

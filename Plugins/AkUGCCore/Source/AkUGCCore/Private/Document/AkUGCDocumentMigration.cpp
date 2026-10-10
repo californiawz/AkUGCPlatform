@@ -294,6 +294,7 @@ FAkUGCDocumentMigrationResult FAkUGCDocumentMigrator::Migrate(
     }
 
     TArray<TSharedPtr<FJsonObject>> ScenesToInitializeRuleset;
+    TArray<TSharedPtr<FJsonObject>> RulesetsToInitializeResources;
     TArray<TSharedPtr<FJsonObject>> RulesetScenes;
     if (!ReadObjectArray(RootObject, TEXT("scenes"), TEXT("scenes"), RulesetScenes, ErrorPath, ErrorMessage))
     {
@@ -329,6 +330,36 @@ FAkUGCDocumentMigrationResult FAkUGCDocumentMigrator::Migrate(
                 SourceVersion,
                 FString::Printf(TEXT("scenes[%d].ruleset"), SceneIndex),
                 TEXT("Tower defense ruleset must be an object."));
+        }
+        else
+        {
+            TSharedPtr<FJsonValue> ResourcesValue;
+            const TSharedRef<FJsonObject> Ruleset = RulesetValue->AsObject().ToSharedRef();
+            if (!FindCanonicalField(Ruleset, TEXT("initialResources"), SourceVersion >= 6, ResourcesValue, ErrorMessage))
+            {
+                return Failure(
+                    SourceVersion,
+                    FString::Printf(TEXT("scenes[%d].ruleset.initialResources"), SceneIndex),
+                    MoveTemp(ErrorMessage));
+            }
+            if (!ResourcesValue.IsValid())
+            {
+                RulesetsToInitializeResources.Add(RulesetValue->AsObject());
+            }
+            else
+            {
+                const double Resources = ResourcesValue->Type == EJson::Number ? ResourcesValue->AsNumber() : -1.0;
+                if (!FMath::IsFinite(Resources)
+                    || Resources != FMath::TruncToDouble(Resources)
+                    || Resources < 0.0
+                    || Resources > AkUGCTowerDefenseRulesetLimits::MaxInitialResources)
+                {
+                    return Failure(
+                        SourceVersion,
+                        FString::Printf(TEXT("scenes[%d].ruleset.initialResources"), SceneIndex),
+                        TEXT("Initial resources must be an integer from 0 to 1000000."));
+                }
+            }
         }
     }
 
@@ -416,6 +447,21 @@ FAkUGCDocumentMigrationResult FAkUGCDocumentMigrator::Migrate(
         Manifest->SetNumberField(TEXT("schemaVersion"), 5);
         Result.AppliedSteps.Add(TEXT("ProjectDocumentV4ToV5"));
         WorkingVersion = 5;
+    }
+
+    if (WorkingVersion == 5)
+    {
+        for (const TSharedPtr<FJsonObject>& Ruleset : RulesetsToInitializeResources)
+        {
+            Ruleset->SetNumberField(TEXT("initialResources"), 0);
+        }
+        for (const TSharedPtr<FJsonObject>& Scene : ScenesToInitializeRuleset)
+        {
+            Scene->GetObjectField(TEXT("ruleset"))->SetNumberField(TEXT("initialResources"), 0);
+        }
+        Manifest->SetNumberField(TEXT("schemaVersion"), 6);
+        Result.AppliedSteps.Add(TEXT("ProjectDocumentV5ToV6"));
+        WorkingVersion = 6;
     }
 
     if (WorkingVersion != AkUGCSchema::CurrentProjectDocumentVersion)
