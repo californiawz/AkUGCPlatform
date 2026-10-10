@@ -1,6 +1,9 @@
 #include "Misc/AutomationTest.h"
 
 #include "Document/AkUGCDocument.h"
+#include "Components/StaticMeshComponent.h"
+#include "Engine/StaticMesh.h"
+#include "Prefab/AkUGCOfficialPrefabCatalog.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "Entity/AkUGCEntityBindingComponent.h"
@@ -218,6 +221,70 @@ bool FAkUGCSceneRuntimeEntityIdentityTest::RunTest(const FString& Parameters)
         TestEqual(TEXT("Removed entity leaves the actor map"), Runtime.Num(), 0);
     }
 
+    GEngine->DestroyWorldContext(World);
+    World->DestroyWorld(false);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FAkUGCReplicatedPrefabVisualTest,
+    "AkUGC.Runtime.Scene.OfficialPrefabVisuals",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext
+        | EAutomationTestFlags::ServerContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCReplicatedPrefabVisualTest::RunTest(const FString& Parameters)
+{
+    FAkUGCPrefabRegistry Registry;
+    FString Error;
+    if (!FAkUGCOfficialPrefabCatalog::RegisterTowerDefense(Registry, &Error))
+    {
+        AddError(Error);
+        return false;
+    }
+    UWorld* World = UWorld::CreateWorld(EWorldType::Game, false, TEXT("AkUGCVisualTest"));
+    if (!World) { return false; }
+    GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(World);
+    const TArray<FName> Prefabs = {TEXT("official.gameplay.base"), TEXT("official.unit.basic_enemy"),
+        TEXT("official.tower.basic"), TEXT("official.gameplay.enemy_spawn"),
+        TEXT("official.gameplay.path_node"), TEXT("official.gameplay.goal")};
+    {
+        FAkUGCSceneDocument Scene;
+        Scene.SceneId = FGuid::NewGuid();
+        for (FName Id : Prefabs)
+        {
+            const FSoftObjectPath* Desktop = Registry.ResolveAsset(Id, TEXT("Win64"));
+            const FSoftObjectPath* Mobile = Registry.ResolveAsset(Id, TEXT("Android"));
+            const FSoftObjectPath* Server = Registry.ResolveAsset(Id, TEXT("Server"));
+            TestTrue(TEXT("Win64 placeholder path exists"), Desktop && Desktop->IsValid());
+            TestTrue(TEXT("Android placeholder path exists"), Mobile && Mobile->IsValid());
+            TestTrue(TEXT("Server explicitly has no visual path"), Server && !Server->IsValid());
+            TestTrue(TEXT("Visible placeholder has nonzero render cost"), Registry.Find(Id)->Cost.RenderUnits > 0);
+            FAkUGCEntityRecord Entity;
+            if (Registry.CreateEntityRecord(Id, FGuid::NewGuid(), FTransform::Identity, Entity, &Error))
+            {
+                Scene.Entities.Add(Entity);
+            }
+            else { AddError(Error); }
+        }
+        FAkUGCSceneRuntime Runtime(World);
+        if (!Runtime.LoadScene(Scene, Registry, &Error)) { AddError(Error); }
+        for (const FAkUGCEntityRecord& Entity : Scene.Entities)
+        {
+            AAkUGCRuntimeEntityActor* Actor = Cast<AAkUGCRuntimeEntityActor>(Runtime.FindActor(Entity.EntityId));
+            if (!Actor) { AddError(TEXT("Missing visual runtime entity.")); continue; }
+#if UE_SERVER
+            TestNull(TEXT("Dedicated Server avoids visual Mesh loading"), Actor->VisualMesh->GetStaticMesh().Get());
+#else
+            TestNotNull(TEXT("Official placeholder StaticMesh loads"), Actor->VisualMesh->GetStaticMesh().Get());
+            Actor->SetVisualMesh(nullptr);
+            Actor->OnRep_PrefabId();
+            TestNotNull(TEXT("Prefab replication callback restores platform Mesh"), Actor->VisualMesh->GetStaticMesh().Get());
+            Actor->PrefabId = NAME_None;
+            Actor->OnRep_PrefabId();
+            TestNull(TEXT("Empty replicated Prefab clears stale visual"), Actor->VisualMesh->GetStaticMesh().Get());
+#endif
+        }
+    }
     GEngine->DestroyWorldContext(World);
     World->DestroyWorld(false);
     return true;

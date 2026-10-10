@@ -121,6 +121,15 @@
 
 **建议提交**：`功能：新增塔防官方 Prefab 正式资产变体与运行时绑定`
 
+**实施状态（2026-10-10）**：视觉接入基础子步骤已实现并通过 Win64 测试；P12 正式资产验收未完成。
+- 官方基地/敌人/塔/刷怪点/路径点/终点填入 Win64、Android、Default 的 Engine BasicShapes 占位变体，Server 显式为空；可见标记纳入 Render 成本。
+- `PrefabId` RepNotify 与客户端 BeginPlay 按本机平台恢复官方 StaticMesh，空标识清理旧 Mesh；新增自动化覆盖六类资产实际加载、回调恢复、平台路径和 Server 不加载视觉。
+- `/Engine/BasicShapes` 加入显式 Cook 根。当前 Client/Server 测试使用已有 Cook 内容载体替换本轮二进制，未重新完整 Cook。
+- Editor/Client/Server Development 编译成功；Editor 全量 **102/102** 通过，Client/Server 各 **3/3** 运行测试通过；玩法终态哈希仍与 Editor 一致。
+- 证据：`Saved/Logs/P12BuildEditor2.log`、`P12BuildClient.log`、`P12BuildServer.log`、`P12Tests.log`、`P12ClientTests.log`、`P12ServerTests.log`。
+- 同时修复 P11 提交后 adaptive build 回归 unity 模式时的模板辅助函数命名冲突。
+- 待完成：有授权的正式 Mesh/材质、Android LOD/材质降级与真机验收、新包完整 Cook、真实 DS→客户端网络复制视觉验收（当前只实测复制回调，未启动联机）。不得把 Engine 占位或回调测试标为正式视觉/网络验收。
+
 ---
 
 ### P13：HUD 与权威计分
@@ -240,9 +249,11 @@ P17 基础 AI Copilot
 
 ## 7. 近期提交计划
 
-Phase 1 尚未开始提交。首个推进项为 **P11（L1 参数化模板）**。
+P11 已提交为 `b3a2699`：塔防 L1 参数化模板与参数面板；下一推进项为 **P12（正式 AssetVariants 与运行时绑定）**。
 
-每个提交完成后执行（继承 Phase 0 门禁）：
+P12 当前 Content 没有可复用的 Mesh/材质资产。先接入 Engine 基础形状占位并验证复制回调、平台选择与内容预算；占位不计作正式资产或 Android 分平台降级验收。正式美术与 Android 真机验收保持待完成。
+
+每个提交前执行（继承 Phase 0 门禁）：
 - AkUGCPlatformEditor/Client/Server Win64 Development 编译。
 - 完整 AkUGC 自动化测试。
 - Lint + git diff --check。

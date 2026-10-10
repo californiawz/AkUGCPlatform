@@ -50,6 +50,22 @@ namespace
         Definition.Cost.RenderUnits = RenderCost;
         Definition.Cost.PhysicsUnits = PhysicsCost;
         Definition.Cost.ScriptUnits = ScriptCost;
+        const TCHAR* Shape = nullptr;
+        if (PrefabId == TEXT("official.gameplay.base") || PrefabId == TEXT("official.gameplay.goal")
+            || PrefabId == TEXT("official.environment.wall")) { Shape = TEXT("/Engine/BasicShapes/Cube.Cube"); }
+        else if (PrefabId == TEXT("official.unit.basic_enemy")) { Shape = TEXT("/Engine/BasicShapes/Sphere.Sphere"); }
+        else if (PrefabId == TEXT("official.tower.basic")) { Shape = TEXT("/Engine/BasicShapes/Cylinder.Cylinder"); }
+        else if (PrefabId == TEXT("official.gameplay.enemy_spawn")) { Shape = TEXT("/Engine/BasicShapes/Cone.Cone"); }
+        else if (PrefabId == TEXT("official.gameplay.path_node") || PrefabId == TEXT("official.environment.ground"))
+        { Shape = TEXT("/Engine/BasicShapes/Plane.Plane"); }
+        if (Shape)
+        {
+            Definition.AssetVariants.Add(TEXT("Win64"), FSoftObjectPath(Shape));
+            Definition.AssetVariants.Add(TEXT("Android"), FSoftObjectPath(Shape));
+            Definition.AssetVariants.Add(TEXT("Default"), FSoftObjectPath(Shape));
+            Definition.AssetVariants.Add(TEXT("Server"), FSoftObjectPath());
+            Definition.Cost.RenderUnits = FMath::Max(1, RenderCost);
+        }
         return Definition;
     }
 
