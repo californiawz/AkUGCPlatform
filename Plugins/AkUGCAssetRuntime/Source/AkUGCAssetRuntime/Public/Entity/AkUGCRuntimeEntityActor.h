@@ -28,6 +28,7 @@ public:
     FName GetPrefabId() const { return PrefabId; }
 
     virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+    virtual void BeginPlay() override;
 
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "UGC")
     TObjectPtr<USceneComponent> SceneRoot;
@@ -41,10 +42,15 @@ public:
 #endif
 
 private:
+    friend class FAkUGCReplicatedPrefabVisualTest;
+
+    UFUNCTION()
+    void OnRep_PrefabId();
+
     // 稳定复制标识（仅权威端写入，复制到所有客户端）。
     UPROPERTY(Replicated, meta = (AllowPrivateAccess = "true"))
     FGuid EntityId;
 
-    UPROPERTY(Replicated, meta = (AllowPrivateAccess = "true"))
+    UPROPERTY(ReplicatedUsing = OnRep_PrefabId, meta = (AllowPrivateAccess = "true"))
     FName PrefabId;
 };

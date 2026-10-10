@@ -3,6 +3,10 @@
 #include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Net/UnrealNetwork.h"
+#include "Engine/StaticMesh.h"
+#include "Prefab/AkUGCOfficialPrefabCatalog.h"
+#include "Prefab/AkUGCPrefabRegistry.h"
+#include "Scene/AkUGCSceneRuntime.h"
 
 #if WITH_EDITORONLY_DATA
 #include "Components/BillboardComponent.h"
@@ -52,6 +56,31 @@ void AAkUGCRuntimeEntityActor::SetEntityIdentity(const FGuid& InEntityId, const 
 {
     EntityId = InEntityId;
     PrefabId = InPrefabId;
+}
+
+void AAkUGCRuntimeEntityActor::BeginPlay()
+{
+    Super::BeginPlay();
+    if (GetNetMode() == NM_Client) { OnRep_PrefabId(); }
+}
+
+void AAkUGCRuntimeEntityActor::OnRep_PrefabId()
+{
+#if !UE_SERVER
+    SetVisualMesh(nullptr);
+    if (GetNetMode() == NM_DedicatedServer || PrefabId.IsNone()) { return; }
+    static const FAkUGCPrefabRegistry Registry = []()
+    {
+        FAkUGCPrefabRegistry Result;
+        FAkUGCOfficialPrefabCatalog::RegisterTowerDefense(Result);
+        return Result;
+    }();
+    const FSoftObjectPath* Path = Registry.ResolveAsset(PrefabId, FAkUGCSceneRuntime::GetCurrentPlatformVariant());
+    if (!Path || !Path->IsValid()) { return; }
+    UStaticMesh* Mesh = Cast<UStaticMesh>(Path->TryLoad());
+    if (Mesh) { SetVisualMesh(Mesh); }
+    else { UE_LOG(LogTemp, Warning, TEXT("Failed to resolve replicated official Prefab visual: %s"), *PrefabId.ToString()); }
+#endif
 }
 
 void AAkUGCRuntimeEntityActor::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const

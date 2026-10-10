@@ -34,7 +34,7 @@ namespace
         {TEXT("startDelaySeconds"), nullptr, &FAkUGCTowerDefenseWaveParameters::StartDelaySeconds, 0.0, 3600.0}
     };
 
-    bool Fail(FString* OutError, const FString& Message)
+    bool TemplateFail(FString* OutError, const FString& Message)
     {
         if (OutError) { *OutError = Message; }
         return false;
@@ -79,7 +79,7 @@ namespace
         if (Validation.IsValid()) { return true; }
         const FAkUGCValidationIssue* Issue = Validation.Issues.FindByPredicate(
             [](const FAkUGCValidationIssue& Candidate) { return Candidate.Severity == EAkUGCValidationSeverity::Error; });
-        return Fail(OutError, Issue ? Issue->Path + TEXT(": ") + Issue->Message : TEXT("Invalid project document."));
+        return TemplateFail(OutError, Issue ? Issue->Path + TEXT(": ") + Issue->Message : TEXT("Invalid project document."));
     }
 
     bool ExactFields(const TSharedPtr<FJsonObject>& Object, const TSet<FString>& Allowed, FString* OutError)
@@ -94,7 +94,7 @@ namespace
             }
             if (!bCanonical)
             {
-                return Fail(OutError, FString(TEXT("Unknown or noncanonical parameter field: ")) + Key);
+                return TemplateFail(OutError, FString(TEXT("Unknown or noncanonical parameter field: ")) + Key);
             }
         }
         return true;
@@ -107,7 +107,7 @@ namespace
         if (!Value || !Value->IsValid() || (*Value)->Type != EJson::Number
             || !InRange((*Value)->AsNumber(), Minimum, Maximum))
         {
-            return Fail(OutError, FString::Printf(TEXT("%s must be a finite Number from %g to %g."), Name, Minimum, Maximum));
+            return TemplateFail(OutError, FString::Printf(TEXT("%s must be a finite Number from %g to %g."), Name, Minimum, Maximum));
         }
         OutValue = (*Value)->AsNumber();
         return true;
@@ -118,7 +118,7 @@ namespace
     {
         double Value = 0.0;
         if (!ReadNumber(Object, Name, Minimum, Maximum, Value, OutError)) { return false; }
-        if (Value != FMath::TruncToDouble(Value)) { return Fail(OutError, FString(Name) + TEXT(" must be an integer.")); }
+        if (Value != FMath::TruncToDouble(Value)) { return TemplateFail(OutError, FString(Name) + TEXT(" must be an integer.")); }
         OutValue = static_cast<int32>(Value);
         return true;
     }
@@ -131,7 +131,7 @@ bool FAkUGCTowerDefenseTemplate::Validate(const FAkUGCTowerDefenseParameters& Pa
         || Parameters.Waves.Num() < AkUGCTowerDefenseRulesetLimits::MinWaveCount
         || Parameters.Waves.Num() > AkUGCTowerDefenseRulesetLimits::MaxWaveCount)
     {
-        return Fail(OutError, TEXT("Parameter schema must be version 1 with 1 to 3 waves."));
+        return TemplateFail(OutError, TEXT("Parameter schema must be version 1 with 1 to 3 waves."));
     }
     if (!InRange(Parameters.BaseMaxHealth, 1.0, 100000.0)
         || !InRange(Parameters.WaveIntervalSeconds, 0.0, 3600.0)
@@ -139,7 +139,7 @@ bool FAkUGCTowerDefenseTemplate::Validate(const FAkUGCTowerDefenseParameters& Pa
         || Parameters.DefeatCondition != EAkUGCTowerDefenseDefeatCondition::BaseHealthDepleted
         || Parameters.VictoryCondition != EAkUGCTowerDefenseVictoryCondition::AllWavesCleared)
     {
-        return Fail(OutError, TEXT("Base health, resources, wave interval or match conditions violate the template schema."));
+        return TemplateFail(OutError, TEXT("Base health, resources, wave interval or match conditions violate the template schema."));
     }
     int64 Total = 0;
     for (int32 Index = 0; Index < Parameters.Waves.Num(); ++Index)
@@ -148,20 +148,20 @@ bool FAkUGCTowerDefenseTemplate::Validate(const FAkUGCTowerDefenseParameters& Pa
         if (Wave.EnemyPrefabId != TEXT("official.unit.basic_enemy") || !Registry.Find(Wave.EnemyPrefabId)
             || Wave.EnemyCount < 1 || Wave.EnemyCount > 500)
         {
-            return Fail(OutError, FString::Printf(TEXT("Wave %d requires an official Basic Enemy and a count from 1 to 500."), Index + 1));
+            return TemplateFail(OutError, FString::Printf(TEXT("Wave %d requires an official Basic Enemy and a count from 1 to 500."), Index + 1));
         }
         for (const FWaveNumberField& Field : WaveNumbers)
         {
             if (!InRange(Wave.*Field.Member, Field.Minimum, Field.Maximum))
             {
-                return Fail(OutError, FString::Printf(TEXT("Wave %d: %s must be finite and from %g to %g."),
+                return TemplateFail(OutError, FString::Printf(TEXT("Wave %d: %s must be finite and from %g to %g."),
                     Index + 1, Field.JsonName, Field.Minimum, Field.Maximum));
             }
         }
         Total += Wave.EnemyCount;
     }
     return Total <= AkUGCTowerDefenseRulesetLimits::MaxTotalEnemyCount
-        ? true : Fail(OutError, TEXT("Total wave enemies exceed the hard limit of 500."));
+        ? true : TemplateFail(OutError, TEXT("Total wave enemies exceed the hard limit of 500."));
 }
 
 bool FAkUGCTowerDefenseTemplate::ReadParameters(const FAkUGCProjectDocument& Document,
@@ -169,11 +169,11 @@ bool FAkUGCTowerDefenseTemplate::ReadParameters(const FAkUGCProjectDocument& Doc
 {
     if (Document.Manifest.TemplateId != TEXT("official.tower_defense") || !CheckDocument(Document, OutError))
     {
-        return Fail(OutError, TEXT("A valid official tower defense document is required."));
+        return TemplateFail(OutError, TEXT("A valid official tower defense document is required."));
     }
     const FAkUGCSceneDocument* Scene = Document.Scenes.FindByPredicate(
         [&SceneId](const FAkUGCSceneDocument& Candidate) { return Candidate.SceneId == SceneId; });
-    if (!Scene) { return Fail(OutError, TEXT("The active scene does not exist.")); }
+    if (!Scene) { return TemplateFail(OutError, TEXT("The active scene does not exist.")); }
     const FAkUGCEntityRecord* Base = nullptr;
     int32 BaseCount = 0;
     int32 GoalCount = 0;
@@ -188,10 +188,10 @@ bool FAkUGCTowerDefenseTemplate::ReadParameters(const FAkUGCProjectDocument& Doc
         || !Scene->LogicGraph.Nodes.ContainsByPredicate(
             [](const FAkUGCLogicNode& Node) { return Node.Type == EAkUGCLogicNodeType::WaveStart; }))
     {
-        return Fail(OutError, TEXT("Simple parameters require exactly one Base and Goal, at least two path nodes and a WaveStart entry."));
+        return TemplateFail(OutError, TEXT("Simple parameters require exactly one Base and Goal, at least two path nodes and a WaveStart entry."));
     }
     const FAkUGCValue* Health = Property(*Base, TEXT("core.health"), TEXT("maxHealth"));
-    if (!Health || Health->Type != EAkUGCValueType::Number) { return Fail(OutError, TEXT("Base maxHealth must be a Number.")); }
+    if (!Health || Health->Type != EAkUGCValueType::Number) { return TemplateFail(OutError, TEXT("Base maxHealth must be a Number.")); }
     FAkUGCTowerDefenseParameters Result;
     Result.BaseMaxHealth = Health->NumberValue;
     Result.InitialResources = Scene->Ruleset.InitialResources;
@@ -205,7 +205,7 @@ bool FAkUGCTowerDefenseTemplate::ReadParameters(const FAkUGCProjectDocument& Doc
             [&Wave](const FAkUGCEntityRecord& Entity) { return Entity.EntityId == Wave.SpawnPointEntityId; });
         if (!Spawn || Spawn->PrefabId != TEXT("official.gameplay.enemy_spawn"))
         {
-            return Fail(OutError, TEXT("Every wave must reference an official Enemy Spawn in this scene."));
+            return TemplateFail(OutError, TEXT("Every wave must reference an official Enemy Spawn in this scene."));
         }
         const FAkUGCValue* Prefab = Property(*Spawn, SpawnType, TEXT("enemyPrefab"));
         const FAkUGCValue* Count = Property(*Spawn, SpawnType, TEXT("enemyCount"));
@@ -213,7 +213,7 @@ bool FAkUGCTowerDefenseTemplate::ReadParameters(const FAkUGCProjectDocument& Doc
         if (!Prefab || Prefab->Type != EAkUGCValueType::Name || !Count || Count->Type != EAkUGCValueType::Integer
             || Count->IntegerValue < 1 || Count->IntegerValue > 500 || !Interval || Interval->Type != EAkUGCValueType::Number)
         {
-            return Fail(OutError, TEXT("Enemy Spawn requires typed enemyPrefab, enemyCount and spawnInterval properties."));
+            return TemplateFail(OutError, TEXT("Enemy Spawn requires typed enemyPrefab, enemyCount and spawnInterval properties."));
         }
         FAkUGCTowerDefenseWaveParameters& Item = Result.Waves.AddDefaulted_GetRef();
         Item.EnemyPrefabId = Prefab->NameValue;
@@ -225,7 +225,7 @@ bool FAkUGCTowerDefenseTemplate::ReadParameters(const FAkUGCProjectDocument& Doc
             if (!Field.PropertyName || Field.Member == &FAkUGCTowerDefenseWaveParameters::SpawnIntervalSeconds) { continue; }
             if (const FAkUGCValue* Value = Property(*Spawn, SpawnType, Field.PropertyName))
             {
-                if (Value->Type != EAkUGCValueType::Number) { return Fail(OutError, TEXT("Enemy overrides must be Number properties.")); }
+                if (Value->Type != EAkUGCValueType::Number) { return TemplateFail(OutError, TEXT("Enemy overrides must be Number properties.")); }
                 Item.*Field.Member = Value->NumberValue;
             }
         }
@@ -246,7 +246,7 @@ bool FAkUGCTowerDefenseTemplate::ValidateDocumentBudgets(const FAkUGCProjectDocu
         if (!Prefab || Count < 0 || Prefab->Cost.EntityUnits < 0 || Prefab->Cost.RenderUnits < 0
             || Prefab->Cost.PhysicsUnits < 0 || Prefab->Cost.ScriptUnits < 0)
         {
-            return Fail(OutError, TEXT("Content budget requires registered Prefabs with nonnegative costs."));
+            return TemplateFail(OutError, TEXT("Content budget requires registered Prefabs with nonnegative costs."));
         }
         Entities += Count * Prefab->Cost.EntityUnits;
         Render += Count * Prefab->Cost.RenderUnits;
@@ -270,12 +270,12 @@ bool FAkUGCTowerDefenseTemplate::ValidateDocumentBudgets(const FAkUGCProjectDocu
             if (!Prefab || Prefab->Type != EAkUGCValueType::Name || Prefab->NameValue != TEXT("official.unit.basic_enemy")
                 || !Count || Count->Type != EAkUGCValueType::Integer || Count->IntegerValue < 1 || Count->IntegerValue > 500)
             {
-                return Fail(OutError, TEXT("Wave budgets require a supported Enemy Spawn configuration."));
+                return TemplateFail(OutError, TEXT("Wave budgets require a supported Enemy Spawn configuration."));
             }
             TotalEnemies += Count->IntegerValue;
             if (TotalEnemies > 500 || !AddCost(Prefab->NameValue, Count->IntegerValue))
             {
-                return Fail(OutError, TEXT("Wave enemies exceed the supported count or content budget."));
+                return TemplateFail(OutError, TEXT("Wave enemies exceed the supported count or content budget."));
             }
         }
         TArray<FGuid> Pending;
@@ -288,12 +288,12 @@ bool FAkUGCTowerDefenseTemplate::ValidateDocumentBudgets(const FAkUGCProjectDocu
         {
             if (Pending.Num() > AkUGCLogicLimits::MaxExecutedInstructions)
             {
-                return Fail(OutError, TEXT("Logic content budget exceeds the execution limit."));
+                return TemplateFail(OutError, TEXT("Logic content budget exceeds the execution limit."));
             }
             const FGuid NodeId = Pending[ReadIndex++];
             const FAkUGCLogicNode* Node = Scene.LogicGraph.Nodes.FindByPredicate(
                 [&NodeId](const FAkUGCLogicNode& Candidate) { return Candidate.NodeId == NodeId; });
-            if (!Node) { return Fail(OutError, TEXT("Logic budget references an unknown node.")); }
+            if (!Node) { return TemplateFail(OutError, TEXT("Logic budget references an unknown node.")); }
             if (Node->Type == EAkUGCLogicNodeType::Spawn)
             {
                 int64 Count = 1;
@@ -308,7 +308,7 @@ bool FAkUGCTowerDefenseTemplate::ValidateDocumentBudgets(const FAkUGCProjectDocu
                     }
                 }
                 TotalEnemies += Count;
-                if (TotalEnemies > 500 || !AddCost(Node->SpawnPrefabId, Count)) { return Fail(OutError, TEXT("Logic Spawn exceeds the dynamic enemy budget.")); }
+                if (TotalEnemies > 500 || !AddCost(Node->SpawnPrefabId, Count)) { return TemplateFail(OutError, TEXT("Logic Spawn exceeds the dynamic enemy budget.")); }
             }
             for (const FAkUGCLogicConnection& Connection : Scene.LogicGraph.Connections)
             {
@@ -319,7 +319,7 @@ bool FAkUGCTowerDefenseTemplate::ValidateDocumentBudgets(const FAkUGCProjectDocu
     if (Entities > AkUGCMobileBudgetLimits::MaxEntityUnits || Render > AkUGCMobileBudgetLimits::MaxRenderUnits
         || Physics > AkUGCMobileBudgetLimits::MaxPhysicsUnits || Script > AkUGCMobileBudgetLimits::MaxScriptUnits)
     {
-        return Fail(OutError, FString::Printf(TEXT("Content budget including wave enemies exceeded: entity=%lld/%d render=%lld/%d physics=%lld/%d script=%lld/%d."),
+        return TemplateFail(OutError, FString::Printf(TEXT("Content budget including wave enemies exceeded: entity=%lld/%d render=%lld/%d physics=%lld/%d script=%lld/%d."),
             Entities, AkUGCMobileBudgetLimits::MaxEntityUnits, Render, AkUGCMobileBudgetLimits::MaxRenderUnits,
             Physics, AkUGCMobileBudgetLimits::MaxPhysicsUnits, Script, AkUGCMobileBudgetLimits::MaxScriptUnits));
     }
@@ -418,7 +418,7 @@ bool FAkUGCTowerDefenseTemplate::BuildTransaction(const FAkUGCProjectDocument& D
     }
     FAkUGCProjectDocument Candidate = Document;
     const FAkUGCCommandExecutionResult Applied = FAkUGCCommandExecutor::Apply(Candidate, Result);
-    if (!Applied.bSucceeded) { return Fail(OutError, Applied.ErrorPath + TEXT(": ") + Applied.ErrorMessage); }
+    if (!Applied.bSucceeded) { return TemplateFail(OutError, Applied.ErrorPath + TEXT(": ") + Applied.ErrorMessage); }
     if (!ValidateDocumentBudgets(Candidate, Registry, OutError)) { return false; }
     OutTransaction = MoveTemp(Result);
     return true;
@@ -498,7 +498,7 @@ bool FAkUGCTowerDefenseTemplate::SerializeParameters(const FAkUGCTowerDefensePar
     if (!FAkUGCOfficialPrefabCatalog::RegisterTowerDefense(Registry, OutError) || !Validate(Parameters, Registry, OutError)) { return false; }
     if (!FJsonObjectConverter::UStructToJsonObjectString(Parameters, OutJson))
     {
-        return Fail(OutError, TEXT("Failed to serialize tower defense parameters."));
+        return TemplateFail(OutError, TEXT("Failed to serialize tower defense parameters."));
     }
     return true;
 }
@@ -510,7 +510,7 @@ bool FAkUGCTowerDefenseTemplate::DeserializeParameters(const FString& Json,
     TSharedPtr<FJsonObject> Root;
     if (!FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Json), Root) || !Root.IsValid())
     {
-        return Fail(OutError, TEXT("Parameter JSON must be an object."));
+        return TemplateFail(OutError, TEXT("Parameter JSON must be an object."));
     }
     const TSet<FString> RootFields = {TEXT("schemaVersion"), TEXT("waves"), TEXT("initialResources"),
         TEXT("baseMaxHealth"), TEXT("waveIntervalSeconds"), TEXT("defeatCondition"), TEXT("victoryCondition")};
@@ -527,26 +527,26 @@ bool FAkUGCTowerDefenseTemplate::DeserializeParameters(const FString& Json,
     if (!Root->TryGetStringField(TEXT("defeatCondition"), Defeat) || !Defeat.Equals(TEXT("BaseHealthDepleted"), ESearchCase::CaseSensitive)
         || !Root->TryGetStringField(TEXT("victoryCondition"), Victory) || !Victory.Equals(TEXT("AllWavesCleared"), ESearchCase::CaseSensitive))
     {
-        return Fail(OutError, TEXT("Only BaseHealthDepleted and AllWavesCleared conditions are supported."));
+        return TemplateFail(OutError, TEXT("Only BaseHealthDepleted and AllWavesCleared conditions are supported."));
     }
     const TArray<TSharedPtr<FJsonValue>>* Waves = nullptr;
     if (!Root->TryGetArrayField(TEXT("waves"), Waves) || Waves->Num() < 1 || Waves->Num() > 3)
     {
-        return Fail(OutError, TEXT("waves must be an array of 1 to 3 wave objects."));
+        return TemplateFail(OutError, TEXT("waves must be an array of 1 to 3 wave objects."));
     }
     TSet<FString> WaveFields = {TEXT("enemyPrefabId"), TEXT("enemyCount")};
     for (const FWaveNumberField& Field : WaveNumbers) { WaveFields.Add(Field.JsonName); }
     Result.Waves.Reset();
     for (const TSharedPtr<FJsonValue>& Value : *Waves)
     {
-        if (!Value.IsValid() || Value->Type != EJson::Object) { return Fail(OutError, TEXT("Every wave must be an object.")); }
+        if (!Value.IsValid() || Value->Type != EJson::Object) { return TemplateFail(OutError, TEXT("Every wave must be an object.")); }
         const TSharedPtr<FJsonObject> Wave = Value->AsObject();
         if (!ExactFields(Wave, WaveFields, OutError)) { return false; }
         FAkUGCTowerDefenseWaveParameters& Item = Result.Waves.AddDefaulted_GetRef();
         FString Enemy;
         if (!Wave->TryGetStringField(TEXT("enemyPrefabId"), Enemy) || !Enemy.Equals(TEXT("official.unit.basic_enemy"), ESearchCase::CaseSensitive))
         {
-            return Fail(OutError, TEXT("enemyPrefabId must be official.unit.basic_enemy."));
+            return TemplateFail(OutError, TEXT("enemyPrefabId must be official.unit.basic_enemy."));
         }
         if (!ReadInteger(Wave, TEXT("enemyCount"), 1, 500, Item.EnemyCount, OutError)) { return false; }
         for (const FWaveNumberField& Field : WaveNumbers)
