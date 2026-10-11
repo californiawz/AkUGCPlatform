@@ -179,6 +179,18 @@
 
 **建议提交**：`功能：新增确定性 Bot 与单人完整对局循环`
 
+**实施状态（2026-10-11）**：准备阶段确定性布塔 Bot 与 Standalone 完整对局闭环已实现并验收；尚不是独立 AI 玩家或对局中动态决策。
+- 新增共享 Bot 准备事务：按槽位 GUID 稳定排序，每塔100资源、最多2塔，检查已占用与重合位置、官方允许标签、ID冲突及内容预算；使用统一 Command 在独立运行候选文档应用，不回写作者准备文档。
+- 单人默认场景用两处塔槽替换预置塔，开始时 Bot 自动布塔并消费资源；塔在 PlayAuthority 初始化时注册战斗，未以动态 Spawn 假装具备塔攻击。
+- GameMode 新增准备、开始、返回重开接口；同 World 清理旧 Session/Logic/Actor，并复位 GameState 资源、计分冻结、终局通知与阶段。单人来源标记隔离外部签名会话，返回不能误关闭非单人对局。
+- 新增 PlayerController：Enter开始、Escape返回，Standalone 俯视相机；HUD 显示准备/成本与结算返回提示。开始和返回只接受本地权威调用，远端 Client 无控制权限。
+- 修复客户端跨局 InProgress 快照未重置终局通知，以及 Bot 仅检查原始场景而未检查本轮重合塔位的问题。
+- Editor 全量 **109/109** 通过；Client/Server 各1项纯 Bot 事务测试通过，固定输入候选哈希完全一致。两局同 World 重开与作者文档不变已在 Editor/Client 验证；Dedicated Server 禁止本地单人起局，故不伪装成该 target 支持单人流程。
+- Win64 Editor/Client/Server Development 构建与完整 Cook/Stage/Package 成功；既有真实 DS+双 Client 晚加入计分复制回归通过。
+- 实际 Standalone 渲染对局通过 PlayerController 开始、Bot布2塔、自动三波结算及返回准备；终局团队Score1400，固定输入回归资源90；返回后资源200、无会话、阶段Preparation。已产出 `Saved/SoloVerification/settlement.png`。
+- 证据：`Saved/Logs/P14AllEditorGate.log`、`P14FinalClientBot.log`、`P14FinalServerBot.log`、`P14FinalSoloSmoke.log`；`Saved/SoloVerification/result.json`；`Saved/NetworkVisualVerification/cook_client.log`、`cook_server.log`、`result.json`。
+- 边界：Bot 当前为准备阶段布塔助手，不包含补位玩家、对局中策略或个人得分归属。Listen Server API 未独立人工验收；房间大厅、2–4人流程留 P15；正式相机/照明美术与 Android 仍延后。
+
 ---
 
 ### P15：2–4 人联机私测
@@ -266,9 +278,9 @@ P17 基础 AI Copilot
 
 ## 7. 近期提交计划
 
-P11 已提交 `b3a2699`；P12 占位绑定与完整 Cook/真实网络验收已提交 `e62317c`、`5cc9a8b`。正式美术按用户要求延后，不阻塞后续。
+P11 已提交 `b3a2699`；P12 中文改写后的提交为 `9935274`、`38a119e`；P13 中文提交为 `08360f0`。正式美术按用户要求延后，不阻塞后续。
 
-P13 团队权威计分与 HUD 已通过门禁，完成后独立提交；下一推进项为 **P14（确定性 Bot 与单人完整对局循环）**。P13 个人分等待明确实体所有者映射；不得冒充完成个人归属。
+P14 准备阶段 Bot 与 Standalone 完整对局已通过门禁，完成后独立中文详细提交；下一推进项为 **P15（房间大厅与2–4人联机流程）**。个人归属分与独立 AI 玩家仍待后续，不冒充完成。
 
 每个提交前执行（继承 Phase 0 门禁）：
 - AkUGCPlatformEditor/Client/Server Win64 Development 编译。

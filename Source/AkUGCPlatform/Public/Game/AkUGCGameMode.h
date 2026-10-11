@@ -41,6 +41,14 @@ public:
         FString* OutError = nullptr);
 
     bool HasAuthoritySession() const;
+    bool PrepareDefaultSoloProject(FString* OutError = nullptr);
+    bool PrepareSoloProject(const FAkUGCProjectDocument& Document, FString* OutError = nullptr);
+    bool StartSoloMatch(FString* OutError = nullptr);
+    bool ReturnToPreparation(FString* OutError = nullptr);
+    const FAkUGCProjectDocument& GetPreparedDocument() const { return PreparedDocument; }
+    int32 GetBotTowerCount() const { return BotTowerCount; }
+    bool HasPreparedProject() const { return !PreparedDocument.Scenes.IsEmpty(); }
+    virtual void BeginPlay() override;
 
     virtual void InitGame(const FString& MapName, const FString& Options, FString& ErrorMessage) override;
 
@@ -62,4 +70,7 @@ private:
     int32 LastProjectedActiveEnemyCount = 0;
     bool bHasProjectedState = false;
     FAkUGCTowerDefenseScoreAccumulator ScoreAccumulator;
+    FAkUGCProjectDocument PreparedDocument;
+    int32 BotTowerCount = 0;
+    bool bSoloSession = false;
 };

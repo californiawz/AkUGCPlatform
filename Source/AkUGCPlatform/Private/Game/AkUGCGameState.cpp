@@ -10,11 +10,32 @@ void AAkUGCGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutL
 {
     Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 
+    DOREPLIFETIME(AAkUGCGameState, ReplicatedMatchFlow);
     DOREPLIFETIME(AAkUGCGameState, ReplicatedWaveSnapshot);
     DOREPLIFETIME(AAkUGCGameState, ReplicatedBaseHealthCurrent);
     DOREPLIFETIME(AAkUGCGameState, ReplicatedBaseHealthMaximum);
     DOREPLIFETIME(AAkUGCGameState, ReplicatedActiveEnemyCount);
     DOREPLIFETIME(AAkUGCGameState, ReplicatedScoreSnapshot);
+}
+
+void AAkUGCGameState::ResetForPreparation()
+{
+    if (!HasAuthority()) { return; }
+    ReplicatedMatchFlow = EAkUGCMatchFlow::Preparation;
+    ReplicatedWaveSnapshot = {};
+    ReplicatedScoreSnapshot = {};
+    ReplicatedBaseHealthCurrent = 0.0;
+    ReplicatedBaseHealthMaximum = 0.0;
+    ReplicatedActiveEnemyCount = 0;
+    bResourcesInitialized = false;
+    bMatchEndedBroadcast = false;
+    OnRep_ScoreSnapshot();
+    ForceNetUpdate();
+}
+
+void AAkUGCGameState::ProjectMatchFlow(EAkUGCMatchFlow Flow)
+{
+    if (HasAuthority()) { ReplicatedMatchFlow = Flow; }
 }
 
 void AAkUGCGameState::ProjectWaveSnapshot(const FAkUGCWaveRuntimeSnapshot& Snapshot)
@@ -106,6 +127,7 @@ int32 AAkUGCGameState::GetActiveEnemyCount() const
 void AAkUGCGameState::OnRep_WaveSnapshot()
 {
     OnWaveSnapshotReplicated.Broadcast();
+    if (ReplicatedWaveSnapshot.Result == EAkUGCTowerDefenseMatchResult::InProgress) { bMatchEndedBroadcast = false; }
 
     if (!bMatchEndedBroadcast && ReplicatedWaveSnapshot.Result != EAkUGCTowerDefenseMatchResult::InProgress)
     {

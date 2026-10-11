@@ -6,6 +6,14 @@
 #include "Gameplay/AkUGCTowerDefenseScore.h"
 #include "AkUGCGameState.generated.h"
 
+UENUM(BlueprintType)
+enum class EAkUGCMatchFlow : uint8
+{
+    Preparation,
+    Playing,
+    Settlement
+};
+
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FAkUGCWaveSnapshotReplicatedDelegate);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FAkUGCBaseHealthReplicatedDelegate);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FAkUGCActiveEnemyCountReplicatedDelegate);
@@ -28,6 +36,11 @@ class AKUGCPLATFORM_API AAkUGCGameState : public AGameStateBase
 
 public:
     AAkUGCGameState();
+    void ResetForPreparation();
+    void ProjectMatchFlow(EAkUGCMatchFlow Flow);
+
+    UFUNCTION(BlueprintPure, Category = "UGC|Match")
+    EAkUGCMatchFlow GetMatchFlow() const { return ReplicatedMatchFlow; }
 
     // ---- 服务器权威投影接口（仅权威端调用）----
 
@@ -94,6 +107,9 @@ public:
     void OnRep_ActiveEnemyCount();
 
 protected:
+    UPROPERTY(Replicated)
+    EAkUGCMatchFlow ReplicatedMatchFlow = EAkUGCMatchFlow::Preparation;
+
     UPROPERTY(ReplicatedUsing = OnRep_WaveSnapshot)
     FAkUGCWaveRuntimeSnapshot ReplicatedWaveSnapshot;
 

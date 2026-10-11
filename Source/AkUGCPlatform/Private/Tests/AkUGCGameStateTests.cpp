@@ -182,6 +182,11 @@ bool FAkUGCGameStateMatchEndedBroadcastTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("Match ended broadcast does not repeat"),
         Listener->BroadcastCount, 1);
 
+    GameState->ProjectWaveSnapshot({});
+    GameState->OnRep_WaveSnapshot();
+    GameState->ProjectWaveSnapshot(Victory);
+    GameState->OnRep_WaveSnapshot();
+    TestEqual(TEXT("New round broadcasts its own terminal event"), Listener->BroadcastCount, 2);
     GameState->OnMatchEndedReplicated.RemoveDynamic(Listener, &UAkUGCMatchEndedTestListener::OnMatchEnded);
     AkUGCGameStateTest::DestroyTestWorld(World);
     return true;

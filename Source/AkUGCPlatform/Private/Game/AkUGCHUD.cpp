@@ -43,7 +43,13 @@ void AAkUGCHUD::DrawHUD()
     DrawText(FString::Printf(TEXT("RESOURCES %d    TEAM SCORE %d"), Score.Resources, Score.TeamScore),
         FLinearColor(1.0f, 0.82f, 0.35f), 30.0f, 126.0f, Font);
     DrawText(TEXT("Individual score: unassigned shared map towers"), FLinearColor(0.55f, 0.65f, 0.75f), 30.0f, 155.0f, Font, 0.9f);
-    if (Score.bSettled)
+    if (State->GetMatchFlow() == EAkUGCMatchFlow::Preparation)
+    {
+        bRequestedCapture = false;
+        DrawText(TEXT("PREPARATION  |  ENTER: START WITH BOT"), FLinearColor(0.3f, 0.95f, 0.85f), 30.0f, 204.0f, Font, 1.2f);
+        DrawText(TEXT("Bot places up to 2 towers, 100 resources each."), FLinearColor::White, 30.0f, 234.0f, Font);
+    }
+    else if (Score.bSettled)
     {
         const float PanelWidth = FMath::Min(420.0f, Canvas->ClipX - 32.0f);
         const float X = (Canvas->ClipX - PanelWidth) * 0.5f;
@@ -51,6 +57,7 @@ void AAkUGCHUD::DrawHUD()
         DrawRect(FLinearColor(0.025f, 0.045f, 0.07f, 0.96f), X, Y, PanelWidth, 190.0f);
         DrawText(FormatSettlement(Score), Score.Result == EAkUGCTowerDefenseMatchResult::Victory
             ? FLinearColor(0.3f, 0.95f, 0.7f) : FLinearColor(1.0f, 0.4f, 0.35f), X + 24.0f, Y + 22.0f, Font, 1.5f);
+        DrawText(TEXT("ESC: RETURN TO PREPARATION / REPLAY"), FLinearColor::White, X + 24.0f, Y + 155.0f, Font);
     }
     else if (Wave.Result != EAkUGCTowerDefenseMatchResult::InProgress)
     {

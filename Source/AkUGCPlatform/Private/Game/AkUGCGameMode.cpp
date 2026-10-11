@@ -12,16 +12,125 @@
 #include "Prefab/AkUGCPrefabRegistry.h"
 #include "Scene/AkUGCSceneRuntime.h"
 #include "Session/AkUGCDocumentRuntimeSession.h"
+#include "Game/AkUGCPlayerController.h"
+#include "Template/AkUGCTowerDefenseBot.h"
+#include "Template/AkUGCTowerDefenseTemplate.h"
+#include "Validation/AkUGCDocumentValidator.h"
 
 AAkUGCGameMode::AAkUGCGameMode()
 {
     GameStateClass = AAkUGCGameState::StaticClass();
     HUDClass = AAkUGCHUD::StaticClass();
+    PlayerControllerClass = AAkUGCPlayerController::StaticClass();
     PrimaryActorTick.bCanEverTick = true;
     PrimaryActorTick.bStartWithTickEnabled = true;
 }
 
 AAkUGCGameMode::~AAkUGCGameMode() = default;
+
+void AAkUGCGameMode::BeginPlay()
+{
+    Super::BeginPlay();
+    FString PackPath;
+    if (!IsRunningDedicatedServer() && GetNetMode() == NM_Standalone && !Session
+        && !FParse::Value(FCommandLine::Get(), TEXT("LogicPack="), PackPath))
+    {
+        FString Error;
+        if (!PrepareDefaultSoloProject(&Error)) { UE_LOG(LogTemp, Error, TEXT("Solo preparation failed: %s"), *Error); }
+    }
+}
+
+bool AAkUGCGameMode::PrepareDefaultSoloProject(FString* OutError)
+{
+    FAkUGCPrefabRegistry Registry;
+    FAkUGCProjectDocument Document;
+    if (!FAkUGCOfficialPrefabCatalog::RegisterTowerDefense(Registry, OutError)
+        || !FAkUGCTowerDefenseTemplate::CreateDefaultDocument(Registry, Document, OutError)) { return false; }
+    FAkUGCSceneDocument& Scene = Document.Scenes[0];
+    Scene.Entities.RemoveAll([](const FAkUGCEntityRecord& Entity) { return Entity.PrefabId == TEXT("official.tower.basic"); });
+    for (int32 Index = 0; Index < 2; ++Index)
+    {
+        FAkUGCEntityRecord Slot;
+        if (!Registry.CreateEntityRecord(TEXT("official.gameplay.tower_slot"), FGuid(0xB0700001 + Index, 0, 0, 0),
+            FTransform(FVector(Index == 0 ? 650.0 : 1100.0, Index == 0 ? 150.0 : -150.0, 0.0)), Slot, OutError)) { return false; }
+        Scene.Entities.Add(Slot);
+    }
+    return PrepareSoloProject(Document, OutError);
+}
+
+bool AAkUGCGameMode::PrepareSoloProject(const FAkUGCProjectDocument& Document, FString* OutError)
+{
+    if (!HasAuthority() || GetNetMode() == NM_Client || GetNetMode() == NM_DedicatedServer || Session)
+    {
+        if (OutError) { *OutError = TEXT("Solo preparation requires an idle local authoritative world."); }
+        return false;
+    }
+    FAkUGCPrefabRegistry Registry;
+    FAkUGCTowerDefenseParameters Parameters;
+    if (Document.Scenes.Num() != 1 || !FAkUGCOfficialPrefabCatalog::RegisterTowerDefense(Registry, OutError)
+        || !FAkUGCTowerDefenseTemplate::ReadParameters(Document, Document.Scenes[0].SceneId, Parameters, OutError)
+        || !FAkUGCTowerDefenseTemplate::ValidateDocumentBudgets(Document, Registry, OutError)) { return false; }
+    TUniquePtr<FAkUGCSceneRuntime> Preview = MakeUnique<FAkUGCSceneRuntime>(GetWorld());
+    if (!Preview->LoadScene(Document.Scenes[0], Registry, OutError)) { return false; }
+    SceneRuntime.Reset();
+    SceneRuntime = MoveTemp(Preview);
+    PreparedDocument = Document;
+    BotTowerCount = 0;
+    if (AAkUGCGameState* State = GetWorld()->GetGameState<AAkUGCGameState>())
+    {
+        State->ResetForPreparation();
+        State->ProjectBaseHealth(Parameters.BaseMaxHealth, Parameters.BaseMaxHealth);
+        State->InitializeResources(Parameters.InitialResources);
+    }
+    return true;
+}
+
+bool AAkUGCGameMode::StartSoloMatch(FString* OutError)
+{
+    AAkUGCGameState* State = GetWorld()->GetGameState<AAkUGCGameState>();
+    if (!HasAuthority() || GetNetMode() == NM_Client || GetNetMode() == NM_DedicatedServer || Session
+        || !State || State->GetMatchFlow() != EAkUGCMatchFlow::Preparation || PreparedDocument.Scenes.Num() != 1)
+    {
+        if (OutError) { *OutError = TEXT("Start requires a prepared local match."); }
+        return false;
+    }
+    FAkUGCPrefabRegistry Registry;
+    FAkUGCCommandTransaction Transaction;
+    int32 Count = 0;
+    if (!FAkUGCOfficialPrefabCatalog::RegisterTowerDefense(Registry, OutError)
+        || !FAkUGCTowerDefenseBot::BuildPreparationTransaction(PreparedDocument, Registry, Transaction, Count, OutError)) { return false; }
+    FAkUGCProjectDocument Candidate = PreparedDocument;
+    if (!FAkUGCCommandExecutor::Apply(Candidate, Transaction).bSucceeded) { return false; }
+    SceneRuntime.Reset();
+    State->ResetForPreparation();
+    bHasProjectedState = false;
+    if (!InitializeAuthoritySession(Candidate, OutError))
+    {
+        FString RestoreError;
+        PrepareSoloProject(PreparedDocument, &RestoreError);
+        return false;
+    }
+    BotTowerCount = Count;
+    bSoloSession = true;
+    State->ProjectMatchFlow(EAkUGCMatchFlow::Playing);
+    return true;
+}
+
+bool AAkUGCGameMode::ReturnToPreparation(FString* OutError)
+{
+    if (!HasAuthority() || !HasPreparedProject() || (Session && !bSoloSession)
+        || GetNetMode() == NM_Client || GetNetMode() == NM_DedicatedServer)
+    {
+        if (OutError) { *OutError = TEXT("Return requires a local solo project."); }
+        return false;
+    }
+    Session.Reset();
+    SceneRuntime.Reset();
+    PrefabRegistry.Reset();
+    ScoreAccumulator.Initialize(0);
+    bHasProjectedState = false;
+    return PrepareSoloProject(PreparedDocument, OutError);
+}
 
 bool AAkUGCGameMode::InitializeAuthoritySession(FAkUGCProjectDocument& Document, FString* OutError)
 {
@@ -83,8 +192,9 @@ bool AAkUGCGameMode::InitializeAuthoritySession(FAkUGCProjectDocument& Document,
         return false;
     }
 
+    bSoloSession = false;
     ScoreAccumulator.Initialize(Scene.Ruleset.InitialResources);
-    ProjectStateToGameState(GetGameState<AAkUGCGameState>());
+    ProjectStateToGameState(GetWorld()->GetGameState<AAkUGCGameState>());
     return true;
 }
 
@@ -204,6 +314,7 @@ void AAkUGCGameMode::ProjectStateToGameState(AAkUGCGameState* InGameState)
 
     ScoreAccumulator.Update(Logic->GetSpawnedEntities(), Logic->GetDeathEvents(), Snapshot.Result, BaseCurrent, BaseMaximum);
     InGameState->ProjectScoreSnapshot(ScoreAccumulator.GetSnapshot());
+    InGameState->ProjectMatchFlow(ScoreAccumulator.GetSnapshot().bSettled ? EAkUGCMatchFlow::Settlement : EAkUGCMatchFlow::Playing);
     bHasProjectedState = true;
 }
 
@@ -213,7 +324,7 @@ void AAkUGCGameMode::Tick(float DeltaSeconds)
 
     if (Session.IsValid())
     {
-        ProjectStateToGameState(GetGameState<AAkUGCGameState>());
+        ProjectStateToGameState(GetWorld()->GetGameState<AAkUGCGameState>());
     }
 }
 
