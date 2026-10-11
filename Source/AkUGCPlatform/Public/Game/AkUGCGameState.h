@@ -4,6 +4,7 @@
 #include "GameFramework/GameStateBase.h"
 #include "Subsystem/AkUGCLogicRuntimeSubsystem.h"
 #include "Gameplay/AkUGCTowerDefenseScore.h"
+#include "Game/AkUGCRoom.h"
 #include "AkUGCGameState.generated.h"
 
 UENUM(BlueprintType)
@@ -37,6 +38,9 @@ class AKUGCPLATFORM_API AAkUGCGameState : public AGameStateBase
 public:
     AAkUGCGameState();
     void ResetForPreparation();
+    void ProjectRoomMembers(const TArray<FAkUGCRoomMember>& Members);
+    const TArray<FAkUGCRoomMember>& GetRoomMembers() const { return ReplicatedRoomMembers; }
+    int32 GetRoundId() const { return ReplicatedRoundId; }
     void ProjectMatchFlow(EAkUGCMatchFlow Flow);
 
     UFUNCTION(BlueprintPure, Category = "UGC|Match")
@@ -58,6 +62,8 @@ public:
 
     UFUNCTION()
     void OnRep_ScoreSnapshot();
+    UFUNCTION()
+    void OnRep_RoundId();
 
     // ---- Blueprint 只读查询 ----
 
@@ -108,6 +114,12 @@ public:
 
 protected:
     UPROPERTY(Replicated)
+    TArray<FAkUGCRoomMember> ReplicatedRoomMembers;
+
+    UPROPERTY(ReplicatedUsing = OnRep_RoundId)
+    int32 ReplicatedRoundId = 0;
+
+    UPROPERTY(Replicated)
     EAkUGCMatchFlow ReplicatedMatchFlow = EAkUGCMatchFlow::Preparation;
 
     UPROPERTY(ReplicatedUsing = OnRep_WaveSnapshot)
@@ -129,4 +141,5 @@ protected:
 
     // 每个客户端本地维护，确保终局事件只广播一次。
     bool bMatchEndedBroadcast = false;
+    int32 LastSettledRound = INDEX_NONE;
 };

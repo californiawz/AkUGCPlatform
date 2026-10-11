@@ -174,6 +174,12 @@ bool FAkUGCGameStateMatchEndedBroadcastTest::RunTest(const FString& Parameters)
 
     GameState->ProjectWaveSnapshot(Victory);
     GameState->OnRep_WaveSnapshot();
+    TestEqual(TEXT("Wave alone does not broadcast incomplete settlement"), Listener->BroadcastCount, 0);
+    FAkUGCTowerDefenseScoreSnapshot Settled;
+    Settled.bSettled = true;
+    Settled.Result = EAkUGCTowerDefenseMatchResult::Victory;
+    Settled.FinalBaseMaximumHealth = 100.0;
+    GameState->ProjectScoreSnapshot(Settled);
     TestEqual(TEXT("Match ended broadcast fires once"), Listener->BroadcastCount, 1);
     TestEqual(TEXT("Broadcast carries victory result"),
         Listener->LastResult, EAkUGCTowerDefenseMatchResult::Victory);
@@ -182,10 +188,10 @@ bool FAkUGCGameStateMatchEndedBroadcastTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("Match ended broadcast does not repeat"),
         Listener->BroadcastCount, 1);
 
-    GameState->ProjectWaveSnapshot({});
-    GameState->OnRep_WaveSnapshot();
-    GameState->ProjectWaveSnapshot(Victory);
-    GameState->OnRep_WaveSnapshot();
+    GameState->ResetForPreparation();
+    Settled.RoundId = GameState->GetRoundId();
+    GameState->ProjectScoreSnapshot(Settled);
+    GameState->OnRep_ScoreSnapshot();
     TestEqual(TEXT("New round broadcasts its own terminal event"), Listener->BroadcastCount, 2);
     GameState->OnMatchEndedReplicated.RemoveDynamic(Listener, &UAkUGCMatchEndedTestListener::OnMatchEnded);
     AkUGCGameStateTest::DestroyTestWorld(World);

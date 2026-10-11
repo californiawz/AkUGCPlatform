@@ -206,6 +206,19 @@
 
 **建议提交**：`功能：新增房间大厅与 2–4 人联机私测`
 
+**实施状态（2026-10-11）**：无后端 IPv4 直连大厅及本机多进程联机门禁已实现并通过；公网、平台身份认证与真实跨设备私测尚未执行。
+- 新增服务器名册：2–4 人、全员 Ready、仅房主开局；PreLogin 与 PostLogin 双重容量检查，第五人通过 RoomFull 拒绝，并发超员走标准 Kick/连接关闭。
+- owning PlayerController 的准备/开始/返回 RPC 从服务器分配身份识别本人，不接受客户端指定其他玩家。Listen 本地主机为房主；DS 首个成员为房主，离开转移下一成员，重连分配新身份且不恢复旧权限。
+- 本地 HostRoom 使用 Listen OpenLevel；JoinRoom 仅允许严格规范化 IPv4:port，拒绝 URL、附加 travel 选项、空地址、组播及非法端口；LeaveRoom 带 local=1 明确覆盖命令行房间/签名包选项。Enter 准备、F5 房主开始、F6 建房、Escape 离开或房主结算返回。大厅 HUD 展示名册、准备和房主。
+- 房间模式签名包先验签并准备、等待开局；验签失败禁止默认作品回退和登录。公开外部会话初始化拒绝房间模式，单人入口收紧为 Standalone；共享内部初始化仅在通过大厅门禁后执行。
+- 计分快照的原子网络序列化增加 RoundId；轮次与结算复制协调后才发终局通知，按轮次去重，避免重开未观察到中间状态或旧轮快照导致错误结算。RoundId 是会话元数据，不纳入可复现玩法终态哈希。
+- 最终 Editor 全量 **112/112** 通过；Client/Server 地址与名册门禁各2项通过，标准胜负及1–3波哈希各2项通过；三 target Development 构建、完整 Cook/Stage/Package 成功。
+- `verify_rooms.py`：DS+4独立 Client，10种签名参数作品各2轮对局，合计20个四人对局全部完成；每种作品实际拒绝第五人，四客户端最终轮次/分数/资源/生命一致。Listen 验收采用含服务器代码的 Editor -game 主机+3个打包 Client，同样完成2轮。Client-only 包不冒充可建 Listen 房间的 Game 包。
+- 另实测2人先开局、运行中加入至4人、RoomFull拒绝第五人、显式离房后新进程重连：成员4被移除后成员5加入，收到当前已结算快照；不宣称恢复原身份或模拟异常断网。三人数量是中途加入路径，未单列三人从大厅开局用例。
+- 真实 Standalone 渲染完整循环与既有非房间签名 DS→双客户端视觉/计分回归通过。Listen 多轮测试修复本地同步 RPC 早于阶段投影及结算传播的测试时序问题。
+- 证据：`Saved/RoomVerification/ds_result.json`、`listen_result.json`、`reconnect_result.json`及对应每种作品日志；`Saved/Logs/P15AllEditorGate.log`、`P15ClientUnitGate.log`、`P15ServerUnitGate.log`、`P15ClientCapacity.log`、`P15ServerCapacity.log`、`P15ClientHashes.log`、`P15ServerHashes.log`、`P15SoloRegression.log`、`P15LegacyNetworkGate.log`。定向Lint与git diff --check通过。
+- 边界：仅受控本机直连/局域网基础，无房间发现、NAT穿透、账号认证、可信重连或Listen主机迁移。未实测异常断网超时、Listen房主退出后客户端自动返回、打包Game target建房按钮及大厅人工视觉操作；当前验证多人玩法与复制，不包含玩家布塔/个人分归属。正式美术、Android与跨设备私测继续延后。
+
 ---
 
 ### P16：本地发布与分享
@@ -280,7 +293,7 @@ P17 基础 AI Copilot
 
 P11 已提交 `b3a2699`；P12 中文改写后的提交为 `9935274`、`38a119e`；P13 中文提交为 `08360f0`。正式美术按用户要求延后，不阻塞后续。
 
-P14 准备阶段 Bot 与 Standalone 完整对局已通过门禁，完成后独立中文详细提交；下一推进项为 **P15（房间大厅与2–4人联机流程）**。个人归属分与独立 AI 玩家仍待后续，不冒充完成。
+P14 已提交 `276b674`；P15 直连大厅与本机多进程门禁已通过，完成后独立中文详细提交；下一推进项为 **P16（本地发布、分享与作品库）**。异常断网/跨设备私测、个人归属分与独立AI玩家仍待补充，不冒充完成。
 
 每个提交前执行（继承 Phase 0 门禁）：
 - AkUGCPlatformEditor/Client/Server Win64 Development 编译。

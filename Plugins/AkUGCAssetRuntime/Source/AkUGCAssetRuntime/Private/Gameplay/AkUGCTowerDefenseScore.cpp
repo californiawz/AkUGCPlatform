@@ -5,7 +5,7 @@ bool FAkUGCTowerDefenseScoreSnapshot::NetSerialize(FArchive& Archive, UPackageMa
     FAkUGCTowerDefenseScoreSnapshot Value = *this;
     uint8 Settled = Value.bSettled ? 1 : 0;
     uint8 MatchResult = static_cast<uint8>(Value.Result);
-    Archive << Value.TeamScore << Value.Resources << Value.EnemyKills;
+    Archive << Value.RoundId << Value.TeamScore << Value.Resources << Value.EnemyKills;
     Archive.SerializeBits(&Settled, 1);
     Archive << MatchResult << Value.FinalBaseCurrentHealth << Value.FinalBaseMaximumHealth;
     Value.bSettled = Settled != 0;

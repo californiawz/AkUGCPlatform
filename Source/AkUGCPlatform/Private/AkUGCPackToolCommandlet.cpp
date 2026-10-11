@@ -39,6 +39,14 @@ int32 UAkUGCPackToolCommandlet::Main(const FString& Params)
         Parameters.Waves[0].EnemyMoveSpeed = 50.0;
         Parameters.Waves[0].EnemyGoalDamage = 7.0;
         Parameters.InitialResources = 321;
+        if (FParse::Param(*Params, TEXT("RoomFixture")))
+        {
+            int32 Seed = 0;
+            FParse::Value(*Params, TEXT("Seed="), Seed);
+            Parameters.Waves[0].EnemyCount = 1 + FMath::Clamp(Seed, 0, 9) % 3;
+            Parameters.Waves[0].StartDelaySeconds = 8.0;
+            Parameters.Waves[0].EnemyMoveSpeed = 100.0 + FMath::Clamp(Seed, 0, 9) * 5.0;
+        }
         FAkUGCCommandTransaction Transaction;
         if (!FAkUGCOfficialPrefabCatalog::RegisterTowerDefense(Registry, &Error)
             || !FAkUGCTowerDefenseTemplate::CreateDefaultDocument(Registry, Document, &Error)

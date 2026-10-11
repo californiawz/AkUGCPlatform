@@ -10,6 +10,8 @@ void AAkUGCGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutL
 {
     Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 
+    DOREPLIFETIME(AAkUGCGameState, ReplicatedRoomMembers);
+    DOREPLIFETIME(AAkUGCGameState, ReplicatedRoundId);
     DOREPLIFETIME(AAkUGCGameState, ReplicatedMatchFlow);
     DOREPLIFETIME(AAkUGCGameState, ReplicatedWaveSnapshot);
     DOREPLIFETIME(AAkUGCGameState, ReplicatedBaseHealthCurrent);
@@ -18,12 +20,19 @@ void AAkUGCGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutL
     DOREPLIFETIME(AAkUGCGameState, ReplicatedScoreSnapshot);
 }
 
+void AAkUGCGameState::ProjectRoomMembers(const TArray<FAkUGCRoomMember>& Members)
+{
+    if (HasAuthority()) { ReplicatedRoomMembers = Members; ForceNetUpdate(); }
+}
+
 void AAkUGCGameState::ResetForPreparation()
 {
     if (!HasAuthority()) { return; }
+    ++ReplicatedRoundId;
     ReplicatedMatchFlow = EAkUGCMatchFlow::Preparation;
     ReplicatedWaveSnapshot = {};
     ReplicatedScoreSnapshot = {};
+    ReplicatedScoreSnapshot.RoundId = ReplicatedRoundId;
     ReplicatedBaseHealthCurrent = 0.0;
     ReplicatedBaseHealthMaximum = 0.0;
     ReplicatedActiveEnemyCount = 0;
@@ -84,6 +93,7 @@ bool AAkUGCGameState::ProjectScoreSnapshot(const FAkUGCTowerDefenseScoreSnapshot
         return false;
     }
     ReplicatedScoreSnapshot = Snapshot;
+    ReplicatedScoreSnapshot.RoundId = ReplicatedRoundId;
     bResourcesInitialized = true;
     OnRep_ScoreSnapshot();
     return true;
@@ -91,7 +101,19 @@ bool AAkUGCGameState::ProjectScoreSnapshot(const FAkUGCTowerDefenseScoreSnapshot
 
 void AAkUGCGameState::OnRep_ScoreSnapshot()
 {
+    if (ReplicatedScoreSnapshot.RoundId != ReplicatedRoundId) { return; }
     OnScoreSnapshotReplicated.Broadcast();
+    if (ReplicatedScoreSnapshot.bSettled && ReplicatedScoreSnapshot.RoundId > LastSettledRound)
+    {
+        LastSettledRound = ReplicatedScoreSnapshot.RoundId;
+        bMatchEndedBroadcast = true;
+        OnMatchEndedReplicated.Broadcast(ReplicatedScoreSnapshot.Result);
+    }
+}
+
+void AAkUGCGameState::OnRep_RoundId()
+{
+    OnRep_ScoreSnapshot();
 }
 
 int32 AAkUGCGameState::GetResources() const
@@ -127,13 +149,6 @@ int32 AAkUGCGameState::GetActiveEnemyCount() const
 void AAkUGCGameState::OnRep_WaveSnapshot()
 {
     OnWaveSnapshotReplicated.Broadcast();
-    if (ReplicatedWaveSnapshot.Result == EAkUGCTowerDefenseMatchResult::InProgress) { bMatchEndedBroadcast = false; }
-
-    if (!bMatchEndedBroadcast && ReplicatedWaveSnapshot.Result != EAkUGCTowerDefenseMatchResult::InProgress)
-    {
-        bMatchEndedBroadcast = true;
-        OnMatchEndedReplicated.Broadcast(ReplicatedWaveSnapshot.Result);
-    }
 }
 
 void AAkUGCGameState::OnRep_BaseHealth()

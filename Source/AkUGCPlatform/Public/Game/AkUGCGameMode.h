@@ -7,6 +7,7 @@
 #include "Scene/AkUGCSceneRuntime.h"
 #include "Gameplay/AkUGCTowerDefenseScore.h"
 #include "Session/AkUGCDocumentRuntimeSession.h"
+#include "Game/AkUGCRoom.h"
 #include "AkUGCGameMode.generated.h"
 
 class AAkUGCGameState;
@@ -49,6 +50,14 @@ public:
     int32 GetBotTowerCount() const { return BotTowerCount; }
     bool HasPreparedProject() const { return !PreparedDocument.Scenes.IsEmpty(); }
     virtual void BeginPlay() override;
+    bool IsRoomMode() const { return bRoomMode; }
+    bool SetMemberReady(APlayerController* Player, bool bReady);
+    bool StartRoomMatch(APlayerController* Player);
+    bool ReturnRoomToPreparation(APlayerController* Player);
+    bool PrepareRoomProject(const FAkUGCProjectDocument& Document, FString* OutError = nullptr);
+    virtual void PreLogin(const FString& Options, const FString& Address, const FUniqueNetIdRepl& UniqueId, FString& ErrorMessage) override;
+    virtual void PostLogin(APlayerController* NewPlayer) override;
+    virtual void Logout(AController* Exiting) override;
 
     virtual void InitGame(const FString& MapName, const FString& Options, FString& ErrorMessage) override;
 
@@ -73,4 +82,14 @@ private:
     FAkUGCProjectDocument PreparedDocument;
     int32 BotTowerCount = 0;
     bool bSoloSession = false;
+    bool bRoomMode = false;
+    bool bRoomSession = false;
+    FAkUGCRoomRoster RoomRoster;
+    TMap<TWeakObjectPtr<APlayerController>, int32> RoomPlayerIds;
+    void PublishRoom();
+    bool PrepareProject(const FAkUGCProjectDocument& Document, FString* OutError);
+    bool StartPreparedMatch(FString* OutError);
+    bool InitializeSessionInternal(FAkUGCProjectDocument& Document, FString* OutError);
+    bool bRoomLoadFailed = false;
+    bool bLocalOverride = false;
 };

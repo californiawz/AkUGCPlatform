@@ -16,6 +16,9 @@
 #include "Template/AkUGCTowerDefenseBot.h"
 #include "Template/AkUGCTowerDefenseTemplate.h"
 #include "Validation/AkUGCDocumentValidator.h"
+#include "Kismet/GameplayStatics.h"
+#include "GameFramework/GameSession.h"
+#include "Engine/NetConnection.h"
 
 AAkUGCGameMode::AAkUGCGameMode()
 {
@@ -32,8 +35,16 @@ void AAkUGCGameMode::BeginPlay()
 {
     Super::BeginPlay();
     FString PackPath;
+    if (bRoomLoadFailed) { return; }
+    if (bRoomMode)
+    {
+        FString Error;
+        const bool bPrepared = HasPreparedProject() ? PrepareRoomProject(PreparedDocument, &Error) : PrepareDefaultSoloProject(&Error);
+        if (!bPrepared) { UE_LOG(LogTemp, Error, TEXT("Room preparation failed: %s"), *Error); }
+        return;
+    }
     if (!IsRunningDedicatedServer() && GetNetMode() == NM_Standalone && !Session
-        && !FParse::Value(FCommandLine::Get(), TEXT("LogicPack="), PackPath))
+        && (bLocalOverride || !FParse::Value(FCommandLine::Get(), TEXT("LogicPack="), PackPath)))
     {
         FString Error;
         if (!PrepareDefaultSoloProject(&Error)) { UE_LOG(LogTemp, Error, TEXT("Solo preparation failed: %s"), *Error); }
@@ -55,16 +66,21 @@ bool AAkUGCGameMode::PrepareDefaultSoloProject(FString* OutError)
             FTransform(FVector(Index == 0 ? 650.0 : 1100.0, Index == 0 ? 150.0 : -150.0, 0.0)), Slot, OutError)) { return false; }
         Scene.Entities.Add(Slot);
     }
-    return PrepareSoloProject(Document, OutError);
+    return bRoomMode ? PrepareRoomProject(Document, OutError) : PrepareSoloProject(Document, OutError);
 }
 
 bool AAkUGCGameMode::PrepareSoloProject(const FAkUGCProjectDocument& Document, FString* OutError)
 {
-    if (!HasAuthority() || GetNetMode() == NM_Client || GetNetMode() == NM_DedicatedServer || Session)
+    if (!HasAuthority() || bRoomMode || GetNetMode() != NM_Standalone || Session)
     {
-        if (OutError) { *OutError = TEXT("Solo preparation requires an idle local authoritative world."); }
+        if (OutError) { *OutError = TEXT("Solo preparation requires an idle standalone world."); }
         return false;
     }
+    return PrepareProject(Document, OutError);
+}
+
+bool AAkUGCGameMode::PrepareProject(const FAkUGCProjectDocument& Document, FString* OutError)
+{
     FAkUGCPrefabRegistry Registry;
     FAkUGCTowerDefenseParameters Parameters;
     if (Document.Scenes.Num() != 1 || !FAkUGCOfficialPrefabCatalog::RegisterTowerDefense(Registry, OutError)
@@ -88,12 +104,21 @@ bool AAkUGCGameMode::PrepareSoloProject(const FAkUGCProjectDocument& Document, F
 bool AAkUGCGameMode::StartSoloMatch(FString* OutError)
 {
     AAkUGCGameState* State = GetWorld()->GetGameState<AAkUGCGameState>();
-    if (!HasAuthority() || GetNetMode() == NM_Client || GetNetMode() == NM_DedicatedServer || Session
+    if (!HasAuthority() || bRoomMode || GetNetMode() != NM_Standalone || Session
         || !State || State->GetMatchFlow() != EAkUGCMatchFlow::Preparation || PreparedDocument.Scenes.Num() != 1)
     {
-        if (OutError) { *OutError = TEXT("Start requires a prepared local match."); }
+        if (OutError) { *OutError = TEXT("Start requires a prepared standalone match."); }
         return false;
     }
+    if (!StartPreparedMatch(OutError)) { return false; }
+    bSoloSession = true;
+    return true;
+}
+
+bool AAkUGCGameMode::StartPreparedMatch(FString* OutError)
+{
+    AAkUGCGameState* State = GetWorld()->GetGameState<AAkUGCGameState>();
+    if (!HasAuthority() || Session || !State || PreparedDocument.Scenes.Num() != 1) { return false; }
     FAkUGCPrefabRegistry Registry;
     FAkUGCCommandTransaction Transaction;
     int32 Count = 0;
@@ -104,22 +129,21 @@ bool AAkUGCGameMode::StartSoloMatch(FString* OutError)
     SceneRuntime.Reset();
     State->ResetForPreparation();
     bHasProjectedState = false;
-    if (!InitializeAuthoritySession(Candidate, OutError))
+    if (!InitializeSessionInternal(Candidate, OutError))
     {
         FString RestoreError;
-        PrepareSoloProject(PreparedDocument, &RestoreError);
+        PrepareProject(PreparedDocument, &RestoreError);
         return false;
     }
     BotTowerCount = Count;
-    bSoloSession = true;
     State->ProjectMatchFlow(EAkUGCMatchFlow::Playing);
     return true;
 }
 
 bool AAkUGCGameMode::ReturnToPreparation(FString* OutError)
 {
-    if (!HasAuthority() || !HasPreparedProject() || (Session && !bSoloSession)
-        || GetNetMode() == NM_Client || GetNetMode() == NM_DedicatedServer)
+    if (!HasAuthority() || bRoomMode || !HasPreparedProject() || (Session && !bSoloSession)
+        || GetNetMode() != NM_Standalone)
     {
         if (OutError) { *OutError = TEXT("Return requires a local solo project."); }
         return false;
@@ -132,7 +156,106 @@ bool AAkUGCGameMode::ReturnToPreparation(FString* OutError)
     return PrepareSoloProject(PreparedDocument, OutError);
 }
 
+void AAkUGCGameMode::PublishRoom()
+{
+    if (AAkUGCGameState* State = GetWorld()->GetGameState<AAkUGCGameState>()) { State->ProjectRoomMembers(RoomRoster.GetMembers()); }
+}
+
+void AAkUGCGameMode::PreLogin(const FString& Options, const FString& Address, const FUniqueNetIdRepl& UniqueId, FString& ErrorMessage)
+{
+    Super::PreLogin(Options, Address, UniqueId, ErrorMessage);
+    if (bRoomLoadFailed) { ErrorMessage = TEXT("RoomUnavailable"); }
+    else if (bRoomMode && RoomRoster.GetMembers().Num() >= FAkUGCRoomRoster::MaxMembers) { ErrorMessage = TEXT("RoomFull"); }
+}
+
+void AAkUGCGameMode::PostLogin(APlayerController* NewPlayer)
+{
+    Super::PostLogin(NewPlayer);
+    if (!bRoomMode) { return; }
+    const int32 Id = RoomRoster.Join(GetNetMode() == NM_ListenServer && NewPlayer->IsLocalController());
+    if (Id == 0)
+    {
+        if (!GameSession || !GameSession->KickPlayer(NewPlayer, FText::FromString(TEXT("RoomFull"))))
+        {
+            if (UNetConnection* Connection = NewPlayer->GetNetConnection()) { Connection->Close(); }
+            NewPlayer->Destroy();
+        }
+        return;
+    }
+    RoomPlayerIds.Add(NewPlayer, Id);
+    if (AAkUGCPlayerController* Controller = Cast<AAkUGCPlayerController>(NewPlayer)) { Controller->SetRoomMemberId(Id); }
+    PublishRoom();
+    UE_LOG(LogTemp, Display, TEXT("[AkUGCRoom] Joined Id=%d Members=%d"), Id, RoomRoster.GetMembers().Num());
+}
+
+void AAkUGCGameMode::Logout(AController* Exiting)
+{
+    if (APlayerController* Player = Cast<APlayerController>(Exiting))
+    {
+        if (const int32* Id = RoomPlayerIds.Find(Player))
+        {
+            const int32 RemovedId = *Id;
+            RoomRoster.Leave(RemovedId); RoomPlayerIds.Remove(Player); PublishRoom();
+            UE_LOG(LogTemp, Display, TEXT("[AkUGCRoom] Left Id=%d Members=%d"), RemovedId, RoomRoster.GetMembers().Num());
+        }
+    }
+    Super::Logout(Exiting);
+}
+
+bool AAkUGCGameMode::PrepareRoomProject(const FAkUGCProjectDocument& Document, FString* OutError)
+{
+    if (!HasAuthority() || !bRoomMode || bRoomLoadFailed || Session) { return false; }
+    if (!PrepareProject(Document, OutError)) { return false; }
+    RoomRoster.ResetReady();
+    PublishRoom();
+    return true;
+}
+
+bool AAkUGCGameMode::SetMemberReady(APlayerController* Player, bool bReady)
+{
+    const int32* Id = RoomPlayerIds.Find(Player);
+    const AAkUGCGameState* State = GetWorld()->GetGameState<AAkUGCGameState>();
+    if (!bRoomMode || !Id || !State || State->GetMatchFlow() != EAkUGCMatchFlow::Preparation) { return false; }
+    const bool Result = RoomRoster.SetReady(*Id, bReady);
+    PublishRoom();
+    return Result;
+}
+
+bool AAkUGCGameMode::StartRoomMatch(APlayerController* Player)
+{
+    const int32* Id = RoomPlayerIds.Find(Player);
+    const AAkUGCGameState* State = GetWorld()->GetGameState<AAkUGCGameState>();
+    if (!bRoomMode || !Id || !State || State->GetMatchFlow() != EAkUGCMatchFlow::Preparation || !RoomRoster.CanStart(*Id))
+    {
+        UE_LOG(LogTemp, Display, TEXT("[AkUGCRoom] StartRejected Id=%d"), Id ? *Id : 0);
+        return false;
+    }
+    FString Error;
+    if (!StartPreparedMatch(&Error)) { UE_LOG(LogTemp, Warning, TEXT("Room start failed: %s"), *Error); return false; }
+    bRoomSession = true;
+    UE_LOG(LogTemp, Display, TEXT("[AkUGCRoom] Started Members=%d Round=%d"), RoomRoster.GetMembers().Num(), State->GetRoundId());
+    return true;
+}
+
+bool AAkUGCGameMode::ReturnRoomToPreparation(APlayerController* Player)
+{
+    const int32* Id = RoomPlayerIds.Find(Player);
+    const AAkUGCGameState* State = GetWorld()->GetGameState<AAkUGCGameState>();
+    if (!bRoomMode || !bRoomSession || !Id || !RoomRoster.IsHost(*Id) || !State
+        || State->GetMatchFlow() != EAkUGCMatchFlow::Settlement) { return false; }
+    Session.Reset(); SceneRuntime.Reset(); PrefabRegistry.Reset();
+    bHasProjectedState = false;
+    bRoomSession = false;
+    return PrepareRoomProject(PreparedDocument);
+}
+
 bool AAkUGCGameMode::InitializeAuthoritySession(FAkUGCProjectDocument& Document, FString* OutError)
+{
+    if (bRoomMode) { if (OutError) { *OutError = TEXT("Room sessions must pass host and readiness gates."); } return false; }
+    return InitializeSessionInternal(Document, OutError);
+}
+
+bool AAkUGCGameMode::InitializeSessionInternal(FAkUGCProjectDocument& Document, FString* OutError)
 {
     if (Session.IsValid())
     {
@@ -235,6 +358,22 @@ bool AAkUGCGameMode::HasAuthoritySession() const
 void AAkUGCGameMode::InitGame(const FString& MapName, const FString& Options, FString& ErrorMessage)
 {
     Super::InitGame(MapName, Options, ErrorMessage);
+    bLocalOverride = UGameplayStatics::ParseOption(Options, TEXT("local")) == TEXT("1");
+    bRoomMode = !bLocalOverride && (FParse::Param(FCommandLine::Get(), TEXT("AkUGCRoom"))
+        || UGameplayStatics::ParseOption(Options, TEXT("room")) == TEXT("1"));
+    if (bLocalOverride) { return; }
+    if (bRoomMode)
+    {
+        FString Path, Key;
+        if (FParse::Value(FCommandLine::Get(), TEXT("LogicPack="), Path))
+        {
+            FParse::Value(FCommandLine::Get(), TEXT("LogicPackKey="), Key);
+            const auto Loaded = FAkUGCLogicPackLoader::LoadVerifiedFromFile(Path, Key);
+            if (!Loaded.bSucceeded) { bRoomLoadFailed = true; ErrorMessage = Loaded.ErrorMessage; return; }
+            PreparedDocument = Loaded.Pack.Document;
+        }
+        return;
+    }
 
     // 服务器权威端启动时，从命令行解析并自动加载签名 Logic Pack：
     //   -LogicPack=<path>  发布包 JSON 文件路径
@@ -313,7 +452,9 @@ void AAkUGCGameMode::ProjectStateToGameState(AAkUGCGameState* InGameState)
     }
 
     ScoreAccumulator.Update(Logic->GetSpawnedEntities(), Logic->GetDeathEvents(), Snapshot.Result, BaseCurrent, BaseMaximum);
-    InGameState->ProjectScoreSnapshot(ScoreAccumulator.GetSnapshot());
+    FAkUGCTowerDefenseScoreSnapshot Score = ScoreAccumulator.GetSnapshot();
+    Score.RoundId = InGameState->GetRoundId();
+    InGameState->ProjectScoreSnapshot(Score);
     InGameState->ProjectMatchFlow(ScoreAccumulator.GetSnapshot().bSettled ? EAkUGCMatchFlow::Settlement : EAkUGCMatchFlow::Playing);
     bHasProjectedState = true;
 }

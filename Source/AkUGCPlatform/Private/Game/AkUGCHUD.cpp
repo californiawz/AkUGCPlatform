@@ -46,10 +46,25 @@ void AAkUGCHUD::DrawHUD()
     if (State->GetMatchFlow() == EAkUGCMatchFlow::Preparation)
     {
         bRequestedCapture = false;
-        DrawText(TEXT("PREPARATION  |  ENTER: START WITH BOT"), FLinearColor(0.3f, 0.95f, 0.85f), 30.0f, 204.0f, Font, 1.2f);
-        DrawText(TEXT("Bot places up to 2 towers, 100 resources each."), FLinearColor::White, 30.0f, 234.0f, Font);
+        if (!State->GetRoomMembers().IsEmpty())
+        {
+            DrawText(FString::Printf(TEXT("ROOM %d / 4  |  ENTER: READY  F5: HOST START"), State->GetRoomMembers().Num()),
+                FLinearColor(0.3f, 0.95f, 0.85f), 30.0f, 204.0f, Font);
+            int32 Index = 0;
+            for (const auto& Member : State->GetRoomMembers())
+            {
+                DrawText(FString::Printf(TEXT("PLAYER %d  %s  %s"), Member.MemberId,
+                    Member.bHost ? TEXT("HOST") : TEXT("MEMBER"), Member.bReady ? TEXT("READY") : TEXT("NOT READY")),
+                    FLinearColor::White, 30.0f, 234.0f + 22.0f * Index++, Font);
+            }
+        }
+        else
+        {
+            DrawText(TEXT("PREPARATION | ENTER: SOLO START | F6: HOST ROOM"), FLinearColor(0.3f, 0.95f, 0.85f), 30.0f, 204.0f, Font);
+            DrawText(TEXT("JoinRoom <IPv4:port> | Bot tower cost: 100"), FLinearColor::White, 30.0f, 234.0f, Font);
+        }
     }
-    else if (Score.bSettled)
+    else if (Score.bSettled && Score.RoundId == State->GetRoundId())
     {
         const float PanelWidth = FMath::Min(420.0f, Canvas->ClipX - 32.0f);
         const float X = (Canvas->ClipX - PanelWidth) * 0.5f;

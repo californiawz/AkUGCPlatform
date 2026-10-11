@@ -77,6 +77,7 @@ bool FAkUGCScoreAtomicReplicationTest::RunTest(const FString& Parameters)
 {
     FAkUGCTowerDefenseScoreSnapshot Source;
     Source.TeamScore = 800;
+    Source.RoundId = 7;
     Source.Resources = 230;
     Source.EnemyKills = 3;
     Source.bSettled = true;
@@ -97,6 +98,7 @@ bool FAkUGCScoreAtomicReplicationTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("Resources arrive with settlement flag"), Target.Resources, 230);
     TestEqual(TEXT("Kills arrive in same snapshot"), Target.EnemyKills, 3);
     TestTrue(TEXT("Settlement arrives complete"), Target.bSettled);
+    TestEqual(TEXT("Round identity arrives atomically"), Target.RoundId, 7);
     return true;
 }
 

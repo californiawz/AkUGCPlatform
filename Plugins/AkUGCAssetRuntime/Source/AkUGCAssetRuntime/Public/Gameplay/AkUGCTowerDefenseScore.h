@@ -23,6 +23,9 @@ struct AKUGCASSETRUNTIME_API FAkUGCTowerDefenseScoreSnapshot
     int32 TeamScore = 0;
 
     UPROPERTY(BlueprintReadOnly, Category = "UGC|Score")
+    int32 RoundId = 0;
+
+    UPROPERTY(BlueprintReadOnly, Category = "UGC|Score")
     int32 Resources = 0;
 
     UPROPERTY(BlueprintReadOnly, Category = "UGC|Score")

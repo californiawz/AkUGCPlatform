@@ -12,6 +12,7 @@ public class AkUGCPlatform : ModuleRules
             "CoreUObject",
             "Engine",
             "InputCore",
+            "NetCore",
             "AkUGCCore",
             "AkUGCAssetRuntime"
         });
