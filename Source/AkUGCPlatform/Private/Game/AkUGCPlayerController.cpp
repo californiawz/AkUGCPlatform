@@ -19,6 +19,8 @@ void AAkUGCPlayerController::SetupInputComponent()
         InputComponent->BindKey(EKeys::Escape, IE_Pressed, this, &AAkUGCPlayerController::ReturnOrLeave);
         InputComponent->BindKey(EKeys::F5, IE_Pressed, this, &AAkUGCPlayerController::StartRoom);
         InputComponent->BindKey(EKeys::F6, IE_Pressed, this, &AAkUGCPlayerController::HostRoom);
+        InputComponent->BindKey(EKeys::F7, IE_Pressed, this, &AAkUGCPlayerController::NextWork);
+        InputComponent->BindKey(EKeys::F8, IE_Pressed, this, &AAkUGCPlayerController::PlaySelectedWork);
     }
 }
 

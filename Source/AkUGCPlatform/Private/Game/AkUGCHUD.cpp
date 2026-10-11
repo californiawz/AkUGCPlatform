@@ -6,6 +6,7 @@
 #include "Engine/GameViewportClient.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
+#include "Game/AkUGCPlayerController.h"
 
 FString AAkUGCHUD::FormatSettlement(const FAkUGCTowerDefenseScoreSnapshot& Score)
 {
@@ -77,6 +78,11 @@ void AAkUGCHUD::DrawHUD()
     else if (Wave.Result != EAkUGCTowerDefenseMatchResult::InProgress)
     {
         DrawText(TEXT("Waiting for authoritative score..."), FLinearColor::White, 30.0f, 200.0f, Font);
+    }
+    if (const auto* Player = Cast<AAkUGCPlayerController>(GetOwningPlayerController()))
+    {
+        DrawText(Player->GetWorkLibraryStatus().IsEmpty() ? TEXT("LOCAL WORKS | F7: BROWSE | F8: PREPARE SELECTED")
+            : Player->GetWorkLibraryStatus(), FLinearColor(0.65f, 0.85f, 1.0f), 30.0f, Canvas->ClipY - 95.0f, Font);
     }
 #if WITH_DEV_AUTOMATION_TESTS
     FString CapturePath;

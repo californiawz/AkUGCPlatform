@@ -8,6 +8,7 @@
 #include "Game/AkUGCHUD.h"
 #include "Pack/AkUGCLogicPack.h"
 #include "Pack/AkUGCLogicPackLoader.h"
+#include "Pack/AkUGCWorkLibrary.h"
 #include "Prefab/AkUGCOfficialPrefabCatalog.h"
 #include "Prefab/AkUGCPrefabRegistry.h"
 #include "Scene/AkUGCSceneRuntime.h"
@@ -77,6 +78,15 @@ bool AAkUGCGameMode::PrepareSoloProject(const FAkUGCProjectDocument& Document, F
         return false;
     }
     return PrepareProject(Document, OutError);
+}
+
+bool AAkUGCGameMode::PrepareLibraryWork(const FGuid& ReleaseId, const FString& LibraryDirectory, FString* OutError)
+{
+    if (!HasAuthority() || bRoomMode || GetNetMode() != NM_Standalone || Session)
+    { if (OutError) { *OutError = TEXT("仅允许空闲单人世界选择作品。"); } return false; }
+    const auto Loaded = FAkUGCWorkLibrary(LibraryDirectory).Load(ReleaseId);
+    if (!Loaded.bSucceeded) { if (OutError) { *OutError = Loaded.ErrorMessage; } return false; }
+    return PrepareSoloProject(Loaded.Pack.Document, OutError);
 }
 
 bool AAkUGCGameMode::PrepareProject(const FAkUGCProjectDocument& Document, FString* OutError)

@@ -9,6 +9,8 @@
 #include "Pack/AkUGCLogicPackSignature.h"
 #include "Pack/AkUGCLogicPackHasher.h"
 #include "Pack/AkUGCLogicPackLoader.h"
+#include "Pack/AkUGCWorkLibrary.h"
+#include "Misc/Paths.h"
 #include "Command/AkUGCCommandExecutor.h"
 #include "Prefab/AkUGCOfficialPrefabCatalog.h"
 #include "Prefab/AkUGCPrefabRegistry.h"
@@ -70,10 +72,33 @@ int32 UAkUGCPackToolCommandlet::Main(const FString& Params)
             }
         }
     }
+    else if (FParse::Param(*Params, TEXT("PublishWork")))
+    {
+        FAkUGCPrefabRegistry Registry;
+        if (!FAkUGCOfficialPrefabCatalog::RegisterTowerDefense(Registry, &Error)
+            || !FAkUGCTowerDefenseTemplate::CreateDefaultDocument(Registry, Document, &Error))
+        { UE_LOG(LogTemp, Error, TEXT("[AkUGCPackTool] Template failed: %s"), *Error); return 2; }
+    }
     else if (!AkUGCPlayableSceneFactory::MakePlayableTowerDefenseDocument(Document, &Error))
     {
         UE_LOG(LogTemp, Error, TEXT("[AkUGCPackTool] Scene construction failed: %s"), *Error);
         return 2;
+    }
+
+    if (FParse::Param(*Params, TEXT("PublishWork")))
+    {
+        FString Directory, PrivateKey, Share;
+        if (!FParse::Value(*Params, TEXT("Library="), Directory)) { return 10; }
+        FAkUGCWorkEntry Entry;
+        if (!FAkUGCWorkLibrary::GetOrCreatePublisherKey(FPaths::Combine(Directory, TEXT("Publisher/private.key")), PrivateKey, &Error)
+            || !FAkUGCWorkLibrary(Directory).Publish(Document, PrivateKey, FPaths::Combine(Directory, TEXT("Share")), Entry, Share, &Error))
+        { UE_LOG(LogTemp, Error, TEXT("[AkUGCPackTool] Publish failed: %s"), *Error); return 11; }
+        PrivateKey.Reset();
+        const FString Result = FString::Printf(TEXT("{\"releaseId\":\"%s\",\"sharePath\":\"%s\",\"publicKey\":\"%s\"}"),
+            *Entry.ReleaseId.ToString(EGuidFormats::Digits), *Share.Replace(TEXT("\\"), TEXT("/")), *Entry.TrustedPublicKey);
+        if (!FFileHelper::SaveStringToFile(Result, *OutputPath, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM)) { return 12; }
+        UE_LOG(LogTemp, Display, TEXT("[AkUGCPackTool] Published Work=%s"), *Entry.ReleaseId.ToString(EGuidFormats::Digits));
+        return 0;
     }
 
     // 2. 生成密钥对。

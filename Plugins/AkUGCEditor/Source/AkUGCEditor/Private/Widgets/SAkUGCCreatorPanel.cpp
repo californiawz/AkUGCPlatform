@@ -3,6 +3,7 @@
 #include "Prefab/AkUGCOfficialPrefabCatalog.h"
 #include "Subsystem/AkUGCEditorSubsystem.h"
 #include "Widgets/SAkUGCLogicCanvas.h"
+#include "Widgets/SAkUGCWorkLibraryPanel.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SComboButton.h"
@@ -270,6 +271,10 @@ void SAkUGCCreatorPanel::Construct(const FArguments& InArgs, UAkUGCEditorSubsyst
                     SNew(SVerticalBox)
                     + SVerticalBox::Slot().AutoHeight()
                     [SNew(SAkUGCTowerDefenseParameterForm, Subsystem.Get())]
+                    + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 8.0f)
+                    [SNew(SExpandableArea).InitiallyCollapsed(false)
+                        .HeaderContent()[SNew(STextBlock).Text(FText::FromString(TEXT("发布与本地作品库")))]
+                        .BodyContent()[SNew(SAkUGCWorkLibraryPanel, Subsystem.Get())]]
                     + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 8.0f)
                     [
                         SNew(SExpandableArea)

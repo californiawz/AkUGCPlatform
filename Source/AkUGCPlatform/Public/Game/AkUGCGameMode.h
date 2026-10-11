@@ -45,6 +45,7 @@ public:
     bool PrepareDefaultSoloProject(FString* OutError = nullptr);
     bool PrepareSoloProject(const FAkUGCProjectDocument& Document, FString* OutError = nullptr);
     bool StartSoloMatch(FString* OutError = nullptr);
+    bool PrepareLibraryWork(const FGuid& ReleaseId, const FString& LibraryDirectory, FString* OutError = nullptr);
     bool ReturnToPreparation(FString* OutError = nullptr);
     const FAkUGCProjectDocument& GetPreparedDocument() const { return PreparedDocument; }
     int32 GetBotTowerCount() const { return BotTowerCount; }

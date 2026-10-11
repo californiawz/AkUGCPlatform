@@ -9,6 +9,9 @@
 #include "Misc/Paths.h"
 #include "Subsystem/AkUGCEditorSubsystem.h"
 #include "Widgets/SAkUGCCreatorPanel.h"
+#include "Widgets/SAkUGCWorkLibraryPanel.h"
+#include "Pack/AkUGCWorkLibrary.h"
+#include "Pack/AkUGCLogicPackHasher.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -635,4 +638,30 @@ bool FAkUGCEditorTowerDefenseParameterWorkflowTest::RunTest(const FString& Param
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAkUGCCreatorPublishTest, "AkUGC.Editor.CreatorStudio.PublishSnapshot",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FAkUGCCreatorPublishTest::RunTest(const FString& Parameters)
+{
+    auto* Subsystem = GEditor ? GEditor->GetEditorSubsystem<UAkUGCEditorSubsystem>() : nullptr;
+    if (!Subsystem) { AddError(TEXT("Missing Creator subsystem.")); return false; }
+    FString Error;
+    if (!Subsystem->NewTowerDefenseProject(&Error)) { AddError(Error); return false; }
+    const uint64 Revision = Subsystem->GetDocumentRevision();
+    const FString Hash = FAkUGCLogicPackHasher::HashDocument(Subsystem->GetDocument());
+    const TSharedRef<SAkUGCWorkLibraryPanel> Panel = SNew(SAkUGCWorkLibraryPanel, Subsystem);
+    const FString Root = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Automation/CreatorPublish"), FGuid::NewGuid().ToString(EGuidFormats::Digits));
+    FString PrivateKey, Share;
+    FAkUGCWorkEntry Entry;
+    TestTrue(TEXT("Publisher identity creates"), FAkUGCWorkLibrary::GetOrCreatePublisherKey(FPaths::Combine(Root, TEXT("private.key")), PrivateKey, &Error));
+    TestTrue(TEXT("Exact Creator snapshot publishes"), FAkUGCWorkLibrary(FPaths::Combine(Root, TEXT("Library"))).Publish(
+        Subsystem->GetDocument(), PrivateKey, FPaths::Combine(Root, TEXT("Share")), Entry, Share, &Error));
+    const auto Loaded = FAkUGCWorkLibrary(FPaths::Combine(Root, TEXT("Library"))).Load(Entry.ReleaseId);
+    TestTrue(TEXT("Published Creator work re-verifies"), Loaded.bSucceeded);
+    TestEqual(TEXT("Published snapshot matches Creator"), FAkUGCLogicPackHasher::HashDocument(Loaded.Pack.Document), Hash);
+    TestEqual(TEXT("Publishing preserves revision"), Subsystem->GetDocumentRevision(), Revision);
+    TestFalse(TEXT("Publishing does not create undo history"), Subsystem->CanUndo());
+    Subsystem->CloseProject(); PrivateKey.Reset();
+    IFileManager::Get().DeleteDirectory(*Root, false, true);
+    return true;
+}
 #endif
