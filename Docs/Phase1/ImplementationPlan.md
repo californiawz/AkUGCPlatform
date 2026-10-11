@@ -132,7 +132,8 @@
 - 证据：`Saved/NetworkVisualVerification/result.json`、`cook_client.log`、`cook_server.log`、`server.log`、`client1.log`、`client2_late.log`；`Saved/Logs/P12NetworkEditorGate.log`、`P12CanonicalClient.log`、`P12CanonicalServer.log`。定向 Lint 与 `git diff --check` 通过。
 - 同时修复 P11 提交后 adaptive build 回归 unity 模式时的模板辅助函数命名冲突。
 - 本轮执行教训：首次误将 UAT `-clean` 与 Editor 测试并行，导致引擎模块文件锁与部分清理；已移除不必要清理、串行完成恢复构建，再独立跑全量测试。引擎已恢复正常。
-- 待完成：有授权的正式 Mesh/材质、Android LOD/材质降级与真机验收、非 NullRHI 视觉效果验收。不得把 Engine 占位或网络对象测试标为正式美术验收。
+- 用户于 2026-10-11 明确正式美术资产后续提供：正式 Mesh/材质、Android LOD/材质降级与真机验收延后，不阻塞 P13/P14；P12 技术接入按现有占位继续，不能标记正式美术验收完成。
+- 非 NullRHI 客户端已在 P13 产出实际 HUD 结算截图；地图仍无正式相机/照明和美术，这不等于场景视觉验收。
 
 ---
 
@@ -150,6 +151,18 @@
 **验收**：对局有完整 HUD + 计分；客户端与服务端计分/胜负严格一致。
 
 **建议提交**：`功能：新增权威计分与塔防 HUD`
+
+**实施状态（2026-10-11）**：团队权威计分、HUD 与结算已实现并通过 Win64 自动化及真实客户端验证；个人归属分延后。
+- 当前规则：官方敌人唯一有效死亡 +100 团队分、+10 资源；Victory 一次性 +500；评价展示终局基地保留生命百分比，不虚构等级阈值。基地死亡、到达销毁不算击杀。
+- 共享计分累加器按敌人 GUID 去重；终局快照冻结，重复投影不发奖。计分只在 GameMode 权威端消费事件；GameState 增加权威校验。
+- `FAkUGCTowerDefenseScoreSnapshot` 包含分数/资源/击杀/胜负/结算标记/冻结基地生命，使用自定义原子 NetSerialize 与 RepNotify；解决普通结构体子字段复制时终局标记先到的问题。
+- 默认 GameMode 接入 Canvas HUD，无须 UMG/Blueprint/正式美术：波次、敌人数、基地生命条、资源、团队分、胜负与结算评价。结算必须读取完整计分快照。
+- 计分全部字段纳入玩法终态哈希；标准 Victory/Defeat、1/2/3 波参数场景在 Editor/Client/Server 和大步/小步推进下哈希一致。
+- 最新 Editor 全量 **107/107** 通过；Client/Server 各3项计分测试通过、各2项终态哈希测试通过；Development Build/Cook/Stage/Package 均成功。
+- 真实 DS 与两个 Client（含晚加入）结算一致：Score500、Resources321、Kills0、Base993、Settled1。另以非 NullRHI 客户端捕获两张真实 HUD PNG，截图文件已实际产出并可打开；场景相机/照明与美术效果不在本轮验收范围。
+- 证据：`Saved/Logs/P13FinalEditorTests.log`、`P13FinalClientScore.log`、`P13FinalServerScore.log`、`P13ClientHash.log`、`P13ServerHash.log`；`Saved/NetworkVisualVerification/result.json`、`client1_hud.png`、`client2_late_hud.png`、`cook_client.log`、`cook_server.log`。
+- 验收脚本新增 `--render`；最后真实图形验证复用刚完成的最新 Cook 包（结果 `fresh_build_cook_stage_package=false` 表示该次不重复 Cook，不是使用旧版二进制）。
+- 边界：预置共享地图塔没有玩家归属，HUD 明确显示个人分未归属，不把团队分冒充个人分。实体→玩家归属与个人分、Bot 自动布塔、准备/返回循环由后续阶段补充。Android 与正式美术继续延后。
 
 ---
 
@@ -253,9 +266,9 @@ P17 基础 AI Copilot
 
 ## 7. 近期提交计划
 
-P11 已提交为 `b3a2699`：塔防 L1 参数化模板与参数面板；下一推进项为 **P12（正式 AssetVariants 与运行时绑定）**。
+P11 已提交 `b3a2699`；P12 占位绑定与完整 Cook/真实网络验收已提交 `e62317c`、`5cc9a8b`。正式美术按用户要求延后，不阻塞后续。
 
-P12 当前 Content 没有可复用的 Mesh/材质资产。先接入 Engine 基础形状占位并验证复制回调、平台选择与内容预算；占位不计作正式资产或 Android 分平台降级验收。正式美术与 Android 真机验收保持待完成。
+P13 团队权威计分与 HUD 已通过门禁，完成后独立提交；下一推进项为 **P14（确定性 Bot 与单人完整对局循环）**。P13 个人分等待明确实体所有者映射；不得冒充完成个人归属。
 
 每个提交前执行（继承 Phase 0 门禁）：
 - AkUGCPlatformEditor/Client/Server Win64 Development 编译。

@@ -36,6 +36,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--engine", required=True, type=pathlib.Path)
     parser.add_argument("--cook", action="store_true")
+    parser.add_argument("--render", action="store_true")
     parser.add_argument("--port", type=int, default=17877)
     options = parser.parse_args()
     root = pathlib.Path(__file__).resolve().parents[2]
@@ -78,7 +79,13 @@ def main():
         log.unlink(missing_ok=True)
         handle = (output / f"{name}.stdout.log").open("w", encoding="utf-8")
         handles.append(handle)
-        process = subprocess.Popen([str(executable), *arguments, *common, f"-abslog={log}"],
+        launch_options = common
+        if options.render and name != "server":
+            launch_options = [arg for arg in common if arg != "-nullrhi"]
+            capture = output / f"{name}_hud.png"
+            capture.unlink(missing_ok=True)
+            launch_options += ["-windowed", "-ResX=1280", "-ResY=720", f"-AkUGCHUDCapture={capture}"]
+        process = subprocess.Popen([str(executable), *arguments, *launch_options, f"-abslog={log}"],
                                    cwd=root, stdout=handle, stderr=subprocess.STDOUT)
         processes.append(process)
         return process, log
@@ -108,9 +115,22 @@ def main():
         if "[AkUGCNetworkVisual] ServerPassed" not in text or "Result={Fail}" in text:
             raise RuntimeError(f"Server verification failed: {ds_log}")
         results["server"] = re.findall(r"\[AkUGCNetworkVisual\].*", text)
+        settlements = []
+        for name in ("client1", "client2_late", "server"):
+            terminal = next(line for line in results[name] if "Passed" in line)
+            fields = dict(re.findall(r"(Score|Resources|Kills|Base|Settled)=(\d+)", terminal))
+            if fields != {"Score": "500", "Resources": "321", "Kills": "0", "Base": "993", "Settled": "1"}:
+                raise RuntimeError(f"Invalid replicated settlement for {name}: {fields}")
+            settlements.append(fields)
+        results["settlement"] = settlements[0]
         results["late_join_seconds"] = round(joined_at, 2)
         results["fresh_build_cook_stage_package"] = options.cook
-        results["rendering"] = "NullRHI object/replication verification; not screenshot validation"
+        results["rendering"] = "Rendered client HUD capture" if options.render else "NullRHI object/replication verification; not screenshot validation"
+        if options.render:
+            captures = [output / f"{name}_hud.png" for name in ("client1", "client2_late")]
+            if not all(path.exists() and path.stat().st_size > 0 for path in captures):
+                raise RuntimeError("Rendered HUD screenshots were not produced.")
+            results["hud_captures"] = [str(path) for path in captures]
         (output / "result.json").write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
         print(json.dumps(results, ensure_ascii=False, indent=2))
     finally:

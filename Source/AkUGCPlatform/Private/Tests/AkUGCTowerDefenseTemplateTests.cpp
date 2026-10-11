@@ -161,6 +161,7 @@ namespace AkUGCTemplateAuthorityTest
         OutState.BaseCurrentHealth = State->GetBaseHealthCurrent();
         OutState.BaseMaximumHealth = State->GetBaseHealthMaximum();
         OutState.ActiveEnemyCount = State->GetActiveEnemyCount();
+        OutState.Score = State->GetScoreSnapshot();
         OutState.Messages = Logic->GetEmittedMessages();
         OutState.Spawns = Logic->GetSpawnedEntities();
         OutState.Goals = Logic->GetGoalReachedEntities();
@@ -200,7 +201,7 @@ bool FAkUGCTemplateAuthorityConsistencyTest::RunTest(const FString& Parameters)
         return false;
     }
     TestTrue(TEXT("Unedited default template completes a match"), DefaultState.MatchResult != EAkUGCTowerDefenseMatchResult::InProgress);
-    TestEqual(TEXT("Default template initializes 200 resources"), DefaultResources, 200);
+    TestEqual(TEXT("Default resources include only enemy kill rewards"), DefaultResources, 200 + DefaultState.Score.EnemyKills * AkUGCScoreRules::KillResources);
 
     for (int32 WaveCount = 1; WaveCount <= 3; ++WaveCount)
     {

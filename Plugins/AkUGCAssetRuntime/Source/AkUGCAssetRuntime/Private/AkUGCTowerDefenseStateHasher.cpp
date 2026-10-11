@@ -118,6 +118,13 @@ FString FAkUGCTowerDefenseStateHasher::HashFinalState(const FAkUGCTowerDefenseFi
     Canonical += SerializeDouble(State.BaseMaximumHealth);
     Canonical += TEXT("|");
     Canonical += SerializeInt(State.ActiveEnemyCount);
+    Canonical += TEXT("|") + SerializeInt(State.Score.TeamScore);
+    Canonical += TEXT("|") + SerializeInt(State.Score.Resources);
+    Canonical += TEXT("|") + SerializeInt(State.Score.EnemyKills);
+    Canonical += TEXT("|") + SerializeBool(State.Score.bSettled);
+    Canonical += TEXT("|") + SerializeEnum(static_cast<int32>(State.Score.Result));
+    Canonical += TEXT("|") + SerializeDouble(State.Score.FinalBaseCurrentHealth);
+    Canonical += TEXT("|") + SerializeDouble(State.Score.FinalBaseMaximumHealth);
 
     // 事件序列（权威时间线顺序即确定顺序，不额外排序）
     Canonical += TEXT("|");

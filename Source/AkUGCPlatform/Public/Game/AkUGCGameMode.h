@@ -5,6 +5,7 @@
 #include "Subsystem/AkUGCLogicRuntimeSubsystem.h"
 #include "Prefab/AkUGCPrefabRegistry.h"
 #include "Scene/AkUGCSceneRuntime.h"
+#include "Gameplay/AkUGCTowerDefenseScore.h"
 #include "Session/AkUGCDocumentRuntimeSession.h"
 #include "AkUGCGameMode.generated.h"
 
@@ -60,4 +61,5 @@ private:
     double LastProjectedBaseHealthMaximum = 0.0;
     int32 LastProjectedActiveEnemyCount = 0;
     bool bHasProjectedState = false;
+    FAkUGCTowerDefenseScoreAccumulator ScoreAccumulator;
 };
