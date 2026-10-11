@@ -113,6 +113,7 @@ namespace AkUGCGameModePackLoadTest
         State.BaseCurrentHealth = GameState->GetBaseHealthCurrent();
         State.BaseMaximumHealth = GameState->GetBaseHealthMaximum();
         State.ActiveEnemyCount = GameState->GetActiveEnemyCount();
+        State.Score = GameState->GetScoreSnapshot();
         State.Messages = Logic->GetEmittedMessages();
         State.Spawns = Logic->GetSpawnedEntities();
         State.Goals = Logic->GetGoalReachedEntities();
@@ -241,6 +242,7 @@ namespace AkUGCGameModePackLoadTest
                     DestroyTestWorld(World);
                     return false;
                 }
+                GameMode->ProjectStateToGameState(GameState);
                 Remaining -= Slice;
             }
         }
@@ -256,6 +258,18 @@ namespace AkUGCGameModePackLoadTest
 
         GameMode->ProjectStateToGameState(GameState);
         const FAkUGCTowerDefenseFinalState State = CollectFinalState(Logic, GameState);
+        const int32 ExpectedKills = Logic->GetDeathEvents().Num() - (State.MatchResult == EAkUGCTowerDefenseMatchResult::Defeat ? 1 : 0);
+        const int32 ExpectedScore = ExpectedKills * AkUGCScoreRules::KillScore
+            + (State.MatchResult == EAkUGCTowerDefenseMatchResult::Victory ? AkUGCScoreRules::VictoryBonus : 0);
+        GameMode->ProjectStateToGameState(GameState);
+        if (!State.Score.bSettled || State.Score.EnemyKills != ExpectedKills || State.Score.TeamScore != ExpectedScore
+            || State.Score.Resources != Document.Scenes[0].Ruleset.InitialResources + ExpectedKills * AkUGCScoreRules::KillResources
+            || GameState->GetScoreSnapshot().TeamScore != ExpectedScore)
+        {
+            if (OutError) { *OutError = TEXT("Authority score/resources/settlement mismatch or repeated projection reward."); }
+            DestroyTestWorld(World);
+            return false;
+        }
         OutHash = FAkUGCTowerDefenseStateHasher::HashFinalState(State);
 
         DestroyTestWorld(World);

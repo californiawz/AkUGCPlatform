@@ -14,6 +14,7 @@
 #include "Misc/Parse.h"
 #include "HAL/PlatformTime.h"
 #include "Misc/FileHelper.h"
+#include "HAL/FileManager.h"
 #include "Pack/AkUGCLogicPackCodec.h"
 #include "Pack/AkUGCLogicPackHasher.h"
 #include "Prefab/AkUGCOfficialPrefabCatalog.h"
@@ -96,10 +97,13 @@ namespace AkUGCNetworkVisualTest
             const TArray<FName> Required = {TEXT("official.gameplay.base"), TEXT("official.gameplay.goal"),
                 TEXT("official.tower.basic"), TEXT("official.gameplay.enemy_spawn"), TEXT("official.gameplay.path_node")};
             for (FName Type : Required) { if (!Types.Contains(Type)) { return false; } }
+            const FAkUGCTowerDefenseScoreSnapshot Score = State->GetScoreSnapshot();
             if (bServer)
             {
+                if (!Score.bSettled || Score.TeamScore != 500 || Score.EnemyKills != 0 || Score.Resources != 321
+                    || Score.Result != EAkUGCTowerDefenseMatchResult::Victory || Score.FinalBaseCurrentHealth != 993.0) { return false; }
                 Test->TestTrue(TEXT("Both real client connections reached the Dedicated Server"), World->GetNetDriver()->ClientConnections.Num() >= 2);
-                UE_LOG(LogTemp, Display, TEXT("[AkUGCNetworkVisual] ServerPassed Connections=%d Entities=%d Resources=%d"),
+                UE_LOG(LogTemp, Display, TEXT("[AkUGCNetworkVisual] ServerPassed Connections=%d Entities=%d Resources=%d Score=500 Kills=0 Base=993 Settled=1"),
                     World->GetNetDriver()->ClientConnections.Num(), Ids.Num(), State->GetResources());
                 return true;
             }
@@ -121,9 +125,14 @@ namespace AkUGCNetworkVisualTest
                 return false;
             }
             if (!bObservedEnemy || !bObservedMovement || State->GetMatchResult() != EAkUGCTowerDefenseMatchResult::Victory
-                || State->GetActiveEnemyCount() != 0 || State->GetBaseHealthCurrent() != 993.0) { return false; }
+                || State->GetActiveEnemyCount() != 0 || State->GetBaseHealthCurrent() != 993.0
+                || !Score.bSettled || Score.TeamScore != 500 || Score.EnemyKills != 0 || Score.Resources != 321
+                || Score.Result != EAkUGCTowerDefenseMatchResult::Victory || Score.FinalBaseCurrentHealth != 993.0) { return false; }
+            FString CapturePath;
+            if (FParse::Value(FCommandLine::Get(), TEXT("AkUGCHUDCapture="), CapturePath)
+                && IFileManager::Get().FileSize(*CapturePath) <= 0) { return false; }
             Test->TestTrue(TEXT("Replicated enemy moved before server destruction"), bObservedMovement);
-            UE_LOG(LogTemp, Display, TEXT("[AkUGCNetworkVisual] ClientPassed Id=%s Base=993 Resources=321 Destroyed=1 Moved=1"),
+            UE_LOG(LogTemp, Display, TEXT("[AkUGCNetworkVisual] ClientPassed Id=%s Base=993 Resources=321 Score=500 Kills=0 Settled=1 Destroyed=1 Moved=1"),
                 *ExpectedEnemy.ToString(EGuidFormats::Digits));
             return true;
         }

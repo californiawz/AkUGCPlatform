@@ -4,6 +4,7 @@
 #include "Engine/World.h"
 #include "Game/AkUGCGameMode.h"
 #include "Game/AkUGCGameState.h"
+#include "Game/AkUGCHUD.h"
 #include "Tests/AkUGCGameStateTestListener.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
@@ -202,7 +203,43 @@ bool FAkUGCGameModeDefaultsTest::RunTest(const FString& Parameters)
 
     TestTrue(TEXT("GameMode binds UGC GameState as default"),
         GameMode->GameStateClass == AAkUGCGameState::StaticClass());
+    TestTrue(TEXT("GameMode binds tower defense HUD"), GameMode->HUDClass == AAkUGCHUD::StaticClass());
 
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAkUGCScoreSnapshotProjectionTest,
+    "AkUGC.Runtime.Replication.ScoreSnapshotProjection",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCScoreSnapshotProjectionTest::RunTest(const FString& Parameters)
+{
+    UWorld* World = AkUGCGameStateTest::CreateTestWorld();
+    AAkUGCGameState* State = World->SpawnActor<AAkUGCGameState>();
+    if (!State) { AkUGCGameStateTest::DestroyTestWorld(World); return false; }
+    FAkUGCTowerDefenseScoreSnapshot Snapshot;
+    Snapshot.Resources = 210;
+    Snapshot.TeamScore = 100;
+    Snapshot.EnemyKills = 1;
+    TestTrue(TEXT("Authority projects earned score and resources"), State->ProjectScoreSnapshot(Snapshot));
+    TestEqual(TEXT("Resources getter uses same snapshot"), State->GetResources(), 210);
+    Snapshot.TeamScore = -1;
+    TestFalse(TEXT("Invalid score rejected"), State->ProjectScoreSnapshot(Snapshot));
+    TestEqual(TEXT("Rejected score leaves existing snapshot unchanged"), State->GetScoreSnapshot().TeamScore, 100);
+    Snapshot.TeamScore = 600;
+    Snapshot.bSettled = true;
+    Snapshot.Result = EAkUGCTowerDefenseMatchResult::Victory;
+    Snapshot.FinalBaseCurrentHealth = 993.0;
+    Snapshot.FinalBaseMaximumHealth = 1000.0;
+    TestTrue(TEXT("Full settlement projects together"), State->ProjectScoreSnapshot(Snapshot));
+    const FString Text = AAkUGCHUD::FormatSettlement(State->GetScoreSnapshot());
+    TestTrue(TEXT("HUD displays victory and final score"), Text.Contains(TEXT("VICTORY")) && Text.Contains(TEXT("600")));
+    TestTrue(TEXT("HUD evaluates exact retained base health"), Text.Contains(TEXT("99.3%")));
+    Snapshot.TeamScore = 700;
+    TestFalse(TEXT("Settled state is immutable"), State->ProjectScoreSnapshot(Snapshot));
+    TestEqual(TEXT("Rejected repeated settlement cannot award again"), State->GetScoreSnapshot().TeamScore, 600);
+    TestTrue(TEXT("HUD waits for authoritative settlement"), AAkUGCHUD::FormatSettlement({}).Contains(TEXT("Awaiting")));
+    AkUGCGameStateTest::DestroyTestWorld(World);
     return true;
 }
 

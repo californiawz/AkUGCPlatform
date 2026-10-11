@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/GameStateBase.h"
 #include "Subsystem/AkUGCLogicRuntimeSubsystem.h"
+#include "Gameplay/AkUGCTowerDefenseScore.h"
 #include "AkUGCGameState.generated.h"
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FAkUGCWaveSnapshotReplicatedDelegate);
@@ -34,6 +35,16 @@ public:
     void ProjectBaseHealth(double Current, double Maximum);
     void ProjectActiveEnemyCount(int32 Count);
     void InitializeResources(int32 InitialResources);
+    bool ProjectScoreSnapshot(const FAkUGCTowerDefenseScoreSnapshot& Snapshot);
+
+    UFUNCTION(BlueprintPure, Category = "UGC|Score")
+    FAkUGCTowerDefenseScoreSnapshot GetScoreSnapshot() const { return ReplicatedScoreSnapshot; }
+
+    UPROPERTY(BlueprintAssignable, Category = "UGC|Score")
+    FAkUGCWaveSnapshotReplicatedDelegate OnScoreSnapshotReplicated;
+
+    UFUNCTION()
+    void OnRep_ScoreSnapshot();
 
     // ---- Blueprint 只读查询 ----
 
@@ -95,8 +106,8 @@ protected:
     UPROPERTY(ReplicatedUsing = OnRep_ActiveEnemyCount)
     int32 ReplicatedActiveEnemyCount = 0;
 
-    UPROPERTY(Replicated)
-    int32 ReplicatedResources = 0;
+    UPROPERTY(ReplicatedUsing = OnRep_ScoreSnapshot)
+    FAkUGCTowerDefenseScoreSnapshot ReplicatedScoreSnapshot;
 
     bool bResourcesInitialized = false;
 

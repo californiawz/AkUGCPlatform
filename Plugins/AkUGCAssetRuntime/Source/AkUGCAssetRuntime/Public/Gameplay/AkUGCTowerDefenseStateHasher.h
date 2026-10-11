@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Subsystem/AkUGCLogicRuntimeSubsystem.h"
+#include "Gameplay/AkUGCTowerDefenseScore.h"
 
 /**
  * 塔防玩法层最终状态快照。
@@ -25,6 +26,7 @@ struct AKUGCASSETRUNTIME_API FAkUGCTowerDefenseFinalState
 
     // ---- 活跃敌人数 ----
     int32 ActiveEnemyCount = 0;
+    FAkUGCTowerDefenseScoreSnapshot Score;
 
     // ---- 事件序列（按权威时间线追加，顺序即确定）----
     TArray<FAkUGCLogicRuntimeMessage> Messages;

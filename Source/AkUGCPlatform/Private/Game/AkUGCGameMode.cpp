@@ -5,6 +5,7 @@
 #include "Command/AkUGCCommandExecutor.h"
 #include "Document/AkUGCDocument.h"
 #include "Game/AkUGCGameState.h"
+#include "Game/AkUGCHUD.h"
 #include "Pack/AkUGCLogicPack.h"
 #include "Pack/AkUGCLogicPackLoader.h"
 #include "Prefab/AkUGCOfficialPrefabCatalog.h"
@@ -15,6 +16,7 @@
 AAkUGCGameMode::AAkUGCGameMode()
 {
     GameStateClass = AAkUGCGameState::StaticClass();
+    HUDClass = AAkUGCHUD::StaticClass();
     PrimaryActorTick.bCanEverTick = true;
     PrimaryActorTick.bStartWithTickEnabled = true;
 }
@@ -81,6 +83,7 @@ bool AAkUGCGameMode::InitializeAuthoritySession(FAkUGCProjectDocument& Document,
         return false;
     }
 
+    ScoreAccumulator.Initialize(Scene.Ruleset.InitialResources);
     ProjectStateToGameState(GetGameState<AAkUGCGameState>());
     return true;
 }
@@ -149,7 +152,7 @@ void AAkUGCGameMode::InitGame(const FString& MapName, const FString& Options, FS
 
 void AAkUGCGameMode::ProjectStateToGameState(AAkUGCGameState* InGameState)
 {
-    if (!InGameState || !Session.IsValid() || !SceneRuntime.IsValid())
+    if (!HasAuthority() || !InGameState || !Session.IsValid() || !SceneRuntime.IsValid())
     {
         return;
     }
@@ -199,7 +202,8 @@ void AAkUGCGameMode::ProjectStateToGameState(AAkUGCGameState* InGameState)
         LastProjectedActiveEnemyCount = EnemyCount;
     }
 
-    InGameState->InitializeResources(SceneRuntime->GetInitialResources());
+    ScoreAccumulator.Update(Logic->GetSpawnedEntities(), Logic->GetDeathEvents(), Snapshot.Result, BaseCurrent, BaseMaximum);
+    InGameState->ProjectScoreSnapshot(ScoreAccumulator.GetSnapshot());
     bHasProjectedState = true;
 }
 

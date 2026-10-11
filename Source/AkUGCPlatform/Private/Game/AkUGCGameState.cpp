@@ -14,23 +14,26 @@ void AAkUGCGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutL
     DOREPLIFETIME(AAkUGCGameState, ReplicatedBaseHealthCurrent);
     DOREPLIFETIME(AAkUGCGameState, ReplicatedBaseHealthMaximum);
     DOREPLIFETIME(AAkUGCGameState, ReplicatedActiveEnemyCount);
-    DOREPLIFETIME(AAkUGCGameState, ReplicatedResources);
+    DOREPLIFETIME(AAkUGCGameState, ReplicatedScoreSnapshot);
 }
 
 void AAkUGCGameState::ProjectWaveSnapshot(const FAkUGCWaveRuntimeSnapshot& Snapshot)
 {
-    ReplicatedWaveSnapshot = Snapshot;
+    if (HasAuthority()) { ReplicatedWaveSnapshot = Snapshot; }
 }
 
 void AAkUGCGameState::ProjectBaseHealth(double Current, double Maximum)
 {
-    ReplicatedBaseHealthCurrent = Current;
-    ReplicatedBaseHealthMaximum = Maximum;
+    if (HasAuthority() && FMath::IsFinite(Current) && FMath::IsFinite(Maximum) && Current >= 0.0 && Maximum >= Current)
+    {
+        ReplicatedBaseHealthCurrent = Current;
+        ReplicatedBaseHealthMaximum = Maximum;
+    }
 }
 
 void AAkUGCGameState::ProjectActiveEnemyCount(int32 Count)
 {
-    ReplicatedActiveEnemyCount = Count;
+    if (HasAuthority() && Count >= 0) { ReplicatedActiveEnemyCount = Count; }
 }
 
 void AAkUGCGameState::InitializeResources(int32 InitialResources)
@@ -40,13 +43,39 @@ void AAkUGCGameState::InitializeResources(int32 InitialResources)
     {
         return;
     }
-    ReplicatedResources = InitialResources;
+    ReplicatedScoreSnapshot.Resources = InitialResources;
     bResourcesInitialized = true;
+}
+
+bool AAkUGCGameState::ProjectScoreSnapshot(const FAkUGCTowerDefenseScoreSnapshot& Snapshot)
+{
+    if (!HasAuthority() || ReplicatedScoreSnapshot.bSettled
+        || Snapshot.TeamScore < 0 || Snapshot.TeamScore > AkUGCScoreRules::MaxScore
+        || Snapshot.Resources < 0 || Snapshot.Resources > AkUGCScoreRules::MaxResources
+        || Snapshot.EnemyKills < 0 || Snapshot.EnemyKills > AkUGCTowerDefenseRulesetLimits::MaxTotalEnemyCount
+        || !FMath::IsFinite(Snapshot.FinalBaseCurrentHealth) || !FMath::IsFinite(Snapshot.FinalBaseMaximumHealth)
+        || Snapshot.FinalBaseCurrentHealth < 0.0 || Snapshot.FinalBaseMaximumHealth < Snapshot.FinalBaseCurrentHealth
+        || (Snapshot.Result != EAkUGCTowerDefenseMatchResult::InProgress
+            && Snapshot.Result != EAkUGCTowerDefenseMatchResult::Victory && Snapshot.Result != EAkUGCTowerDefenseMatchResult::Defeat)
+        || (Snapshot.bSettled && (Snapshot.Result == EAkUGCTowerDefenseMatchResult::InProgress || Snapshot.FinalBaseMaximumHealth <= 0.0))
+        || (!Snapshot.bSettled && Snapshot.Result != EAkUGCTowerDefenseMatchResult::InProgress))
+    {
+        return false;
+    }
+    ReplicatedScoreSnapshot = Snapshot;
+    bResourcesInitialized = true;
+    OnRep_ScoreSnapshot();
+    return true;
+}
+
+void AAkUGCGameState::OnRep_ScoreSnapshot()
+{
+    OnScoreSnapshotReplicated.Broadcast();
 }
 
 int32 AAkUGCGameState::GetResources() const
 {
-    return ReplicatedResources;
+    return ReplicatedScoreSnapshot.Resources;
 }
 
 FAkUGCWaveRuntimeSnapshot AAkUGCGameState::GetWaveSnapshot() const
