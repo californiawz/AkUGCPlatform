@@ -16,7 +16,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
 
-def drive_mouse_ui(process, output, base, menu=False, live=False):
+def drive_mouse_ui(process, output, base, menu=False, live=False, parameters=False, slider=False, library=False):
     import ctypes
     from ctypes import wintypes
 
@@ -66,6 +66,24 @@ def drive_mouse_ui(process, output, base, menu=False, live=False):
             time.sleep(0.1)
         raise TimeoutError("OS UI expected state not reached")
 
+    if library:
+        callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        user.EnumWindows.argtypes = [callback_type, wintypes.LPARAM]
+        user.IsWindowVisible.argtypes = [wintypes.HWND]
+        end = time.monotonic() + 100
+        while time.monotonic() < end and not read().get("controls"):
+            def focus_owned(window, _):
+                owner = wintypes.DWORD()
+                user.GetWindowThreadProcessId(window, ctypes.byref(owner))
+                rect = wintypes.RECT()
+                if owner.value == process.pid and user.IsWindowVisible(window) and user.GetWindowRect(window, ctypes.byref(rect)):
+                    if rect.right - rect.left > 800 and rect.bottom - rect.top > 600:
+                        user.SetForegroundWindow(window)
+                return True
+            user.EnumWindows(callback_type(focus_owned), 0)
+            if process.poll() is not None:
+                raise RuntimeError("Editor exited during library startup")
+            time.sleep(0.5)
     state = wait(lambda s: bool(s.get("controls")), 100)
     if menu:
         title = state["window_title"]
@@ -97,12 +115,18 @@ def drive_mouse_ui(process, output, base, menu=False, live=False):
     def control(label, kind="SButton", scroll=False):
         for _ in range(24 if scroll else 1):
             state = wait(lambda s: bool(s.get("controls")), 5)
-            candidates = [c for c in state.get("controls", []) if c["type"] == kind and label in c["label"]
+            candidates = [c for c in state.get("controls", []) if (c["type"] == kind or kind == "SNumericEntryBox" and c["type"].startswith(kind)) and label in c["label"]
                           and c["width"] > 1 and c["height"] > 1
                           and state["window_x"] + 5 < c["x"] < state["window_x"] + state["window_width"] - 5
                           and state["window_y"] + (0 if menu else 60) < c["y"] < state["window_y"] + state["window_height"] - (0 if menu else 90)]
             if candidates:
-                return candidates[0]
+                candidate = candidates[0]
+                if not candidate["enabled"]:
+                    return candidate
+                position_cursor(candidate["x"], candidate["y"])
+                time.sleep(0.2)
+                if any(p.startswith(candidate["type"] + ":") and label in p for p in read().get("hover_path", [])):
+                    return candidate
             if not scroll:
                 break
             position_cursor(state["window_x"] + state["window_width"] * 0.8,
@@ -116,7 +140,7 @@ def drive_mouse_ui(process, output, base, menu=False, live=False):
         if not c["enabled"]:
             raise RuntimeError(f"UI control unexpectedly disabled: {label}")
         position_cursor(c["x"], c["y"])
-        wait(lambda s: any(p.startswith(kind + ":") and label in p for p in s.get("hover_path", [])), 3)
+        wait(lambda s: any(p.startswith(c["type"] + ":") and label in p for p in s.get("hover_path", [])), 3)
         foreground()
         user.mouse_event(0x0002, 0, 0, 0, 0)
         user.mouse_event(0x0004, 0, 0, 0, 0)
@@ -124,8 +148,8 @@ def drive_mouse_ui(process, output, base, menu=False, live=False):
         actions.append({"action": "mouse_click", "label": label, "x": c["x"], "y": c["y"],
                         "slate_hit_verified": True})
 
-    def fill(label, text):
-        click(label, "SEditableTextBox", True)
+    def fill(label, text, kind="SEditableTextBox"):
+        click(label, kind, not parameters)
         foreground()
         user.keybd_event(0x11, 0, 0, 0)
         user.keybd_event(0x41, 0, 0, 0)
@@ -141,6 +165,10 @@ def drive_mouse_ui(process, output, base, menu=False, live=False):
             events[1].value.keyboard = Keyboard(0, ord(ch), 6, 0, 0)
             if user.SendInput(2, events, ctypes.sizeof(Input)) != 2:
                 raise ctypes.WinError(ctypes.get_last_error())
+        if kind == "SNumericEntryBox":
+            foreground()
+            user.keybd_event(0x0D, 0, 0, 0)
+            user.keybd_event(0x0D, 0, 2, 0)
         time.sleep(0.4)
         actions.append({"action": "keyboard_input", "label": label, "characters": len(text)})
 
@@ -151,7 +179,15 @@ def drive_mouse_ui(process, output, base, menu=False, live=False):
         seq += 1
         temporary = output / "ui-command.tmp"
         temporary.write_text(json.dumps({"seq": seq, "tag": tag}), encoding="utf-8")
-        temporary.replace(output / "ui-command.json")
+        deadline = time.monotonic() + 3
+        while True:
+            try:
+                temporary.replace(output / "ui-command.json")
+                break
+            except PermissionError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.05)
         if tag != "finish":
             end = time.monotonic() + 10
             while time.monotonic() < end:
@@ -178,9 +214,132 @@ def drive_mouse_ui(process, output, base, menu=False, live=False):
         (output / "os-input-actions.json").write_text(json.dumps(actions, ensure_ascii=False, indent=2), encoding="utf-8")
         return
 
+    if library:
+        state = read()
+        for name in ("library_directory", "project_path"):
+            if not Path(state[name]).resolve().is_relative_to(output.parent.resolve()):
+                raise RuntimeError("Library test path escaped isolated Saved root")
     click("新建默认可玩塔防")
     wait(lambda s: s.get("project_open"))
     checkpoint("new")
+    if library:
+        import hashlib
+        click("Save")
+        checkpoint("library-saved")
+        click("我已通过独立渠道", "SCheckBox", scroll=True)
+        wait(lambda s: s.get("trust_confirmed"))
+        click("一键签名发布当前项目", scroll=True)
+        published = wait(lambda s: s.get("library_count") == 1)
+        checkpoint("published")
+        release, public_key = published["release_id"], published["publisher_public_key"]
+        share_dir = output.parent / "UGC/Share"
+        original = share_dir / (release + ".akugc")
+        original_digest = hashlib.sha256(original.read_bytes()).hexdigest()
+        click("导出分享:" + release, scroll=True)
+        wait(lambda s: len(list(share_dir.glob("*.akugc"))) == 2)
+        checkpoint("exported")
+        exported = next(p for p in share_dir.glob("*.akugc") if p != original)
+        exported_digest = hashlib.sha256(exported.read_bytes()).hexdigest()
+        click("删除本地记录:" + release, scroll=True)
+        wait(lambda s: s.get("delete_pending"))
+        disabled_rows = [c for c in read().get("controls", []) if c["type"] == "SButton"
+                         and c["label"] in ("导出分享:" + release, "删除本地记录:" + release)]
+        if len(disabled_rows) != 2 or any(c["enabled"] for c in disabled_rows):
+            raise RuntimeError("Work row remained enabled during delete confirmation")
+        checkpoint("delete-pending")
+        click("取消删除", scroll=True)
+        wait(lambda s: not s.get("delete_pending"))
+        if not control("导出分享:" + release, scroll=True)["enabled"]:
+            raise RuntimeError("Work row did not recover after cancelling deletion")
+        checkpoint("delete-cancelled")
+        click("删除本地记录:" + release, scroll=True)
+        wait(lambda s: s.get("delete_pending"))
+        click("确认删除记录", scroll=True)
+        wait(lambda s: s.get("library_count") == 0 and not s.get("delete_pending"))
+        checkpoint("deleted")
+        fill("接收的 .akugc", str(exported))
+        fill("独立核对的 Ed25519", public_key)
+        imports = [c for c in read().get("controls", []) if c["type"] == "SButton" and c["label"] == "验签并导入作品库"]
+        if len(imports) != 1 or imports[0]["enabled"]:
+            raise RuntimeError("Import enabled without explicit trust")
+        checkpoint("untrusted")
+        wrong_key = ("0" if public_key[0] != "0" else "1") + public_key[1:]
+        fill("独立核对的 Ed25519", wrong_key)
+        click("我已通过独立渠道", "SCheckBox", scroll=True)
+        wait(lambda s: s.get("trust_confirmed"))
+        click("验签并导入作品库", scroll=True)
+        wait(lambda s: not s.get("trust_confirmed") and s.get("library_count") == 0)
+        checkpoint("wrong-key")
+        fill("独立核对的 Ed25519", public_key)
+        for tag in ("imported", "import-idempotent"):
+            click("我已通过独立渠道", "SCheckBox", scroll=True)
+            wait(lambda s: s.get("trust_confirmed"))
+            click("验签并导入作品库", scroll=True)
+            wait(lambda s: not s.get("trust_confirmed") and s.get("library_count") == 1)
+            checkpoint(tag)
+        if hashlib.sha256(original.read_bytes()).hexdigest() != original_digest or hashlib.sha256(exported.read_bytes()).hexdigest() != exported_digest:
+            raise RuntimeError("Deletion/import changed retained share bytes")
+        actions.append({"action": "retained_share_sha256_verified", "files": 2,
+                        "publisher_key_source": "separate publication state, not imported envelope",
+                        "human_trust_channel_verified": False})
+        checkpoint("finish")
+        (output / "os-input-actions.json").write_text(json.dumps(actions, ensure_ascii=False, indent=2), encoding="utf-8")
+        return
+    if parameters:
+        fill("基地生命", "1700", "SNumericEntryBox")
+        fill("初始资源", "425", "SNumericEntryBox")
+        fill("波数", "2", "SNumericEntryBox")
+        if slider:
+            c = control("波数", "SNumericEntryBox")
+            position_cursor(c["x"], c["y"])
+            wait(lambda s: any(p.startswith(c["type"] + ":") and "波数" in p for p in s.get("hover_path", [])), 3)
+            foreground()
+            user.mouse_event(0x0002, 0, 0, 0, 0)
+            try:
+                user.keybd_event(0x10, 0, 0, 0)
+                try:
+                    for _ in range(10):
+                        foreground()
+                        user.mouse_event(0x0001, 100, 0, 0, 0)
+                        time.sleep(0.08)
+                    wait(lambda s: s.get("draft_waves") == 3 and s.get("mouse_captured"), 3)
+                finally:
+                    foreground()
+                    user.keybd_event(0x10, 0, 2, 0)
+            finally:
+                foreground()
+                user.mouse_event(0x0004, 0, 0, 0, 0)
+            time.sleep(0.5)
+            wait(lambda s: s.get("draft_waves") == 3 and not s.get("mouse_captured"), 3)
+            actions.append({"action": "numeric_slider_drag", "label": "波数", "slate_hit_verified": True,
+                            "active_capture_observed": True, "released_value_preserved": True})
+            fill("波数", "2", "SNumericEntryBox")
+        wait(lambda s: s.get("draft_waves") == 2 and s.get("draft_resources") == 425 and s.get("draft_base_health") == 1700)
+        checkpoint("draft")
+        click("Save")
+        checkpoint("saved-draft")
+        click("应用参数", scroll=True)
+        wait(lambda s: s.get("can_undo"))
+        checkpoint("parameters-applied")
+        click("Undo")
+        wait(lambda s: not s.get("can_undo") and s.get("draft_waves") == 3)
+        checkpoint("parameters-undo")
+        click("Redo")
+        wait(lambda s: s.get("can_undo") and s.get("draft_resources") == 425)
+        checkpoint("parameters-redo")
+        click("Save")
+        checkpoint("saved-applied")
+        click("Load")
+        wait(lambda s: not s.get("can_undo") and not s.get("can_redo"))
+        checkpoint("reloaded")
+        fill("初始资源", "999", "SNumericEntryBox")
+        wait(lambda s: s.get("draft_resources") == 999)
+        click("重新读取项目 / 放弃草稿", scroll=True)
+        wait(lambda s: s.get("draft_resources") == 425)
+        checkpoint("discarded")
+        checkpoint("finish")
+        (output / "os-input-actions.json").write_text(json.dumps(actions, ensure_ascii=False, indent=2), encoding="utf-8")
+        return
     click("发布与本地作品库", scroll=True)
     time.sleep(0.5)
     click("AI Copilot", scroll=True)
@@ -251,11 +410,16 @@ def main():
     parser.add_argument("--mouse-ui", action="store_true")
     parser.add_argument("--menu-entry", action="store_true")
     parser.add_argument("--mouse-live-authorized", action="store_true")
+    parser.add_argument("--parameter-ui", action="store_true")
+    parser.add_argument("--slider-ui", action="store_true")
+    parser.add_argument("--library-ui", action="store_true")
     args = parser.parse_args()
-    if (args.menu_entry or args.mouse_live_authorized) and not args.mouse_ui:
-        parser.error("Menu and live modes require --mouse-ui")
-    if args.menu_entry and args.mouse_live_authorized:
-        parser.error("Menu and live modes run separately")
+    if args.slider_ui and not args.parameter_ui:
+        parser.error("--slider-ui requires --parameter-ui")
+    if (args.menu_entry or args.mouse_live_authorized or args.parameter_ui or args.library_ui) and not args.mouse_ui:
+        parser.error("Menu, live, parameter and library modes require --mouse-ui")
+    if sum((args.menu_entry, args.mouse_live_authorized, args.parameter_ui, args.library_ui)) > 1:
+        parser.error("Menu, live and parameter modes run separately")
     if args.mouse_live_authorized:
         import os
         if not os.environ.get("DEEPSEEK_API_KEY"):
@@ -268,6 +432,9 @@ def main():
         if not args.all_tests or not args.generated_document.is_file() or not args.generated_document.is_relative_to(root / "Saved"):
             parser.error("--generated-document requires --all-tests and an existing document under project Saved")
     output = root / "Saved/CopilotHttpVerification" / uuid.uuid4().hex
+    user_dir = output / "editor-user"
+    if args.library_ui:
+        output = user_dir / "Saved/verification"
     output.mkdir(parents=True)
     events = []
     mutex = threading.Lock()
@@ -438,11 +605,19 @@ def main():
     if args.mouse_ui:
         command[0] = str(args.engine / "Engine/Binaries/Win64/UnrealEditor.exe")
         command = [part for part in command if part != "-nullrhi" and not part.startswith("-ExecCmds=")]
-        command += ["-ExecCmds=Automation RunTests AkUGC.Editor.Copilot.OSMouseInteraction", f"-CopilotMouseOutput={output}"]
+        ui_selector = "Automation RunTests AkUGC.Editor.Copilot.OSMouseInteraction"
+        if args.slider_ui:
+            ui_selector = "Slate.ForceRawInputSimulation 1," + ui_selector
+        command += [f"-ExecCmds={ui_selector}", f"-CopilotMouseOutput={output}"]
         if args.menu_entry:
             command += ["-CopilotMenuEntry"]
         if args.mouse_live_authorized:
             command += ["-CopilotMouseLive", "-CopilotLiveAuthorized"]
+        if args.parameter_ui:
+            command += ["-CreatorParameterMouse"]
+        if args.library_ui:
+            command = [part for part in command if part != "-unattended"]
+            command += ["-CreatorLibraryMouse", "-UnattendedInput", f"-UserDir={user_dir}"]
     try:
         with (output / "stdout.log").open("w", encoding="utf-8") as stream:
             import os
@@ -451,7 +626,7 @@ def main():
             process = subprocess.Popen(command, cwd=root, stdout=stream, stderr=subprocess.STDOUT, env=child_env)
             try:
                 if args.mouse_ui:
-                    drive_mouse_ui(process, output, f"http://127.0.0.1:{server.server_port}", args.menu_entry, args.mouse_live_authorized)
+                    drive_mouse_ui(process, output, f"http://127.0.0.1:{server.server_port}", args.menu_entry, args.mouse_live_authorized, args.parameter_ui, args.slider_ui, args.library_ui)
                 code = process.wait(timeout=220)
             finally:
                 if process.poll() is None:
@@ -473,8 +648,14 @@ def main():
     counts = Counter(event["path"] for event in events)
     if args.mouse_ui:
         result = json.loads((output / "ui-result.json").read_text(encoding="utf-8"))
-        if args.menu_entry:
+        if args.menu_entry or args.parameter_ui or args.library_ui:
             mode_passed = not events
+            if args.library_ui:
+                actions = json.loads((output / "os-input-actions.json").read_text(encoding="utf-8"))
+                clicks = Counter(a.get("label") for a in actions if a.get("action") == "mouse_click" and a.get("slate_hit_verified"))
+                mode_passed = mode_passed and clicks["一键签名发布当前项目"] == 1 and clicks["取消删除"] == 1
+                mode_passed = mode_passed and clicks["确认删除记录"] == 1 and clicks["验签并导入作品库"] == 3
+                mode_passed = mode_passed and any(a.get("action") == "retained_share_sha256_verified" for a in actions)
         elif args.mouse_live_authorized:
             actions = json.loads((output / "os-input-actions.json").read_text(encoding="utf-8"))
             mode_passed = result.get("last_http_code") == 200 and not events and sum(a.get("label") == "发送需求并生成预览" for a in actions) == 1
@@ -485,6 +666,7 @@ def main():
         result["real_model_called"] = args.mouse_live_authorized
         result["model_calls_budget"] = 1 if args.mouse_live_authorized else 0
         result["automated_os_input"] = True
+        result["numeric_slider_verified"] = args.slider_ui and any(a.get("action") == "numeric_slider_drag" for a in json.loads((output / "os-input-actions.json").read_text(encoding="utf-8")))
         (output / "result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         print(output / "result.json")
         print("mouse_ui_passed=", result["passed"])

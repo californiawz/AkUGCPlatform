@@ -6,6 +6,7 @@
 #include "Widgets/SAkUGCWorkLibraryPanel.h"
 #include "Widgets/SAkUGCCopilotPanel.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Framework/Application/SlateApplication.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SComboButton.h"
 #include "Widgets/Input/SCheckBox.h"
@@ -64,7 +65,7 @@ void SAkUGCTowerDefenseParameterForm::Tick(const FGeometry& AllottedGeometry, do
             Status = TEXT("项目已变化（包括 Undo / Redo）；已重新读取当前参数，旧草稿已放弃。");
         }
     }
-    else if (bRebuildRequested)
+    else if (bRebuildRequested && (!FSlateApplication::IsInitialized() || !FSlateApplication::Get().HasAnyMouseCaptor()))
     {
         RebuildFields();
     }
@@ -101,6 +102,7 @@ void SAkUGCTowerDefenseParameterForm::AddNumberField(
         + SHorizontalBox::Slot().FillWidth(0.55f)
         [
             SNew(SNumericEntryBox<double>)
+            .Tag(FName(Label))
             .MinValue(Minimum).MaxValue(Maximum).MinSliderValue(Minimum).MaxSliderValue(Maximum)
             .AllowSpin(true)
             .Value_Lambda([ReadValue]() { return TOptional<double>(ReadValue()); })
@@ -122,6 +124,7 @@ void SAkUGCTowerDefenseParameterForm::AddIntegerField(
         + SHorizontalBox::Slot().FillWidth(0.55f)
         [
             SNew(SNumericEntryBox<int32>)
+            .Tag(FName(Label))
             .MinValue(Minimum).MaxValue(Maximum).MinSliderValue(Minimum).MaxSliderValue(Maximum)
             .AllowSpin(true)
             .Value_Lambda([ReadValue]() { return TOptional<int32>(ReadValue()); })

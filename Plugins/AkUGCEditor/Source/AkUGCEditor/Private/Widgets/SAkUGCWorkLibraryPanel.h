@@ -13,6 +13,12 @@ public:
     SLATE_END_ARGS()
     void Construct(const FArguments& InArgs, UAkUGCEditorSubsystem* InSubsystem);
 private:
+    friend struct FAkUGCWorkLibraryTestAccess;
+    FReply RequestDelete(const FAkUGCWorkEntry& Entry);
+    FReply ConfirmDelete();
+    FReply CancelDelete();
+    FGuid PendingDeleteId;
+    FString PendingDeleteName;
     FReply Publish();
     FReply Import();
     FReply Refresh();

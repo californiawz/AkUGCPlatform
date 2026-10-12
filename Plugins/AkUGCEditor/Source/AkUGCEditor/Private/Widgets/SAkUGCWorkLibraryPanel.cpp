@@ -2,7 +2,7 @@
 
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformApplicationMisc.h"
-#include "Misc/MessageDialog.h"
+#include "Misc/App.h"
 #include "Misc/Paths.h"
 #include "Subsystem/AkUGCEditorSubsystem.h"
 #include "Widgets/Input/SButton.h"
@@ -44,7 +44,7 @@ void SAkUGCWorkLibraryPanel::Construct(const FArguments& InArgs, UAkUGCEditorSub
         + SVerticalBox::Slot().AutoHeight()
         [SNew(SCheckBox).IsChecked_Lambda([this] { return bConfirmedTrust ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
             .OnCheckStateChanged_Lambda([this](ECheckBoxState State) { bConfirmedTrust = State == ECheckBoxState::Checked; })
-            [SNew(STextBlock).Text(FText::FromString(TEXT("我已通过独立渠道核对该公钥，并信任其签发的本次作品")))]]
+            [SNew(STextBlock).Text(FText::FromString(TEXT("我已通过独立渠道核对该公钥，并信任其签发的本次作品"))).AutoWrapText(true)]]
         + SVerticalBox::Slot().AutoHeight().Padding(0, 4)
         [SNew(SButton).Text(FText::FromString(TEXT("验签并导入作品库")))
             .IsEnabled_Lambda([this] { return bConfirmedTrust && !SharePath.IsEmpty() && !TrustedKey.IsEmpty(); })
@@ -52,7 +52,22 @@ void SAkUGCWorkLibraryPanel::Construct(const FArguments& InArgs, UAkUGCEditorSub
         + SVerticalBox::Slot().AutoHeight()
         [SNew(STextBlock).Text_Lambda([this] { return FText::FromString(Status); }).AutoWrapText(true)]
         + SVerticalBox::Slot().AutoHeight().Padding(0, 4)
-        [SAssignNew(Rows, SVerticalBox)]
+        [SNew(SBorder).Visibility_Lambda([this] { return PendingDeleteId.IsValid() ? EVisibility::Visible : EVisibility::Collapsed; })
+            [SNew(SVerticalBox)
+                + SVerticalBox::Slot().AutoHeight()
+                [SNew(STextBlock).Text_Lambda([this] { return FText::FromString(TEXT("确认删除本地记录：") + PendingDeleteName + TEXT("\n")
+                    + PendingDeleteId.ToString(EGuidFormats::Digits) + TEXT("\n不会删除分享文件或编辑项目。")); }).AutoWrapText(true)]
+                + SVerticalBox::Slot().AutoHeight()
+                [SNew(SHorizontalBox)
+                    + SHorizontalBox::Slot().AutoWidth().Padding(2)
+                    [SNew(SButton).Text(FText::FromString(TEXT("取消删除"))).OnClicked(this, &SAkUGCWorkLibraryPanel::CancelDelete)]
+                    + SHorizontalBox::Slot().AutoWidth().Padding(2)
+                    [SNew(SButton).Text(FText::FromString(TEXT("确认删除记录"))).OnClicked(this, &SAkUGCWorkLibraryPanel::ConfirmDelete)]
+                ]
+            ]
+        ]
+        + SVerticalBox::Slot().AutoHeight().Padding(0, 4)
+        [SAssignNew(Rows, SVerticalBox).IsEnabled_Lambda([this] { return !PendingDeleteId.IsValid(); })]
     ];
     Refresh();
 }
@@ -67,6 +82,7 @@ FReply SAkUGCWorkLibraryPanel::Publish()
             FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("UGC/Share")), Entry, Path, &Error))
     {
         SharePath = Path;
+        bConfirmedTrust = false;
         Refresh();
         Status = FString::Printf(TEXT("发布完成：%s\n分享路径：%s\n独立核对公钥：%s\n已发布的是当前项目快照，不含尚未应用的参数草稿。"),
             *Entry.ReleaseId.ToString(EGuidFormats::Digits), *Path, *Entry.TrustedPublicKey);
@@ -110,18 +126,47 @@ FReply SAkUGCWorkLibraryPanel::Refresh()
                     [SNew(SButton).Text(FText::FromString(TEXT("复制游玩命令"))).OnClicked_Lambda([Entry]
                         { FPlatformApplicationMisc::ClipboardCopy(*(TEXT("PlayWork ") + Entry.ReleaseId.ToString(EGuidFormats::Digits))); return FReply::Handled(); })]
                     + SHorizontalBox::Slot().AutoWidth().Padding(2)
-                    [SNew(SButton).Text(FText::FromString(TEXT("导出分享"))).OnClicked_Lambda([this, Entry]
+                    [SNew(SButton).Tag(FName(*(TEXT("导出分享:") + Entry.ReleaseId.ToString(EGuidFormats::Digits))))
+                        .Text(FText::FromString(TEXT("导出分享"))).OnClicked_Lambda([this, Entry]
                         { FString Error; const FString Path = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("UGC/Share"), Entry.ReleaseId.ToString(EGuidFormats::Digits) + TEXT("_") + FGuid::NewGuid().ToString(EGuidFormats::Digits) + TEXT(".akugc"));
                           Status = FAkUGCWorkLibrary(FAkUGCWorkLibrary::DefaultDirectory()).Export(Entry.ReleaseId, Path, &Error) ? TEXT("已导出：") + FPaths::ConvertRelativePathToFull(Path) : Error;
                           return FReply::Handled(); })]
                     + SHorizontalBox::Slot().AutoWidth().Padding(2)
-                    [SNew(SButton).Text(FText::FromString(TEXT("删除本地记录"))).OnClicked_Lambda([this, Entry]
-                        { if (FMessageDialog::Open(EAppMsgType::YesNo, FText::FromString(TEXT("删除本地作品记录？不会删除分享文件或编辑项目。"))) == EAppReturnType::Yes)
-                          { FString Error; if (FAkUGCWorkLibrary(FAkUGCWorkLibrary::DefaultDirectory()).Remove(Entry.ReleaseId, &Error)) { Refresh(); } else { Status = Error; } }
-                          return FReply::Handled(); })]
+                    [SNew(SButton).Tag(FName(*(TEXT("删除本地记录:") + Entry.ReleaseId.ToString(EGuidFormats::Digits))))
+                        .Text(FText::FromString(TEXT("删除本地记录"))).OnClicked_Lambda([this, Entry] { return RequestDelete(Entry); })]
                 ]
             ]
         ];
     }
+    return FReply::Handled();
+}
+
+FReply SAkUGCWorkLibraryPanel::RequestDelete(const FAkUGCWorkEntry& Entry)
+{
+    if (FApp::IsUnattended() && !FApp::AllowUnattendedInput()) { Status = TEXT("无人值守模式不确认删除；本地记录未改变。"); return FReply::Handled(); }
+    if (PendingDeleteId.IsValid()) { return FReply::Handled(); }
+    PendingDeleteId = Entry.ReleaseId;
+    PendingDeleteName = Entry.DisplayName;
+    return FReply::Handled();
+}
+
+FReply SAkUGCWorkLibraryPanel::CancelDelete()
+{
+    PendingDeleteId.Invalidate();
+    PendingDeleteName.Reset();
+    Status = TEXT("已取消删除；本地记录未改变。");
+    return FReply::Handled();
+}
+
+FReply SAkUGCWorkLibraryPanel::ConfirmDelete()
+{
+    if ((FApp::IsUnattended() && !FApp::AllowUnattendedInput()) || !PendingDeleteId.IsValid()) { return FReply::Handled(); }
+    const FGuid Id = PendingDeleteId;
+    PendingDeleteId.Invalidate();
+    PendingDeleteName.Reset();
+    FString Error;
+    if (FAkUGCWorkLibrary(FAkUGCWorkLibrary::DefaultDirectory()).Remove(Id, &Error))
+    { Refresh(); Status = TEXT("已删除本地记录；分享文件和编辑项目未改变。"); }
+    else { Status = Error; }
     return FReply::Handled();
 }

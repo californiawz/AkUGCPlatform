@@ -372,6 +372,67 @@ P14 已提交 `276b674`；P15 已提交 `49a0e20`；P16 已提交 `6fd3282`；**
 
 以上未完成，不能将P17技术交付等同于Phase1整体完成。
 
+### 2026-10-12：Phase 1 后续收敛实测
+
+本轮按上下文将用户所说的「P1」理解为 Phase 1 整体，不是 Phase 0 的路径分项 P1。实际仓库 HEAD 为 `90b0be5`（P17 本地提交）；先前会话关于未提交的更正不符合当前仓库事实。本轮后续修改未提交、未推送。
+
+**已完成本轮子任务：**
+- 新增独立参数 OS 输入模式 `--mouse-ui --parameter-ui`，真实数值键盘输入基地1700、资源425、两波；草稿不改文档、Save不保存未应用草稿、一次Apply、Undo/Redo、Save/Load、放弃草稿共9检查点通过。保存仅在显式开发测试模式隔离到本次Saved目录，不覆盖原默认项目。零模型/HTTP请求；自动输入不等于真人验收。证据 `Saved/CopilotHttpVerification/36e4e089a97a4ee098bd8961e39f78a0/result.json`、`os-input-actions.json`及9张截图。
+- 真实复现Listen房主离房后客户端保留`-AkUGCRoom`，自动默认地图返回又创建单成员房间、无法进入干净单人准备。修复`InitGame`：只在Standalone非Dedicated世界将`local=1`、`closed`、`failed`作为本地隔离；Listen/Dedicated不能使用此覆盖跳过房间及签名包初始化。新增NextURL派生Listen与Standalone对照断言，全量回归实际执行通过。原复现失败保留 `Saved/RoomVerification/5a5fefc201764ade86ec5aa8fea9d1ea/receiver.log`。
+- 新增独立故障恢复门禁：实际双方成员身份与名册就绪后握手，再注入主动离房、双向100%静默丢包、强制终止本轮主机进程。恢复必须无NetDriver、成员/名册清空、非房间、无旧会话、Preparation，并实际单人开始及返回。最终脚本要求房主正式Automation成功、接收进程退出码0且退出后双日志无Fail；每轮UUID目录、空闲UDP端口及实际IpNetDriver监听端口核对。三模式定稿重跑均通过，证据分别 `Saved/RoomVerification/761856908a084a97a7b42bdcb39ede6f/recovery_result.json`（leave）、`8cc058834b294385a1d6fbaecc2a5af5/recovery_result.json`（timeout）、`7b055ecceecf40c188e659ff558216d1/recovery_result.json`（主机强制终止）。静默丢包测试超时显式4秒，主机终止保留默认60秒原生ConnectionTimeout。均为本机Editor -game，不是假称新打包Game或跨设备故障验收。
+- 修复参数波数变化在鼠标捕获期间重建整个控件的潜在析构回滚：延迟重建等鼠标捕获释放。修复已编译，但当前系统的OS合成鼠标移动未能驱动SpinBox高精度raw-input数值变化，滑动实测仍失败；显式`--slider-ui`保留严格失败门禁。普通参数成功报告明确`numeric_slider_verified=false`，不把键盘验收当作滑动通过。
+- Editor/Client/Server Development构建均成功；Editor全量124项框架Success（真实生成、真实解释、OS点击3项在全量中明确跳过），42协议场景实际全部执行；原始真实生成图文档签名加载、消息1秒边界、大小步终态仍一致，Victory1100分。证据 `Saved/CopilotHttpVerification/f9d586c217624f939580b3c70aab84aa/result.json`、`generated-runtime.json`，`Saved/Logs/Phase1FinalEditorBuild.log`、`Phase1FinalClientBuild.log`、`Phase1FinalServerBuild.log`。故障测试为独立显式ClientContext用例，不计入Editor全量通过数。
+- 全新Client/Server Build/Cook/Stage/Package各ExitCode0；10个签名种子、4独立Client各2轮，总计20局全部一致结算，每种作品均拒绝第五人。证据 `Saved/RoomVerification/096cca6a96ef43a299fa5607b74bf601/ds_result.json`及同目录完整cook日志与逐种子日志。此处NullRHI只验证玩法/网络对象，不代表视觉验收。
+- 复用上述本轮全新包继续通过Listen四人双轮、晚加入及显式离房后新进程再进、独立作品库验签导入/未信任与篡改拒绝/重启两次1400分复玩。证据 `Saved/RoomVerification/6d9a02c44d2c46899a505d85f363a24f/listen_result.json`、`9d3c6e07e7784d068b4c028cf18e2e8b/reconnect_result.json`、`Saved/WorkLibraryVerification/7f579beb19044be6a33fe4e75a7f4810/result.json`及实际渲染`settlement.png`。这些脚本的`fresh_cook=false`仅表示未重复打包，所用stage由本轮十种子脚本新cook生成。
+- 两轮限定范围只读审查后修复服务器覆盖边界、恢复端口串场和最终双日志完成门禁。定向Lint、Python语法、git diff --check通过；测试进程均收尾，本轮无真实模型调用；未改用户未跟踪Lua、Build文件或项目脚本。
+
+**仍不能判定 Phase 1 完成：**
+1. 真人非程序员60分钟首作、跨设备2–4人十种子私测及真实文件传递，当前缺外部设备和参与者，不能由本机自动化代签。
+2. 参数滑动实测仍未通过；下述作品库续轮已补齐发布/导出/取消与确认删除/验签导入完整OS点击链，自动输入不等于真人核钥或首作验收。
+3. 下述最新续轮已补齐双端OS键盘JoinRoom、准备/开局/两轮胜利/返回流程，但截图HUD外三维场景仍黑，三维视觉验收未通过；不能把输入与状态成功当作完整视觉切片交付。
+4. 正式美术及Android按已有用户约定继续延后；发布私钥系统级保护仍待推进。P17完成不受此重复撤回，但Phase 1整体Go/No-Go保持未通过。
+
+所有 `Saved/` 证据为本机实际文件且被gitignore忽略，不是随源码提交的永久归档。失败尝试保留；初始化超时、早于名册就绪的房主退出、预期互斥网络错误误配置、Trace控制端口误匹配、abslog退出前尾部刷新竞争及raw-input滑动失败未被删除或计为成功。
+
+### 2026-10-12 续轮：独立 Game 入口与包级恢复
+
+- `verify_rooms.py`新增显式`--packaged-recovery`及`--host-entry-ui`。前者实际使用完整stage内部Game/Client与Pak，后者仅允许包级leave用例。接收端`UserDir`隔离在本轮Saved，并保留握手只能写入真实ProjectSavedDir的C++限制；目标日志必须确认Editor=0及Client/Game编译身份。
+- Game和Client完整Build/Cook/Stage/Package均ExitCode0。最终Cook通过Windows Job Object封装：子命令启动前先完成Job绑定，超时/异常关闭Job清理整棵后代进程；实测成功、非零拒绝、超时拒绝及孙进程终止通过，证据`Saved/RoomVerification/6cf23b2e2fb44f238f37548833367014/job_cleanup_result.json`。第一次CLI引号构造失败未产生成功结果，保留原会话错误，不计通过。
+- 同一完整Game包从无`listen`、`room=1`、`-AkUGCRoom`的默认单人准备启动，核对窗口PID/前台，真实OS点击viewport并按F6；随后实际IpNetDriver绑定本轮端口、本地房主名册出现，接入独立打包Client。保存准备→房间→恢复本地准备三张真实窗口截图与OS输入记录。最终证据`Saved/RoomVerification/6c5acc76616f44b1813b145f7fbc3c6f/recovery_result.json`、`os-input-actions.json`及`game-local-before-f6.png`、`game-room-after-f6.png`、`game-recovered-local.png`。自动输入非真人验收；Client在本次直接启动连接URL，未声称验证可视JoinRoom入口。
+- 最终包级leave、双向100%丢包timeout、强制终止Game主机crash三模式均通过：Client目标实际为Editor=0/Client=1；无NetDriver/名册/旧会话的本地准备与单人开始/返回断言、正式Automation Success、接收进程退出码0、最终双日志无Fail及非故意crash场景主机仍存活共同成立。timeout显式4秒，crash保留原生60秒。证据分别为上述`6c5acc...`、`Saved/RoomVerification/c77b1aa5eec84fd68598fa76e4505859/recovery_result.json`、`7b7808f4570942db843a1771625af859/recovery_result.json`。全是同机，不代表跨设备或运行中故障验收。
+- 修正Client HUD：Client编译条件不支持Listen建房，不再显示不可用的F6建房提示；Game/Editor保留F6文案，与`HostRoom`编译条件一致。
+- 最终Editor/Server构建成功；Game/Client由最终完整Cook构建成功；Editor全量仍为124项框架Success、42协议场景实际执行，3个显式真实模型/OS项在全量内明确跳过。原真实生成文档签名运行仍1100分Victory，大小步一致；本轮零模型请求。最终报告`Saved/CopilotHttpVerification/fe721015e975458c97fa0103f7e73e05/result.json`。限定审查发现并修复Host旧成功日志掩盖提前退出、Cook超时只结束父进程两项异常门禁。
+
+**本续轮完成的只是上述子任务；Phase 1整体仍未通过**：参数滑动、发布/导入/导出/删除确认完整OS链、完整可视房间回合流程以及真人/跨设备门禁继续待办。本轮不提交、不推送，不新增模型请求；现有其他延后项保持原约定。
+
+### 2026-10-12 续轮：作品库完整 OS 点击链
+
+- 用现有`OSMouseInteraction`扩展互斥`--mouse-ui --library-ui`；实际`-UserDir`将ProjectSavedDir、Library、Publisher、Share和默认项目全部隔离于本轮UUID目录，面板构造与OS新建输入前均严格断言路径。未改签名协议、库格式、核心DefaultDirectory语义或用户现有发布私钥。
+- 将同步模态删除对话框改为面板内非阻塞等待的确认区，显示目标名称与发布ID；待确认时所有作品行禁用，取消不写库，确认只删除本地记录。请求及确认仍拒绝纯无人值守输入；引擎`IsUnattended()`包含`GIsAutomationTesting`，故本次OS测试显式`-UnattendedInput`但不自动点击确认。新增`UnattendedDeleteGuard`在全量中实际执行，验证无交互许可时请求/确认均不推进删除、取消清待确认状态（使用未构建面板和随机ID，无真实作品文件）。
+- 11个有序检查点及11张截图通过：新建、Save、发布、导出、待删除、点击取消、再次请求后确认删除、未信任禁用导入、错误公钥明确验签拒绝、正确导入、重复导入成功且幂等。实际鼠标/键盘事件均核对本次PID与前台，点击可启用控件前要求真实Slate命中；禁用控件只读有效父级启用状态，不强行点击。最终证据`Saved/CopilotHttpVerification/4a098ec3ba96498eb663737e6e0e10a3/editor-user/Saved/verification/result.json`、`os-input-actions.json`及11张截图。
+- 全程当前文档哈希、修订、Undo/Redo及已保存文档不变；导出与发布作品分别验签后语义序列化一致；删除/重导入保留两个分享文件自身SHA256不变；最后一条同发布ID作品有效。错误公钥检查实际输入路径/键及同文件验签诊断，重复导入必须当次显示明确成功，不能靠旧记录有效假通过。发布前实际勾选旧信任，发布后断言清除。发布者公钥来自单独发布状态，不从待导入包自动信任；报告明确真人独立核钥渠道未验证。
+- 修复长信任确认文案不换行、滚动缓存几何不代表实际裁剪可命中、Windows原子检查点替换被短暂读取锁占用（同一序号3秒内有限重试，超时仍失败）等实测问题。失败日志均保留，包括后台3FPS启动、Automation被视为unattended、禁用控件不能命中、路径分隔符文本比较、短暂读锁竞争；未删除失败记录或计为通过。
+- Editor/Client/Server Development构建成功，Client/Server本轮无源码影响且up-to-date；全量125项框架Success（3显式真实生成/解释/OS项全量内明确跳过）、42协议实际执行，新增无人值守门禁实际执行。既有真实生成图签名运行仍1100分Victory，大小步一致，报告`Saved/CopilotHttpVerification/3e1107393c7f4e5690ae111b382a8245/result.json`。另独立串行实跑参数9点、Copilot夹具8点均通过，报告分别`e8d0a780f1c94e2a8ed60130eed3726c/result.json`、`a53a2e90f2ed4f13978bab6299694b20/result.json`（同Saved/CopilotHttpVerification根）。
+- 本轮零真实模型请求；最终库用例HTTP请求为0。实际核验分享、作品库记录和结果/输入报告不包含本次生成的发布私钥；私钥仅存本轮隔离Publisher/private.key，未在截图或报告输出。过程记录均本机Saved，未提交、未推送。Phase 1仍未通过：参数滑动、完整可视房间两轮、真人60分钟首作与跨设备十种子门禁继续待办。
+
+### 2026-10-12 续轮：双端键盘两轮与滑动阻断定位
+
+- 新增显式`verify_rooms.py --keyboard-rounds`，双端完整Game/Client均真实渲染窗口，从无room/listen启动的单人准备开始，通过OS键盘F6建房、控制台输入JoinRoom、Enter准备、F5开局、Escape返回执行两轮。只读C++观察器不调用Prepare/Start/Return，不修改作品，仅写本轮隔离Saved中的状态和检查点。
+- 单成员F5、双方未准备F5、双方已准备时非房主F5均实际拒绝；房主才能开局。两个目标各12个有序成功检查点、共24张截图；两轮最终胜利快照逐字段严格跨端相同，分别Round2和Round4，1400分、9击杀、资源90、基地790/1000、活跃敌人0；每次Escape后分数/结算清零、准备重置且回合号增加。最终比较使用各端C++确认的settled检查点，不使用此前另读state假称一致。
+- 最终Game/Client完整Build/Cook/Stage/Package成功证据位于`Saved/RoomVerification/f6ea6b20d9a748ba80c434aaf64e4cac/cook_game.log`及`cook_client.log`（均ExitCode0）。该轮实测初期Job设置类别错误87而未启动对局；修正为ExtendedLimits后复用其最终完整包，成功报告`Saved/RoomVerification/0db465621a184146a14d2423d3cba062/keyboard_result.json`、`os-input-actions.json`及各端Saved/keyboard/result.json和24截图。`fresh_cook=false`准确表示成功重跑未再次cook，不代表使用旧源码包。首次成功双轮报告`f850d38b935e4b178abed7b68a0dd52c/keyboard_result.json`保留，早期失败`b8e705...`为JoinRoom travel已关闭控制台却再次盲切Tilde打开造成Enter准备不生效；驱动改为读取实际console_open状态。
+- 完整两轮运行进程绑定Kill-on-close Job；最终两个Automation正式成功且实例仍存活才输出结果，关闭Job后逐进程收尾、日志流关闭，清理失败删除成功结果。拒绝复用旧成功目录。新版OSKeyboardTwoRounds缺RoomKeyboardOutput参数明确失败，不把未执行记Success；实际缺驱动负向门禁在`Saved/RoomVerification/f89d5deb197d47939ed73fc5c3a350b6`记录Fail通过预期。
+- **重要视觉边界**：两端HUD和交互截图可读，但HUD外区域实际RGB全0，三维场景黑背景问题仍未修复。相机保持、默认Pawn/possession和光照路径只读检查尚未确定唯一原因；不能把两轮状态及HUD通过宣称三维可玩视觉完成。驱动结果明确`scene_visual_validated=false`；定稿带此边界的实际重跑同样两轮成功，报告`Saved/RoomVerification/6d01ee7d03ad458f9f27965cf6efca1a/keyboard_result.json`及24截图。已有`0db465...`成功证据由本段补充解释、不伪造更新历史文件。
+- 参数滑动阻断已定位到当前引擎Windows高精度分支：WM_MOUSEMOVE仅在非高精度时路由；ForceRawInputSimulation处理的是绝对RAWMOUSE，不会让legacy合成移动变成可用raw输入。OS按下可捕获并不证明SpinBox收到非零raw delta。未改引擎、未伪造WM_INPUT、未注入Slate或调用参数回调冒充通过；真实HID/正规虚拟HID输入条件当前未具备，保留滑动未通过和原失败证据。
+- Editor/Server构建通过，Game/Client在上述完整Cook中构建；全量仍125项框架Success（3显式真实生成/解释/OS Editor项明确跳过），42协议实际执行，原生成图签名运行仍1100分Victory且大小步一致；最终报告`Saved/CopilotHttpVerification/2d39b3b783424bc7927626cb73d3a3a4/result.json`。新键盘用例为独立ClientContext，不计Editor全量。
+
+本轮完成的是键盘两轮子任务；**Phase1仍未完成**，剩余三维黑背景视觉修复、真实HID滑动验收、真人60分钟首作/跨设备十种子私测。正式美术与Android继续按约定延后，私钥系统级保护仍后续。未提交、未推送、未追加真实模型请求，测试进程已收尾。
+
+### 2026-10-12：按用户要求提交当前阶段成果
+
+本次提交包含已验证的断线恢复、参数与作品库 OS 交互、双端键盘两轮观察器、测试驱动及本记录，共12个文件；不代表 Phase 1 整体完成。此前各续轮的“未提交”描述是当时状态，本次按用户要求进行本地阶段提交，不推送远端。
+
+提交前重新核对既有125项框架成功、42协议、作品库11点与键盘两轮结果，并检查当前脚本AST及git diff --check；本次未重跑构建或全量测试。期间新增的 AkUGCPlatform.uproject、外部插件/脚本及其他未跟踪文件不纳入本阶段提交，也不作为上述验收结果的一部分。Saved证据仍仅保存在本机，不提交私钥、缓存、日志或截图。
+
 每个提交前执行（继承 Phase 0 门禁）：
 - AkUGCPlatformEditor/Client/Server Win64 Development 编译。
 - 完整 AkUGC 自动化测试。

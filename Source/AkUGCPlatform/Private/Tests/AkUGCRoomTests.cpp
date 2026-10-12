@@ -76,6 +76,20 @@ bool FAkUGCRoomAuthorityGateTest::RunTest(const FString& Parameters)
     TestFalse(TEXT("Unknown player cannot start"), Mode->StartRoomMatch(nullptr));
     TestFalse(TEXT("Unknown player cannot return"), Mode->ReturnRoomToPreparation(nullptr));
     TestFalse(TEXT("No rejected call created session"), Mode->HasAuthoritySession());
+    for (const FString& Option : {TEXT("?closed"), TEXT("?failed"), TEXT("?local=1")})
+    {
+        World->NextURL = TEXT("/Game/Maps/Phase0?listen");
+        AAkUGCGameMode* ServerMode = World->SpawnActor<AAkUGCGameMode>();
+        TestEqual(TEXT("Listen boundary world is actually networked"), World->GetNetMode(), NM_ListenServer);
+        ServerMode->InitGame(TEXT("Phase0"), TEXT("?room=1") + Option, Error);
+        TestTrue(TEXT("Network server cannot use local return options to bypass room gate"), ServerMode->IsRoomMode());
+        TestFalse(TEXT("Network server still rejects public authority entry"), ServerMode->InitializeAuthoritySession(Document, &Error));
+        World->NextURL.Reset();
+        AAkUGCGameMode* LocalMode = World->SpawnActor<AAkUGCGameMode>();
+        LocalMode->InitGame(TEXT("Phase0"), TEXT("?room=1") + Option, Error);
+        TestFalse(TEXT("Standalone recovery ignores old room options"), LocalMode->IsRoomMode());
+        TestTrue(TEXT("Standalone recovery can prepare local project"), LocalMode->PrepareSoloProject(Document, &Error));
+    }
     GEngine->DestroyWorldContext(World); World->DestroyWorld(false);
     return true;
 }

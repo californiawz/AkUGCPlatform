@@ -61,7 +61,11 @@ void AAkUGCHUD::DrawHUD()
         }
         else
         {
+#if !UE_SERVER && !UE_CLIENT
             DrawText(TEXT("PREPARATION | ENTER: SOLO START | F6: HOST ROOM"), FLinearColor(0.3f, 0.95f, 0.85f), 30.0f, 204.0f, Font);
+#else
+            DrawText(TEXT("PREPARATION | ENTER: SOLO START | JOIN AN EXISTING ROOM"), FLinearColor(0.3f, 0.95f, 0.85f), 30.0f, 204.0f, Font);
+#endif
             DrawText(TEXT("JoinRoom <IPv4:port> | Bot tower cost: 100"), FLinearColor::White, 30.0f, 234.0f, Font);
         }
     }

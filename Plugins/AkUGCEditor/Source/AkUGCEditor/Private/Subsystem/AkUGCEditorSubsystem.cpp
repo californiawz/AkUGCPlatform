@@ -12,6 +12,8 @@
 #include "LevelEditor.h"
 #include "HAL/FileManager.h"
 #include "Misc/App.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
@@ -700,6 +702,19 @@ uint64 UAkUGCEditorSubsystem::GetDocumentRevision() const
 
 FString UAkUGCEditorSubsystem::GetDefaultProjectPath() const
 {
+#if WITH_DEV_AUTOMATION_TESTS
+    FString Output;
+    if (FParse::Param(FCommandLine::Get(), TEXT("CreatorParameterMouse"))
+        && FParse::Value(FCommandLine::Get(), TEXT("CopilotMouseOutput="), Output))
+    {
+        Output = FPaths::ConvertRelativePathToFull(Output);
+        FPaths::CollapseRelativeDirectories(Output);
+        if (FPaths::IsUnderDirectory(Output, FPaths::ConvertRelativePathToFull(FPaths::ProjectSavedDir())))
+        {
+            return FPaths::Combine(Output, TEXT("parameters.project.json"));
+        }
+    }
+#endif
     return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("UGCProjects/Phase0.json"));
 }
 

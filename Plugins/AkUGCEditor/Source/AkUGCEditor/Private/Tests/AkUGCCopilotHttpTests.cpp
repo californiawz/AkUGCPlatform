@@ -22,6 +22,11 @@
 #include "Widgets/Layout/SExpandableArea.h"
 #include "Framework/Docking/TabManager.h"
 #include "Widgets/Docking/SDockTab.h"
+#include "Widgets/SAkUGCWorkLibraryPanel.h"
+#include "Widgets/Input/SCheckBox.h"
+#include "HAL/FileManager.h"
+#include "Pack/AkUGCLogicPackCodec.h"
+#include "Misc/App.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 struct FAkUGCCopilotTestAccess
@@ -581,10 +586,42 @@ bool FAkUGCCopilotLiveExplanationTest::RunTest(const FString& Parameters)
     ADD_LATENT_AUTOMATION_COMMAND(AkUGCCopilotLiveExplanationTest::FObserve(this, Output));
     return true;
 }
+struct FAkUGCWorkLibraryTestAccess
+{
+    static const FString& Status(const SAkUGCWorkLibraryPanel& Panel) { return Panel.Status; }
+    static bool Trusted(const SAkUGCWorkLibraryPanel& Panel) { return Panel.bConfirmedTrust; }
+    static FGuid PendingDelete(const SAkUGCWorkLibraryPanel& Panel) { return Panel.PendingDeleteId; }
+    static const FString& PendingName(const SAkUGCWorkLibraryPanel& Panel) { return Panel.PendingDeleteName; }
+    static const FString& InputPath(const SAkUGCWorkLibraryPanel& Panel) { return Panel.SharePath; }
+    static const FString& InputKey(const SAkUGCWorkLibraryPanel& Panel) { return Panel.TrustedKey; }
+    static bool CheckUnattendedGuard()
+    {
+        const auto Panel = MakeShared<SAkUGCWorkLibraryPanel>();
+        FAkUGCWorkEntry Entry; Entry.ReleaseId = FGuid::NewGuid(); Entry.DisplayName = TEXT("Unattended guard fixture");
+        Panel->RequestDelete(Entry);
+        const bool RequestRejected = !Panel->PendingDeleteId.IsValid();
+        Panel->PendingDeleteId = Entry.ReleaseId;
+        Panel->ConfirmDelete();
+        const bool ConfirmRejected = Panel->PendingDeleteId == Entry.ReleaseId;
+        Panel->CancelDelete();
+        return RequestRejected && ConfirmRejected && !Panel->PendingDeleteId.IsValid();
+    }
+};
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAkUGCWorkDeleteUnattendedTest, "AkUGC.Editor.WorkLibrary.UnattendedDeleteGuard",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FAkUGCWorkDeleteUnattendedTest::RunTest(const FString& Parameters)
+{
+    if (!FApp::IsUnattended() || FApp::AllowUnattendedInput())
+    { AddWarning(TEXT("Unattended guard requires no interactive input authorization.")); return true; }
+    TestTrue(TEXT("Unattended request and confirmation do not advance deletion; cancel clears pending state"),
+        FAkUGCWorkLibraryTestAccess::CheckUnattendedGuard());
+    return true;
+}
 namespace AkUGCCopilotMouseTest
 {
     FString TextOf(const TSharedRef<SWidget>& Widget)
     {
+        if (!Widget->GetTag().IsNone()) { return Widget->GetTag().ToString(); }
         if (Widget->GetTypeAsString() == TEXT("STextBlock")) { return StaticCastSharedRef<STextBlock>(Widget)->GetText().ToString(); }
         if (Widget->GetTypeAsString() == TEXT("SEditableTextBox")) { return StaticCastSharedRef<SEditableTextBox>(Widget)->GetHintText().ToString(); }
         FString Text;
@@ -602,8 +639,17 @@ namespace AkUGCCopilotMouseTest
             if (!Subsystem) { Test->AddError(TEXT("Missing UI subsystem.")); return true; }
             const bool MenuMode = FParse::Param(FCommandLine::Get(), TEXT("CopilotMenuEntry"));
             const bool LiveMode = FParse::Param(FCommandLine::Get(), TEXT("CopilotMouseLive"));
+            const bool ParameterMode = FParse::Param(FCommandLine::Get(), TEXT("CreatorParameterMouse"));
+            const bool LibraryMode = FParse::Param(FCommandLine::Get(), TEXT("CreatorLibraryMouse"));
             if (!Window.IsValid())
             {
+                FString SavedRoot = FPaths::ConvertRelativePathToFull(FPaths::ProjectSavedDir());
+                FString ExpectedSaved = FPaths::ConvertRelativePathToFull(FPaths::GetPath(Output));
+                FPaths::NormalizeDirectoryName(SavedRoot); FPaths::NormalizeDirectoryName(ExpectedSaved);
+                if (LibraryMode && (FParse::Param(FCommandLine::Get(), TEXT("unattended")) || SavedRoot != ExpectedSaved
+                    || !FPaths::IsUnderDirectory(FPaths::ConvertRelativePathToFull(FAkUGCWorkLibrary::DefaultDirectory()), SavedRoot)
+                    || !FPaths::IsUnderDirectory(FPaths::ConvertRelativePathToFull(Subsystem->GetDefaultProjectPath()), SavedRoot)))
+                { Test->AddError(TEXT("Library OS test requires attended UI and isolated actual Saved root: ") + SavedRoot); return true; }
                 if (MenuMode)
                 {
                     Window = FGlobalTabmanager::Get()->GetRootWindow();
@@ -625,7 +671,7 @@ namespace AkUGCCopilotMouseTest
             TArray<TSharedRef<SWindow>> Windows = MenuMode ? FSlateApplication::Get().GetTopLevelWindows() : TArray<TSharedRef<SWindow>>{Window.ToSharedRef()};
             for (int32 I = 0; I < Windows.Num(); ++I)
             { for (const auto& Child : Windows[I]->GetChildWindows()) { Windows.AddUnique(Child); } }
-            for (const auto& Top : Windows) { Walk(Top, true, Controls); }
+            for (const auto& Top : Windows) { Walk(Top, true, Controls, true); }
             const auto State = MakeShared<FJsonObject>();
             State->SetBoolField(TEXT("menu_mode"), MenuMode);
             State->SetStringField(TEXT("window_title"), Window->GetTitle().ToString());
@@ -643,6 +689,7 @@ namespace AkUGCCopilotMouseTest
             const auto Size = Geometry.GetAbsoluteSize();
             State->SetNumberField(TEXT("window_x"), Position.X); State->SetNumberField(TEXT("window_y"), Position.Y);
             State->SetNumberField(TEXT("window_width"), Size.X); State->SetNumberField(TEXT("window_height"), Size.Y);
+            State->SetBoolField(TEXT("mouse_captured"), FSlateApplication::Get().HasAnyMouseCaptor());
             State->SetBoolField(TEXT("project_open"), Subsystem->HasOpenProject());
             State->SetBoolField(TEXT("can_undo"), Subsystem->CanUndo());
             State->SetBoolField(TEXT("can_redo"), Subsystem->CanRedo());
@@ -657,6 +704,31 @@ namespace AkUGCCopilotMouseTest
                 State->SetNumberField(TEXT("http_code"), FAkUGCCopilotTestAccess::HttpCode(*Panel));
                 State->SetBoolField(TEXT("api_key_empty"), FAkUGCCopilotTestAccess::KeyEmpty(*Panel));
             }
+            if (ParameterMode && Form.IsValid())
+            {
+                const auto& Draft = Form->GetDisplayedParameters();
+                State->SetNumberField(TEXT("draft_waves"), Draft.Waves.Num());
+                State->SetNumberField(TEXT("draft_resources"), Draft.InitialResources);
+                State->SetNumberField(TEXT("draft_base_health"), Draft.BaseMaxHealth);
+                State->SetStringField(TEXT("project_path"), Subsystem->GetDefaultProjectPath());
+            }
+            if (LibraryMode && WorkPanel.IsValid())
+            {
+                TArray<FAkUGCWorkEntry> Entries; int32 Rejected = 0;
+                FAkUGCWorkLibrary(FAkUGCWorkLibrary::DefaultDirectory()).List(Entries, Rejected);
+                State->SetNumberField(TEXT("library_count"), Entries.Num());
+                State->SetNumberField(TEXT("library_rejected"), Rejected);
+                State->SetStringField(TEXT("library_directory"), FPaths::ConvertRelativePathToFull(FAkUGCWorkLibrary::DefaultDirectory()));
+                State->SetStringField(TEXT("project_path"), Subsystem->GetDefaultProjectPath());
+                State->SetStringField(TEXT("library_status"), FAkUGCWorkLibraryTestAccess::Status(*WorkPanel));
+                State->SetBoolField(TEXT("trust_confirmed"), FAkUGCWorkLibraryTestAccess::Trusted(*WorkPanel));
+                State->SetBoolField(TEXT("delete_pending"), FAkUGCWorkLibraryTestAccess::PendingDelete(*WorkPanel).IsValid());
+                if (Entries.Num() == 1)
+                {
+                    State->SetStringField(TEXT("release_id"), Entries[0].ReleaseId.ToString(EGuidFormats::Digits));
+                    State->SetStringField(TEXT("publisher_public_key"), Entries[0].TrustedPublicKey);
+                }
+            }
             Save(State, TEXT("ui-state.json"));
             FString Json;
             TSharedPtr<FJsonObject> Command;
@@ -670,7 +742,39 @@ namespace AkUGCCopilotMouseTest
                     const FString Hash = FAkUGCLogicPackHasher::HashDocument(Subsystem->GetDocument());
                     bool Passed = false;
                     if (Tag == TEXT("menu")) { Passed = FGlobalTabmanager::Get()->FindExistingLiveTab(FTabId(TEXT("AkUGCCreator"))).IsValid() && Panel.IsValid(); }
-                    if (Tag == TEXT("new")) { Before = Hash; Passed = Subsystem->HasOpenProject() && !Subsystem->CanUndo(); }
+                    if (Tag == TEXT("new")) { Before = Hash; BeforeRevision = Subsystem->GetDocumentRevision(); Passed = Subsystem->HasOpenProject() && !Subsystem->CanUndo(); }
+                    if (ParameterMode)
+                    {
+                        FAkUGCTowerDefenseParameters Current;
+                        FString Error;
+                        const bool Readable = Form.IsValid() && Subsystem->GetTowerDefenseParameters(Current, &Error);
+                        const bool Expected = Readable && Current.Waves.Num() == 2 && Current.InitialResources == 425 && Current.BaseMaxHealth == 1700;
+                        if (Tag == TEXT("draft"))
+                        {
+                            const auto Draft = Form.IsValid() ? Form->GetDisplayedParameters() : FAkUGCTowerDefenseParameters();
+                            Passed = Readable && Draft.Waves.Num() == 2 && Draft.InitialResources == 425 && Draft.BaseMaxHealth == 1700
+                                && Hash == Before && Subsystem->GetDocumentRevision() == BeforeRevision && !Subsystem->CanUndo();
+                        }
+                        if (Tag == TEXT("saved-draft") || Tag == TEXT("saved-applied"))
+                        {
+                            FString SavedJson; FAkUGCProjectDocument SavedDocument;
+                            const FString ExpectedHash = Tag == TEXT("saved-draft") ? Before : Applied;
+                            Passed = FFileHelper::LoadFileToString(SavedJson, *Subsystem->GetDefaultProjectPath())
+                                && FAkUGCDocumentJson::Deserialize(SavedJson, SavedDocument, &Error)
+                                && FAkUGCLogicPackHasher::HashDocument(SavedDocument) == ExpectedHash && Hash == ExpectedHash;
+                        }
+                        if (Tag == TEXT("parameters-applied"))
+                        {
+                            Applied = Hash;
+                            Passed = Expected && Hash != Before && Subsystem->CanUndo() && Subsystem->GetDocumentRevision() == BeforeRevision + 1;
+                        }
+                        if (Tag == TEXT("parameters-undo")) { Passed = Hash == Before && !Subsystem->CanUndo() && Subsystem->CanRedo() && Form->GetDisplayedParameters().Waves.Num() == 3; }
+                        if (Tag == TEXT("parameters-redo")) { Passed = Expected && Hash == Applied && Subsystem->CanUndo() && Form->GetDisplayedParameters().InitialResources == 425; }
+                        if (Tag == TEXT("reloaded")) { Passed = Expected && Hash == Applied && !Subsystem->CanUndo() && !Subsystem->CanRedo() && Form->GetDisplayedParameters().BaseMaxHealth == 1700; }
+                        if (Tag == TEXT("discarded")) { Passed = Expected && Hash == Applied && !Subsystem->CanUndo() && Form->GetDisplayedParameters().InitialResources == 425; }
+                    }
+                    if (LibraryMode && Tag != TEXT("new") && Tag != TEXT("finish"))
+                    { Passed = CheckLibrary(Tag, Subsystem, Hash); }
                     if (Tag == TEXT("preview"))
                     {
                         Passed = Panel.IsValid() && FAkUGCCopilotTestAccess::Preview(*Panel).bValidated && Hash == Before && !Subsystem->CanUndo();
@@ -689,18 +793,20 @@ namespace AkUGCCopilotMouseTest
                     if (Tag == TEXT("explained")) { Passed = Panel.IsValid() && !FAkUGCCopilotTestAccess::Explanation(*Panel).IsEmpty() && !FAkUGCCopilotTestAccess::Preview(*Panel).bValidated && Hash == Before && !Subsystem->CanUndo(); }
                     if (Tag == TEXT("finish"))
                     {
-                        const bool All = Checkpoints.Num() == (MenuMode ? 1 : LiveMode ? 5 : 8) && !bFailed
-                            && (MenuMode || (Panel.IsValid() && FAkUGCCopilotTestAccess::KeyEmpty(*Panel)));
+                        const bool All = Checkpoints.Num() == (MenuMode ? 1 : LibraryMode ? 11 : ParameterMode ? 9 : LiveMode ? 5 : 8) && !bFailed
+                            && (MenuMode || LibraryMode || (Panel.IsValid() && FAkUGCCopilotTestAccess::KeyEmpty(*Panel)));
                         State->SetBoolField(TEXT("passed"), All); State->SetBoolField(TEXT("human_ui_validated"), false);
                         State->SetBoolField(TEXT("real_model_mode"), LiveMode);
                         State->SetNumberField(TEXT("last_http_code"), Panel.IsValid() ? FAkUGCCopilotTestAccess::HttpCode(*Panel) : 0);
-                        State->SetStringField(TEXT("kind"), MenuMode ? TEXT("OS_mouse_editor_menu_entry") : LiveMode ? TEXT("OS_mouse_keyboard_real_model_generation") : TEXT("OS_mouse_keyboard_creator_copilot_fixture"));
+                        State->SetStringField(TEXT("kind"), MenuMode ? TEXT("OS_mouse_editor_menu_entry") : LibraryMode ? TEXT("OS_mouse_work_library_publish_export_delete_import") : ParameterMode ? TEXT("OS_mouse_keyboard_creator_parameters") : LiveMode ? TEXT("OS_mouse_keyboard_real_model_generation") : TEXT("OS_mouse_keyboard_creator_copilot_fixture"));
                         State->SetArrayField(TEXT("checkpoints"), Checkpoints);
                         Save(State, TEXT("ui-result.json"));
                         if (!All) { Test->AddError(TEXT("OS UI checkpoint validation failed.")); }
                         Cleanup(); return true;
                     }
-                    const TArray<FString> Order = MenuMode ? TArray<FString>{TEXT("menu")} : LiveMode
+                    const TArray<FString> Order = MenuMode ? TArray<FString>{TEXT("menu")} : LibraryMode
+                        ? TArray<FString>{TEXT("new"), TEXT("library-saved"), TEXT("published"), TEXT("exported"), TEXT("delete-pending"), TEXT("delete-cancelled"), TEXT("deleted"), TEXT("untrusted"), TEXT("wrong-key"), TEXT("imported"), TEXT("import-idempotent")} : ParameterMode
+                        ? TArray<FString>{TEXT("new"), TEXT("draft"), TEXT("saved-draft"), TEXT("parameters-applied"), TEXT("parameters-undo"), TEXT("parameters-redo"), TEXT("saved-applied"), TEXT("reloaded"), TEXT("discarded")} : LiveMode
                         ? TArray<FString>{TEXT("new"), TEXT("preview"), TEXT("applied"), TEXT("undo"), TEXT("redo")}
                         : TArray<FString>{TEXT("new"), TEXT("preview"), TEXT("applied"), TEXT("undo"), TEXT("redo"), TEXT("cancel"), TEXT("rejected"), TEXT("explained")};
                     const bool Allowed = Order.Contains(Tag);
@@ -725,22 +831,100 @@ namespace AkUGCCopilotMouseTest
             return false;
         }
     private:
-        void Walk(const TSharedRef<SWidget>& Widget, bool ParentVisible, TArray<TSharedPtr<FJsonValue>>& Controls)
+        bool CheckLibrary(const FString& Tag, UAkUGCEditorSubsystem* Subsystem, const FString& Hash)
+        {
+            if (!WorkPanel.IsValid() || Hash != Before || Subsystem->GetDocumentRevision() != BeforeRevision
+                || Subsystem->CanUndo() || Subsystem->CanRedo()) { return false; }
+            FString SavedJson, Error; FAkUGCProjectDocument SavedDocument;
+            if (!FFileHelper::LoadFileToString(SavedJson, *Subsystem->GetDefaultProjectPath())
+                || !FAkUGCDocumentJson::Deserialize(SavedJson, SavedDocument, &Error)
+                || FAkUGCLogicPackHasher::HashDocument(SavedDocument) != Before) { return false; }
+            FAkUGCWorkLibrary Library(FAkUGCWorkLibrary::DefaultDirectory());
+            TArray<FAkUGCWorkEntry> Entries; int32 Rejected = 0;
+            if (!Library.List(Entries, Rejected) || Rejected != 0) { return false; }
+            const FString ShareDir = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("UGC/Share"));
+            TArray<FString> Shares; IFileManager::Get().FindFiles(Shares, *FPaths::Combine(ShareDir, TEXT("*.akugc")), true, false);
+            Shares.Sort();
+            if (Tag == TEXT("library-saved")) { return Entries.IsEmpty() && Shares.IsEmpty(); }
+            if (Tag == TEXT("published"))
+            {
+                if (Entries.Num() != 1 || Shares.Num() != 1) { return false; }
+                PublishedId = Entries[0].ReleaseId; PublisherKey = Entries[0].TrustedPublicKey;
+                PublishedPath = FPaths::Combine(ShareDir, Shares[0]);
+                if (!FFileHelper::LoadFileToString(PublishedJson, *PublishedPath)) { return false; }
+                const auto Loaded = FAkUGCLogicPackLoader::LoadVerified(PublishedJson, PublisherKey);
+                return Loaded.bSucceeded && Loaded.Pack.Manifest.ReleaseId == PublishedId
+                    && !FAkUGCWorkLibraryTestAccess::Trusted(*WorkPanel)
+                    && FAkUGCLogicPackHasher::HashDocument(Loaded.Pack.Document) == Before
+                    && IFileManager::Get().FileSize(*FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("UGC/Publisher/private.key"))) > 0;
+            }
+            if (!PublishedId.IsValid()) { return false; }
+            if (Tag == TEXT("exported"))
+            {
+                if (Entries.Num() != 1 || Shares.Num() != 2) { return false; }
+                for (const FString& File : Shares)
+                {
+                    const FString Path = FPaths::Combine(ShareDir, File);
+                    if (Path != PublishedPath) { ExportedPath = Path; }
+                }
+                if (!FFileHelper::LoadFileToString(ExportedJson, *ExportedPath)) { return false; }
+                const auto A = FAkUGCLogicPackLoader::LoadVerified(PublishedJson, PublisherKey);
+                const auto B = FAkUGCLogicPackLoader::LoadVerified(ExportedJson, PublisherKey);
+                FString AJ, BJ;
+                return A.bSucceeded && B.bSucceeded && FAkUGCLogicPackCodec::Serialize(A.Pack, AJ)
+                    && FAkUGCLogicPackCodec::Serialize(B.Pack, BJ) && AJ == BJ;
+            }
+            FString P, E;
+            if (Shares.Num() != 2 || !FFileHelper::LoadFileToString(P, *PublishedPath) || P != PublishedJson
+                || !FFileHelper::LoadFileToString(E, *ExportedPath) || E != ExportedJson) { return false; }
+            const FGuid Pending = FAkUGCWorkLibraryTestAccess::PendingDelete(*WorkPanel);
+            const bool Trusted = FAkUGCWorkLibraryTestAccess::Trusted(*WorkPanel);
+            if (Tag == TEXT("delete-pending")) { return Entries.Num() == 1 && Pending == PublishedId
+                && FAkUGCWorkLibraryTestAccess::PendingName(*WorkPanel) == Entries[0].DisplayName; }
+            if (Tag == TEXT("delete-cancelled")) { return Entries.Num() == 1 && !Pending.IsValid()
+                && FAkUGCWorkLibraryTestAccess::Status(*WorkPanel).Contains(TEXT("已取消删除")); }
+            if (Tag == TEXT("deleted")) { return Entries.IsEmpty() && !Pending.IsValid() && !IFileManager::Get().FileExists(*Library.EntryPath(PublishedId)); }
+            if (Tag == TEXT("untrusted")) { return Entries.IsEmpty() && !Trusted; }
+            if (Tag == TEXT("wrong-key"))
+            {
+                const FString WrongKey = (PublisherKey.Left(1) == TEXT("0") ? TEXT("1") : TEXT("0")) + PublisherKey.Mid(1);
+                const auto RejectedPack = FAkUGCLogicPackLoader::LoadVerified(ExportedJson, WrongKey);
+                return Entries.IsEmpty() && !Trusted && !RejectedPack.bSucceeded
+                    && FPaths::ConvertRelativePathToFull(FAkUGCWorkLibraryTestAccess::InputPath(*WorkPanel)) == FPaths::ConvertRelativePathToFull(ExportedPath)
+                    && FAkUGCWorkLibraryTestAccess::InputKey(*WorkPanel) == WrongKey
+                    && FAkUGCWorkLibraryTestAccess::Status(*WorkPanel) == RejectedPack.ErrorMessage;
+            }
+            if (Tag == TEXT("imported") || Tag == TEXT("import-idempotent"))
+            {
+                const auto Loaded = Library.Load(PublishedId);
+                return Entries.Num() == 1 && Entries[0].ReleaseId == PublishedId && !Trusted
+                    && FAkUGCWorkLibraryTestAccess::Status(*WorkPanel).StartsWith(TEXT("验签导入成功"))
+                    && FPaths::ConvertRelativePathToFull(FAkUGCWorkLibraryTestAccess::InputPath(*WorkPanel)) == FPaths::ConvertRelativePathToFull(ExportedPath)
+                    && FAkUGCWorkLibraryTestAccess::InputKey(*WorkPanel) == PublisherKey
+                    && Loaded.bSucceeded && Loaded.Pack.Signature.PublicKey == PublisherKey
+                    && FAkUGCLogicPackHasher::HashDocument(Loaded.Pack.Document) == Before;
+            }
+            return false;
+        }
+        void Walk(const TSharedRef<SWidget>& Widget, bool ParentVisible, TArray<TSharedPtr<FJsonValue>>& Controls, bool ParentEnabled)
         {
             const bool Visible = ParentVisible && Widget->GetVisibility().IsVisible();
+            const bool Enabled = ParentEnabled && Widget->IsEnabled();
             const FString Type = Widget->GetTypeAsString();
             if (Type == TEXT("SAkUGCCopilotPanel")) { Panel = StaticCastSharedRef<SAkUGCCopilotPanel>(Widget); }
-            if (Visible && (Type == TEXT("SButton") || Type == TEXT("SEditableTextBox") || Type == TEXT("STextBlock")))
+            if (Type == TEXT("SAkUGCTowerDefenseParameterForm")) { Form = StaticCastSharedRef<SAkUGCTowerDefenseParameterForm>(Widget); }
+            if (Type == TEXT("SAkUGCWorkLibraryPanel")) { WorkPanel = StaticCastSharedRef<SAkUGCWorkLibraryPanel>(Widget); }
+            if (Visible && (Type == TEXT("SCheckBox") || Type == TEXT("SButton") || Type == TEXT("SEditableTextBox") || Type == TEXT("STextBlock") || Type.StartsWith(TEXT("SNumericEntryBox"))))
             {
                 const auto Geometry = Widget->GetCachedGeometry(); const auto Position = Geometry.GetAbsolutePosition(); const auto Size = Geometry.GetAbsoluteSize();
                 const auto Item = MakeShared<FJsonObject>(); Item->SetStringField(TEXT("type"), Type);
                 Item->SetStringField(TEXT("label"), Type == TEXT("SEditableTextBox") ? StaticCastSharedRef<SEditableTextBox>(Widget)->GetHintText().ToString() : TextOf(Widget));
                 Item->SetNumberField(TEXT("x"), Position.X + Size.X / 2); Item->SetNumberField(TEXT("y"), Position.Y + Size.Y / 2);
                 Item->SetNumberField(TEXT("width"), Size.X); Item->SetNumberField(TEXT("height"), Size.Y);
-                Item->SetBoolField(TEXT("enabled"), Widget->IsEnabled()); Controls.Add(MakeShared<FJsonValueObject>(Item));
+                Item->SetBoolField(TEXT("enabled"), Enabled); Controls.Add(MakeShared<FJsonValueObject>(Item));
             }
             if (auto* Children = Widget->GetChildren())
-            { for (int32 I = 0; I < Children->Num(); ++I) { Walk(Children->GetChildAt(I), Visible, Controls); } }
+            { for (int32 I = 0; I < Children->Num(); ++I) { Walk(Children->GetChildAt(I), Visible, Controls, Enabled); } }
         }
         void Save(const TSharedRef<FJsonObject>& Object, const FString& Name)
         {
@@ -751,15 +935,20 @@ namespace AkUGCCopilotMouseTest
         {
             if (!FParse::Param(FCommandLine::Get(), TEXT("CopilotMenuEntry")))
             { FSlateApplication::Get().RequestDestroyWindow(Window.ToSharedRef()); }
-            Window.Reset(); Panel.Reset();
+            Window.Reset(); Panel.Reset(); Form.Reset(); WorkPanel.Reset();
             if (GEditor) { GEditor->GetEditorSubsystem<UAkUGCEditorSubsystem>()->CloseProject(); }
         }
         FAutomationTestBase* Test;
         FString Output, Before, Applied;
+        FString PublisherKey, PublishedPath, PublishedJson, ExportedPath, ExportedJson;
+        FGuid PublishedId;
+        TSharedPtr<SAkUGCWorkLibraryPanel> WorkPanel;
+        uint64 BeforeRevision = 0;
         double Started, LastPoll = 0, LastSeq = 0;
         bool bFailed = false;
         TSharedPtr<SWindow> Window;
         TSharedPtr<SAkUGCCopilotPanel> Panel;
+        TSharedPtr<SAkUGCTowerDefenseParameterForm> Form;
         TArray<TSharedPtr<FJsonValue>> Checkpoints;
     };
 }

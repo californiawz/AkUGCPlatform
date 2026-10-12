@@ -368,7 +368,9 @@ bool AAkUGCGameMode::HasAuthoritySession() const
 void AAkUGCGameMode::InitGame(const FString& MapName, const FString& Options, FString& ErrorMessage)
 {
     Super::InitGame(MapName, Options, ErrorMessage);
-    bLocalOverride = UGameplayStatics::ParseOption(Options, TEXT("local")) == TEXT("1");
+    bLocalOverride = GetNetMode() == NM_Standalone && !IsRunningDedicatedServer()
+        && (UGameplayStatics::ParseOption(Options, TEXT("local")) == TEXT("1")
+            || UGameplayStatics::HasOption(Options, TEXT("closed")) || UGameplayStatics::HasOption(Options, TEXT("failed")));
     bRoomMode = !bLocalOverride && (FParse::Param(FCommandLine::Get(), TEXT("AkUGCRoom"))
         || UGameplayStatics::ParseOption(Options, TEXT("room")) == TEXT("1"));
     if (bLocalOverride) { return; }
