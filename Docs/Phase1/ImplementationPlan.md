@@ -261,6 +261,63 @@
 
 **建议提交**：`功能：新增基础 AI Copilot（建图/规则/报错解释）`
 
+**已完成当前交付范围（2026-10-12，本次提交交付）**：Win64基础Copilot的真实DeepSeek参数/受控Message与Timer建图/只读报错解释、编译与Diff、原子应用及Undo/Redo全部验收通过；真实OS菜单/按钮输入已验证。全新Client/Server打包、同一生成文档签名加载与运行、单人游玩、分享重启复玩及DS双客户端复制回归通过。源码交付范围已核对。真人可用性、跨设备联机、其他平台与代理明确不在本次完成范围，不代表Phase 1整体完成。
+- Creator独立Copilot面板接入OpenAI兼容chat/completions HTTP请求；模型与需求必填。端点严格校验，拒绝非法端口、用户信息、控制字符、反斜杠、查询和片段；仅HTTPS或明确localhost/127.0.0.1 HTTP，无配置不生成模拟AI。
+- 模型响应可为schemaVersion=1完整参数对象，或严格 `{schemaVersion, parameters, logic}` 组合提案；Logic仅新增Message/Timer（<=32节点、<=64连线），连接只能来自现有GameStart/WaveStart或新节点，目标必须新节点，全部新节点事件可达。不允许Spawn、脚本、替换/删除旧图、任意Document/Command注入。编译器额外拒绝循环、Message出边与Timer多出边。
+- JSON原生类型严格校验（数字版本与坐标、字符串id/type/message/引用），拒绝UE隐式转换、未知/重复字段、非法引用、null、超限消息、坐标及波次预算。参数+图组合在副本上一次事务、预算校验及Pack编译，失败不改项目。
+- 新增运行时/Editor受控ApplyCopilotProposal，应用前再读原始提案重验，忽略外部Preview里的Transaction或Parameters替换；绑定原始提案SHA-256、Document哈希及Editor修订。旧值/新值及逐节点/连接Diff后显式一次事务应用，Undo/Redo完整恢复，过期或非法组合不改变历史和revision。
+- 错误按循环、引用/不可达、终端出边、预算、schema和过期提供本地中文建议，保留原始路径消息，明确不是模型解释。异步取消、关闭项目和销毁面板不修改项目。
+- 最新传输已改为项目私有静态libcurl，原生 `FOLLOWLOCATION=0`、`MAXREDIRS=0`，所有选项设置失败均不发送；不修改引擎、不借用HTTP私有handle。仅Win64非XCurl Editor支持，其余平台明确不可用、不回退自动跳转。
+- API Key恢复仅HTTPS支持，面板和transport双重禁止HTTP鉴权；Curl显式验证证书链和主机名，生产使用UE证书池。关闭环境代理及netrc隐式身份来源，不记录Authorization内容；测试仅使用无效固定值。
+- body写回调在追加前限制256KiB，普通及chunked传输超限中止；刚好262144字节通过、多1字节拒绝。自动解压也在同一回调限额内，限制业务body而非所有网络/TLS/header内存。面板仅在游戏线程Tick收取worker结果。
+- worker使用强拥有 `std::thread`，完成请求也先join再删除追踪；模块退出取消全部请求、join全部线程后再cleanup Curl/自身SSL引用。模块化Editor由自己静态Curl初始化SSL副本，单体才配对SSL模块引用；初版误用模块化InitializeSsl返回值导致无请求，已修复并实跑。模块跟踪Tab，退出清空插件内容并关闭；禁止动态模块重载，未宣称支持Live Coding卸载。
+- `verify_copilot_http.py` 扩展至31场景：原28种HTTP/TLS/生命周期，增加从真实当前事件ID生成组合图提案成功、循环拒绝与数字消息类型拒绝。固定响应服务是协议夹具，不是模型；HTTP成功图提案确认节点与连线真的应用，再单次Undo恢复。
+- TLS用工作区内临时仅localhost证书及仅测试CA参数，不导入系统证书库。服务端确认鉴权仅到达可信TLS端点，302/307与HTTPS→HTTP所有目标均未收到请求；不可信证书与hostname错误必须返回Curl码60且不进入HTTP处理。临时TLS私钥结束后删除，仅保留公共证书及日志。
+- 超时配置0.25秒、服务延迟3秒，断言Curl原生码28及1.5秒内完成，最新耗时0.257秒。旧延迟提案777资源、新提案300资源，取消后新结果不被覆盖；新请求pending和预览完成时额外注入旧请求身份完成事件，身份/状态/预览均保留。该注入是门禁单测，不假称服务成功投递旧回调。
+- 新增权威运行测试：受控GameStart -> Timer(1秒) -> Message，0.5秒不发消息，1秒边界正确发消息，规则继续运行至胜利。Client/Server独立执行Core提案各2项及Runtime图执行各1项全部通过；组合图只支持安全增量消息/定时链，不冒充任意玩法建图。
+- 最新三target Development编译成功；完整Editor **120/120** 通过（31协议场景在其中1项自动化内），包含严格图schema、原子Undo/Redo、摘要/修订过期、注入payload重验与真实Timer执行。定向Lint及git diff --check通过。
+- 最终证据：`Saved/CopilotHttpVerification/9dea731a6b794ea9b60631b2293ec57d/result.json`及`editor.log`；`Saved/Logs/P17ControlledGraphFinal_AkUGCPlatformEditor.log`、`P17ControlledGraphFinal_AkUGCPlatformClient.log`、`P17ControlledGraphFinal_AkUGCPlatformServer.log`、`P17ControlledGraphFinalAll.log`；`P17ControlledGraphClientCore.stdout.log`、`P17ControlledGraphClientRuntime.stdout.log`、`P17ControlledGraphServerCore.stdout.log`、`P17ControlledGraphServerRuntime.stdout.log`。所有服务与测试进程已收尾。
+- 真实模型验证（2026-10-12，用户明确授权使用已提供Key）：官方 `/models` 查询HTTP 200，模型含 `deepseek-flash`、`deepseek-v4-pro`；通过生产UE证书池及专用禁跳转传输实际执行两次chat/completions，没有测试CA或固定响应服务。Key仅用于进程环境与请求内存，未写入源码、配置和报告；测试结束环境及进程已清理。
+- 第一次真实参数请求HTTP 200、耗时1.429秒：两波、每波8个、资源300全部符合；严格参数/文档/预算/Pack编译验证通过，生成不改项目，显式原子应用、单次Undo和Redo精确恢复。成功文档图仍为原2事件、0连线，未意外建图。证据 `Saved/CopilotLiveVerification/758b3126f40740cbb74111fa2ae426a9/parameters.document.json`。
+- 第二次真实建图请求HTTP 200、耗时1.679秒，但内部parameters版本不满足约束，原诊断 `parameters.schemaVersion must be 1.`；提案安全拒绝、项目与历史保持不变，未应用。真实报告 `Saved/CopilotLiveVerification/758b3126f40740cbb74111fa2ae426a9/result.json` 记录参数通过、图失败、整体验收false，不能称P17已完成。
+- 增加仅 `CopilotLiveAuthorized` 显式授权且有进程Key才运行的真实模型自动化，最多两次生成；无flag全量回归不调用外网。DeepSeek官方默认启用thinking，已对该URL设置 `thinking.type=disabled`；修正纯参数与组合格式提示冲突，并明确内外两层schemaVersion都必须为JSON数字1。内部缺版本回归通过，没有放宽校验或补字段冒充模型输出。提示修正后本轮追加两次授权真实调用，参数与受控图均通过；不放宽校验、不自动补字段或用固定响应代替模型。
+- 最新三target Development编译成功，本机31协议场景及 **121项自动化成功**（其中新增真实模型测试因无授权flag跳过，不算额外真实验收）。最新证据 `Saved/CopilotHttpVerification/bde8bf11ab6640f895dd8d0d3891ec50/result.json`、`editor.log`、`Saved/Logs/P17LiveFinal_AkUGCPlatformEditor.log`、`P17LiveFinal_AkUGCPlatformClient.log`、`P17LiveFinal_AkUGCPlatformServer.log`、`P17LiveFinalRegression.log`。定向Lint与git diff --check通过，未提交。
+- 本轮真实复测仅两次chat/completions：参数HTTP 200、2.358秒，受控建图HTTP 200、2.397秒；两波每波8个、资源300以及GameStart -> Timer(1秒) -> Message(`Copilot live ready`)精确匹配，验证/原子Apply/Undo/Redo全部通过。真实报告 `Saved/CopilotLiveVerification/cc803178547446ac9e94a6841c8c9506/result.json`；同目录保存 `parameters.document.json`、`logic.document.json`，旧失败报告保留。Key只用于进程环境和请求内存，启动后清理父进程环境，测试进程结束；没有写源码、报告和子进程命令行。
+- 新增 `AkUGC.Runtime.Copilot.GeneratedDocumentExecution`：显式输入Saved内文档（<=1MiB、当前schema、单场景），反序列化/预算/编译，再用临时内存私钥签名；序列化回环检查Document哈希，可信公钥验签加载。文档字段与所有原始ID不修改、不稳定化；临时Pack结束删除，私钥不落盘。0.5秒不发消息、1秒一次消息、后续不重复；大步120秒与小步0.25秒至120秒终态一致。
+- 同一真实生成文档在Editor/Client/Server独立运行均Victory：16个敌人生成、6击杀、资源360、团队1100分、活跃敌人0；Document哈希和完整终态哈希跨target一致。Client目标中的权威测试World不是联网Client权限，不能称真实多人或跨设备验收。Editor初次与构建并行启动在初始化阶段超时，被终止；构建后单独重试成功，不掩盖失败尝试。
+- Runtime证据：真实目录下 `runtime.editor.json`、`runtime.editor.retry.log`；Client/Server报告在Cooked沙箱 `Saved/Cooked/WindowsClient/AkUGCPlatform/Saved/CopilotLiveVerification/cc803178547446ac9e94a6841c8c9506/runtime.client.final.json`、对应WindowsServer的 `runtime.server.final.json`，stdout保存在真实目录。定稿后二者顺序运行避免共享Automation目录冲突，退出码0且实际测试成功。
+- `verify_copilot_http.py` 增加 `--generated-document`（必须配合 `--all-tests`，输入位于Saved），全量回归真实复放已有文档并检查Runtime报告，不调用模型。最新 **122项成功**，其中Live模型项无授权flag跳过，GeneratedDocument实际运行；31协议场景仍独立标为固定响应非AI。证据 `Saved/CopilotHttpVerification/a8cfa0a864724d4481916b4f175c8c7f/result.json`、`generated-runtime.json`、`editor.log`；三target编译 `Saved/Logs/P17GeneratedFinal_*.build.log`，全量 `P17GeneratedFinalFullRegression.log`，Lint与diff检查通过。
+- 真实测试后补强未来Live验收：文档UTF-8落盘并回读Document哈希纳入通过条件；本轮真实调用发生在该补强之前，已通过独立Runtime回读/签名回环验证实际文件，不追加调用冒充新版Live门禁实测。面板改为逐提案严格验证提示，不再显示已过时的“真实模型尚未验收”。
+- 真实参数/受控建图/生产TLS/原始文档权威运行证据保留。本轮新增显式“发送校验诊断并请求模型解释（只读建议）”按钮：只有当前修订存在校验失败、无有效提案/请求才可点击；只发送<=4096字符原诊断，不发送作品、原始需求或API Key内容。不会自动请求解释或执行建议。沿用生产TLS/禁跳转/超时/256KiB响应限额，绑定请求身份和修订，取消及过期丢弃。
+- 解释输出严格JSON三字段summary/cause/suggestions，原生字符串类型、非空、各字段长度及1..5建议数约束，拒绝额外/重复字段；与提案解析隔离，永远不产生可应用Preview。保持本地原诊断和建议，并单独标记模型生成只读建议可能不准确、不代表修复；Apply不能使用解释文本，不改变项目、修订或Undo历史。
+- 单次授权真实DeepSeek解释HTTP 200、传输码0，含渲染等待约2.944秒：输入错误由实际本地校验空内部parameters产生，诊断 `parameters.schemaVersion must be 1.`。模型返回中文原因，明确缺字段/类型/值均可能且外层未知，建议内外数值版本1、保留其他参数并重新校验。文档/修订/历史未变、不能Apply，证据 `Saved/CopilotExplanationVerification/9c42518336514208ab581688acb84af2/explanation.json`、`editor.log`。本轮只新增1次模型调用。
+- 真实可视Slate窗口截图 `Saved/CopilotExplanationVerification/9c42518336514208ab581688acb84af2/explanation.png`，1086x800、120564字节；正常渲染Editor、真实面板及同次模型响应，不是离线重绘。测试仍通过友元调用方法，没有鼠标输入/按钮命中证据，报告 `human_ui_validated=false`；不把截图冒充人工点击验收。窗口与编辑器均收尾。
+- 协议扩展至38场景，新增解释成功、数字原因拒绝、额外字段拒绝、项目修订过期、取消、重复字段、单条建议513字符拒绝。夹具硬检查用户消息只含上述本地诊断；固定响应仍非AI。最终三target编译通过、**123项成功**（Live生成和Live解释2项无授权flag跳过；真实文档Runtime实际运行），证据 `Saved/CopilotHttpVerification/0066cb11d6e546ffbe9f66cc6d83734c/result.json`、`editor.log`，`Saved/Logs/P17ExplanationFinal_*.build.log`、`P17ExplanationFinalRegression.log`。Lint、脚本语法和diff检查通过。
+- 真实解释调用后只补强请求模式结束清理、chat content原生字符串门禁及重复/超长回归，未追加真实调用冒充定稿全量Live测试。Key仅测试子进程环境传递、启动后清理父环境，没有写源码/配置/报告/子进程命令行；聊天中已暴露，仍建议撤销轮换。
+- 本轮新增 `AkUGC.Editor.Copilot.OSMouseInteraction` 与脚本 `--mouse-ui`：正常渲染Editor、真实 `SAkUGCCreatorPanel` 测试窗口，观察器只读状态/布局/截图，不调用New/Generate/Apply/Undo等业务方法。Python ctypes向Windows发送真实鼠标/Unicode键盘输入，先匹配窗口所属Editor进程ID，每次输入核对前台；点击必须由Slate真实命中路径确认目标，仅读输入框Hint不读密钥内容。线程DPI感知并用Windows窗口矩形映射Slate相对坐标，防止多屏缩放偏移。
+- OS八检查点按顺序通过：新建默认塔防、输入配置并生成不改文档、点击应用一次事务、Undo精确恢复、Redo精确恢复、取消延迟请求且不修改、非法内部版本提案拒绝且Apply禁用、显式解释且仍只读/Apply禁用。共18次真实命中确认点击；本机POST `/ok`、`/delayed`、`/ui-invalid`、`/explain-ok`各一次，无Authorization。UE独立检查文档哈希与历史并保存8张真实Slate截图，检查点不能重复凑数。没有真实模型请求。
+- 最终OS证据 `Saved/CopilotHttpVerification/d6a3ce93fbfb4e1ca2f6ababedff5a46/result.json`、`ui-result.json`、`os-input-actions.json`、`editor.log`、`new.png`/`preview.png`/`applied.png`/`undo.png`/`redo.png`/`cancel.png`/`rejected.png`/`explained.png`。固定响应仅用于UI协议验收，不能冒充AI生成。Creator是在专属测试窗口呈现，不包含Window菜单打开入口；`human_ui_validated=false`准确表示无人真人测试，OS输入流程已验证。
+- 前5次OS驱动尝试失败证据保留：标题遮挡/未展开、文件共享PermissionError、DPI坐标偏移、输入框命中标签为空等，均及时终止测试进程；未把失败归为业务通过。修正后第6次六阶段通过，定稿第7次八阶段通过。正常取消的保活ConnectionAbortedError只在夹具handle层忽略，不吞其他服务错误。
+- 定稿三target编译成功；全量 **124项成功**（Live生成、Live解释、OS输入3项因无显式参数跳过；GeneratedDocument实际执行），38协议场景全部完成，原始真实生成文档Runtime仍1100分Victory。证据 `Saved/CopilotHttpVerification/781b2e3d29b34a3089137a7cac62185d/result.json`、`editor.log`，`Saved/Logs/P17MouseUIFinalBuild.log`、`P17MouseUIFinal_AkUGCPlatformClient.build.log`、对应Server日志、`P17MouseUIFinalRegression.log`、`P17MouseUIFinalRun.log`。Lint/py_compile/diff检查通过，无残留Editor/夹具进程，本轮未调用真实模型。
+- 本轮扩展OS观察器 `CopilotMenuEntry`：从真实 `FGlobalTabmanager` 根窗口开始，只遍历真实主窗/子窗口/弹出菜单，Python实际点击“Window/窗口”与“AkUGC Creator Studio”，独立确认注册Tab与Copilot子面板存在，没有直接TryInvokeTab替代入口点击。菜单模式与真实生成模式独立运行，菜单零网络请求。证据 `Saved/CopilotHttpVerification/92bdfcd81dab45a1a6fe2475393aa3f4/result.json`、`menu.png`、`os-input-actions.json`、`editor.log`。
+- 本轮单次真实模型+OS点击串联：专属真实Creator窗口，OS填写官方HTTPS URL、deepseek-flash、密码框与中文两波/每波8/资源300需求，只点击生成一次；HTTP200、严格参数精确匹配，预览不改项目、点击Apply一次事务、Undo与Redo文档哈希精确恢复，5检查点及12次真实命中点击通过。Editor不继承Key环境，Key仅Python环境临时读出并经密码框OS输入，动作日志仅标签/长度，所有文本输出无真实Key。证据 `Saved/CopilotHttpVerification/d2e404bf5f1e424080b25eb70801d812/result.json`、`preview.png`、`applied.png`、`undo.png`、`redo.png`、`os-input-actions.json`、`editor.log`，零本机夹具请求。本轮只新增1次真实生成。
+- 首次真实OS尝试 `Saved/CopilotHttpVerification/d46b4c7190354797a61bd84997db3e30` 在新建前失去前台被安全停止，HTTP0/无pending，未输入Key、未发模型请求；下一次成功，不掩盖失败。输入只允许本轮Editor进程，菜单弹窗同进程允许，其他应用立即停止。
+- 真实点击后发现驱动fill空文本只Ctrl+A未删除：成功运行期间密码仍是掩码，直到面板/Editor退出清理，不能说生成后已即时清空。已修复Ctrl+A后显式Backspace，并只报告ApiKeyEmpty布尔门禁；未来Live截图前及所有UI结束必须确认密码为空。修正后仅用无效fixture-not-a-real-key本机OS填入/清空验证，无模型请求，8流程通过。证据 `Saved/CopilotHttpVerification/5fe779ec4aab453888136a02ab6736da/result.json`，`api_key_empty=true`。没有追加真实生成冒充新版清空门禁实测，旧真实报告保留。
+- 最新三target编译成功，全量124项成功（3项显式Live/OS测试跳过），38协议场景及原始真实图文档Runtime实际运行且1100分胜利。证据 `Saved/CopilotHttpVerification/3ba302d06e674b1a9d932a4d1cac74de/result.json`、`editor.log`；`Saved/Logs/P17MenuLiveFinalBuild.log`、`P17MenuLiveFinal_AkUGCPlatformClient.build.log`、对应Server日志、`P17MenuLiveFinalRegression.log`、`P17MenuEntryRun.log`、`P17MouseLiveRun2.log`、`P17PasswordClearUIRun.log`。Lint/py_compile/diff通过，Editor/夹具进程及环境Key已清理，未提交。
+- P17按当前Win64受控Message/Timer+塔防参数及只读解释范围，核心技术链已闭环；不保证任意模型输出正确，不支持任意玩法脚本、自动修复执行、代理或其他平台。菜单与真实模型点击分别实跑，不假称从菜单起一整次端到端多场景。真人可用性、跨设备联机与Phase1总体门禁仍待验证；本轮不继续追加模型请求、不擅自提交。
+- 收尾只读审查确认并修复3项P2：模型解释原样转发含任意字段名的诊断（可能回显原需求）；chat/completions外层重复choices/content可被后值覆盖；生成配置失败/传输未启动时提前清空旧预览。诊断外送现仅精确白名单固定schema错误或固定类别文字，未知字段名、重复字段名及其他原错误内容不外送，本地原诊断继续保留；界面同时显示实际外送脱敏诊断。外层响应先拒绝重复字段后再解析，不限制正常API额外字段。
+- Generate以局部CandidateDocument/CandidateRevision准备请求，Start成功才更新持久上下文并清空旧预览/解释；空需求、非法URL和关闭传输未发送时保留完整ProposalJson、Diff、验证标记、原请求Document哈希/修订、诊断及模型建议。Explain启动失败也保留旧建议。成功新请求及显式Cancel仍按原语义清空，未放宽修订与身份门禁。
+- 协议扩展至42场景：重复choices、重复content（最后合法值）均拒绝；虚构PRIVATE_FIXTURE_MARKER作为未知/重复字段产生真实本地错误，标记本地保留但服务端确认解释全消息不含标记。合法预览及已收到解释分别覆盖3类未发送保留，并确认旧提案仍可Apply/单Undo恢复。复核确认测试能针对旧实现失败，但没有实际切回旧实现或改写历史验证，不假称做过mutation实跑。
+- 最新三target编译成功，全量124项成功（3项显式Live/OS测试跳过），42协议场景全部完成，已生成原始文档Runtime实际运行仍1100分胜利。证据 `Saved/CopilotHttpVerification/b1ab7ecb6f414d97aa1e832fd9b8b3c1/result.json`、`editor.log`；OS八检查点和密码清空复验通过 `Saved/CopilotHttpVerification/137d91c2cdb84b849a52e0eb656c7641/result.json`，本机4请求无鉴权。构建/运行日志 `Saved/Logs/P17ReviewFixEditorBuild.log`、`P17ReviewFix_AkUGCPlatformClient.build.log`、对应Server日志、`P17ReviewFixRegression.log`、`P17ReviewFixMouseUI.log`。定向Lint/py_compile/diff检查通过，审查后只读复核未发现限定范围内新的阻断问题。
+- 本轮没有追加真实模型请求，不把脱敏后泛化诊断的模型质量当作已实测；既有精确内部版本诊断仍白名单保留不变。Editor/夹具进程与临时环境均已收尾，未提交。
+- 最终源码交付核对完成：22个P17文件（11个已跟踪修改、11个新增源码/测试脚本），依赖引擎已有libcurl静态库及其OpenSSL/zlib/nghttp2传递依赖，不需复制引擎binary。排除未跟踪Build/WindowsServer文件顺序日志、Content/Lua/Main.luac、GenerateProjectFiles.bat与Python缓存；不删除用户文件，不stage或commit。最后两轮限定范围只读复核未发现额外运行/打包阻断。
+- 全新BuildCookRun Client和Server全部完成Build/Cook/Stage/Package、ExitCode0；证据 `Saved/WorkLibraryVerification/f50c5d4d83e54866b5b7f71c44a44d64/cook_client.log`、`cook_server.log`。可运行交付位于 `Saved/StagedBuilds/WindowsClient/AkUGCPlatform/Binaries/Win64/AkUGCPlatformClient.exe` 和对应WindowsServer；其Content/Paks存在。基础Copilot仅Editor提供，打包Runtime不带模型Key。
+- 打包独立接收作品库未信任/篡改拒绝、验签导入、完整对局及新进程重启重验复玩通过，两次1400分胜利并返回。证据上述WorkLibraryVerification目录 `result.json`、`play_0.log`、`play_1.log`、`settlement.png`。这是默认模板分享回归，不冒充模型生成分享作品。
+- 同一真实生成图文档在新打包Client/Server逐字节复制进各自Saved/P17Delivery再Build/Sign/加载执行；文档字段/ID完全未改，两目标受控图与生成文档Runtime各2项成功，Core严格提案各2项成功；最终1100分、资源360、16刷怪、6击杀、消息边界与大小时间步及跨目标终态哈希一致。证据WorkLibraryVerification目录 `generated.client.final.json`、`generated.server.final.json`、`generated.*.retry.stdout.log`、`core.*.stdout.log`。首次使用项目根Saved被打包目标Saved门禁拒绝（实际Fail但进程码0），失败日志保留；未放宽门禁，后续依报告与测试成功数断言通过。打包时额外观察到用户未跟踪Lua入口返回表错误日志，不属P17交付源码、未擅改；其未阻断本轮对局或Copilot测试，不宣称Lua功能验收。
+- 新打包DS+两个渲染Client联网复制/晚加入回归通过，晚加入23.04秒，三端终局统一500分、资源321、基地993、0击杀、Settled1，移动与销毁均观察到；证据 `Saved/NetworkVisualVerification/result.json`、双Client HUD截图、server/client日志。脚本 `fresh_build_cook_stage_package=false`是本次未在该脚本重复cook；所用stage由刚才WorkLibrary脚本全新cook生成，两个事实分别保留。联网夹具非真实模型作品，且同机多进程非跨设备/真人私测。
+- 新打包单人Bot准备/开始/完整对局/返回及渲染结算通过，1400分，证据 `Saved/SoloVerification/result.json`、`playable.log`、`settlement.png`。最终Editor全量124项成功（3显式Live/OS项跳过）、42协议全完成、原始真实文档Runtime实际运行，证据 `Saved/CopilotHttpVerification/5acfaade81c648e3b7a93d9ecd67a660/result.json`、`editor.log`。脚本py_compile、修改文件Lint与git diff --check通过，进程已全部退出。
+- 完成判定：P17当前约定Win64基础受控范围的实现、真实模型验收、安全审查、UI技术验收、打包与主链回归已完成。未完成项只列为范围外/后续产品门禁：真人可用性、跨设备联机、其他平台/代理、任意玩法建图与自动执行修复、Phase1总体验收。Git提交不是实现完成证据，本轮未明确收到提交指令，不擅自commit。
+
 ---
 
 ## 5. 推荐执行顺序
@@ -305,7 +362,15 @@ P17 基础 AI Copilot
 
 P11 已提交 `b3a2699`；P12 中文改写后的提交为 `9935274`、`38a119e`；P13 中文提交为 `08360f0`。正式美术按用户要求延后，不阻塞后续。
 
-P14 已提交 `276b674`；P15 已提交 `49a0e20`；P16 本地签名发布、独立接收作品库与重启游玩门禁已通过，独立中文详细提交；下一推进项为 **P17（基础AI Copilot）**。异常断网/跨设备私测、私钥系统级保护、个人归属分与独立AI玩家仍待补充，不冒充完成。
+P14 已提交 `276b674`；P15 已提交 `49a0e20`；P16 已提交 `6fd3282`；**P17（基础AI Copilot）当前Win64受控交付范围已完成，按用户授权在本次提交交付**。22文件源码与最终交付快照已核对；真实模型、UI、全量124项（3显式项在全量中跳过）、42协议及全新打包门禁通过，详情见P17记录与本地 `P17.delivery.json`。
+
+后续优先顺序（不计入本次P17完成）：
+1. **Phase1真人门禁**：非程序员60分钟内创作并分享首作；至少10个种子作品、2–4人跨设备联机，重点异常断网、重连及计分/胜负一致性。同机自动化不能代替此项。
+2. **发布密钥保护**：本机签名私钥系统级保护、文件权限及备份/轮换；聊天中暴露的模型API Key应撤销换新，不能继续作为正式配置。
+3. **已延后产品项**：正式美术、Android真机、个人归属分和独立AI玩家按产品优先级推进；其他平台/代理以及更广泛Copilot图能力需另定范围与验收。
+4. **已知独立问题**：未跟踪Lua入口返回表错误不属P17且未阻断本轮对局，若要启用Lua功能需单独处理；脱敏泛化诊断质量及菜单到真实模型同会话可作为后续补充测试。
+
+以上未完成，不能将P17技术交付等同于Phase1整体完成。
 
 每个提交前执行（继承 Phase 0 门禁）：
 - AkUGCPlatformEditor/Client/Server Win64 Development 编译。

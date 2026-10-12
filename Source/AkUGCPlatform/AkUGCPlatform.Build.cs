@@ -16,5 +16,6 @@ public class AkUGCPlatform : ModuleRules
             "AkUGCCore",
             "AkUGCAssetRuntime"
         });
+        PrivateDependencyModuleNames.Add("Json");
     }
 }

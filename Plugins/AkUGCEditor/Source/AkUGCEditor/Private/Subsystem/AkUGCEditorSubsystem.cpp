@@ -147,6 +147,21 @@ bool UAkUGCEditorSubsystem::ApplyTowerDefenseParameters(
     return true;
 }
 
+bool UAkUGCEditorSubsystem::ApplyCopilotProposal(const FAkUGCCopilotPreview& Preview, uint64 BaseRevision, FString* OutError)
+{
+    if (!CommandService || !HasOpenProject() || BaseRevision != DocumentRevision
+        || !FAkUGCCopilotValidation::IsCurrent(Document, Preview))
+    { if (OutError) { *OutError = TEXT("Copilot预览已过期或项目未打开，请重新生成。"); } return false; }
+    TGuardValue<bool> ApplyingGuard(bApplyingUGCTransaction, true);
+    const auto Result = CommandService->ApplyCopilotProposal(Preview);
+    if (!Result.bSucceeded)
+    { if (OutError) { *OutError = Result.ErrorPath + TEXT(": ") + Result.ErrorMessage; } return false; }
+    if (SelectedEntityId.IsValid() && !FindEntity(SelectedEntityId)) { SelectedEntityId.Invalidate(); }
+    ++DocumentRevision;
+    if (OutError) { OutError->Reset(); }
+    return true;
+}
+
 bool UAkUGCEditorSubsystem::SaveProject(const FString& FilePath, FString* OutError) const
 {
     if (!HasOpenProject())

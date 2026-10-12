@@ -4,6 +4,7 @@
 #include "Prefab/AkUGCPrefabRegistry.h"
 #include "Session/AkUGCDocumentRuntimeSession.h"
 #include "Template/AkUGCTowerDefenseTemplate.h"
+#include "Template/AkUGCCopilotPreview.h"
 
 namespace
 {
@@ -490,6 +491,18 @@ FAkUGCCommandExecutionResult FAkUGCRuntimeCommandService::ApplyTowerDefenseParam
         return Failure(TEXT("commandService.towerDefenseParameters"), MoveTemp(Error));
     }
     return Execute(MoveTemp(Transaction));
+}
+
+FAkUGCCommandExecutionResult FAkUGCRuntimeCommandService::ApplyCopilotProposal(const FAkUGCCopilotPreview& Preview)
+{
+    if (!FAkUGCCopilotValidation::IsCurrent(Document, Preview) || Document.Scenes.Num() != 1
+        || Document.Scenes[0].SceneId != SceneId)
+    { return Failure(TEXT("copilot.stale"), TEXT("Copilot proposal is stale or belongs to a different scene.")); }
+    FAkUGCCopilotPreview Verified;
+    FString Error;
+    if (!FAkUGCCopilotValidation::Preview(Document, Preview.ProposalJson, Verified, &Error))
+    { return Failure(TEXT("copilot.validation"), MoveTemp(Error)); }
+    return Execute(MoveTemp(Verified.Transaction));
 }
 
 FAkUGCCommandExecutionResult FAkUGCRuntimeCommandService::AddWave(

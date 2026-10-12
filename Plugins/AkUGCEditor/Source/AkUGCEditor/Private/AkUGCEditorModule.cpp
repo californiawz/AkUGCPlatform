@@ -5,11 +5,13 @@
 #include "ToolMenus.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "Widgets/SAkUGCCreatorPanel.h"
+#include "Copilot/AkUGCCopilotTransport.h"
 
 const FName FAkUGCEditorModule::CreatorTabName(TEXT("AkUGCCreator"));
 
 void FAkUGCEditorModule::StartupModule()
 {
+    FAkUGCCopilotTransport::Initialize();
     FGlobalTabmanager::Get()->RegisterNomadTabSpawner(
         CreatorTabName,
         FOnSpawnTab::CreateRaw(this, &FAkUGCEditorModule::SpawnCreatorTab))
@@ -22,6 +24,12 @@ void FAkUGCEditorModule::StartupModule()
 
 void FAkUGCEditorModule::ShutdownModule()
 {
+    for (auto& Weak : CreatorTabs)
+    {
+        if (auto Tab = Weak.Pin()) { Tab->SetContent(SNullWidget::NullWidget); Tab->RequestCloseTab(); }
+    }
+    CreatorTabs.Reset();
+    FAkUGCCopilotTransport::Shutdown();
     UToolMenus::UnRegisterStartupCallback(this);
     UToolMenus::UnregisterOwner(this);
     FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(CreatorTabName);
@@ -49,11 +57,13 @@ TSharedRef<SDockTab> FAkUGCEditorModule::SpawnCreatorTab(const FSpawnTabArgs& Ar
         ? GEditor->GetEditorSubsystem<UAkUGCEditorSubsystem>()
         : nullptr;
 
-    return SNew(SDockTab)
+    TSharedRef<SDockTab> Tab = SNew(SDockTab)
         .TabRole(ETabRole::NomadTab)
         [
             SNew(SAkUGCCreatorPanel, Subsystem)
         ];
+    CreatorTabs.Add(Tab);
+    return Tab;
 }
 
 IMPLEMENT_MODULE(FAkUGCEditorModule, AkUGCEditor)

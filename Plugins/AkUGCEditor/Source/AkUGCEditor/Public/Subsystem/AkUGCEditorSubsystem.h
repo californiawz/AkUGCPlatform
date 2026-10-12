@@ -9,6 +9,7 @@
 #include "Scene/AkUGCSceneRuntime.h"
 #include "Session/AkUGCDocumentRuntimeSession.h"
 #include "Template/AkUGCTowerDefenseTemplate.h"
+#include "Template/AkUGCCopilotPreview.h"
 #include "Validation/AkUGCDocumentValidator.h"
 #include "AkUGCEditorSubsystem.generated.h"
 
@@ -26,6 +27,7 @@ public:
     bool NewTowerDefenseProject(FString* OutError = nullptr);
     bool GetTowerDefenseParameters(FAkUGCTowerDefenseParameters& OutParameters, FString* OutError = nullptr) const;
     bool ApplyTowerDefenseParameters(const FAkUGCTowerDefenseParameters& Parameters, FString* OutError = nullptr);
+    bool ApplyCopilotProposal(const FAkUGCCopilotPreview& Preview, uint64 BaseRevision, FString* OutError = nullptr);
     bool SaveProject(const FString& FilePath, FString* OutError = nullptr) const;
     bool LoadProject(const FString& FilePath, FString* OutError = nullptr);
     void CloseProject();

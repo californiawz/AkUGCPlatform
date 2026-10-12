@@ -4,6 +4,7 @@
 #include "Subsystem/AkUGCEditorSubsystem.h"
 #include "Widgets/SAkUGCLogicCanvas.h"
 #include "Widgets/SAkUGCWorkLibraryPanel.h"
+#include "Widgets/SAkUGCCopilotPanel.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SComboButton.h"
@@ -275,6 +276,10 @@ void SAkUGCCreatorPanel::Construct(const FArguments& InArgs, UAkUGCEditorSubsyst
                     [SNew(SExpandableArea).InitiallyCollapsed(false)
                         .HeaderContent()[SNew(STextBlock).Text(FText::FromString(TEXT("发布与本地作品库")))]
                         .BodyContent()[SNew(SAkUGCWorkLibraryPanel, Subsystem.Get())]]
+                    + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 8.0f)
+                    [SNew(SExpandableArea).InitiallyCollapsed(true)
+                        .HeaderContent()[SNew(STextBlock).Text(FText::FromString(TEXT("AI Copilot · 参数 / 受控Logic提案（需模型配置）")))]
+                        .BodyContent()[SNew(SAkUGCCopilotPanel, Subsystem.Get())]]
                     + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 8.0f)
                     [
                         SNew(SExpandableArea)

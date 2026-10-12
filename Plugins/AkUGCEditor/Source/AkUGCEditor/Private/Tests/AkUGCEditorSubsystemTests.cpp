@@ -12,6 +12,8 @@
 #include "Widgets/SAkUGCWorkLibraryPanel.h"
 #include "Pack/AkUGCWorkLibrary.h"
 #include "Pack/AkUGCLogicPackHasher.h"
+#include "Template/AkUGCCopilotPreview.h"
+#include "Widgets/SAkUGCCopilotPanel.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -662,6 +664,35 @@ bool FAkUGCCreatorPublishTest::RunTest(const FString& Parameters)
     TestFalse(TEXT("Publishing does not create undo history"), Subsystem->CanUndo());
     Subsystem->CloseProject(); PrivateKey.Reset();
     IFileManager::Get().DeleteDirectory(*Root, false, true);
+    return true;
+}
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAkUGCCopilotApplyTest, "AkUGC.Editor.Copilot.PreviewAtomicUndo",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FAkUGCCopilotApplyTest::RunTest(const FString& Parameters)
+{
+    auto* Subsystem = GEditor ? GEditor->GetEditorSubsystem<UAkUGCEditorSubsystem>() : nullptr;
+    if (!Subsystem) { AddError(TEXT("Missing Creator subsystem.")); return false; }
+    FString Error;
+    if (!Subsystem->NewTowerDefenseProject(&Error)) { AddError(Error); return false; }
+    const TSharedRef<SAkUGCCopilotPanel> Panel = SNew(SAkUGCCopilotPanel, Subsystem);
+    const FString Before = FAkUGCLogicPackHasher::HashDocument(Subsystem->GetDocument());
+    FAkUGCTowerDefenseParameters Proposed;
+    Proposed.Waves.SetNum(2); Proposed.InitialResources = 300; Proposed.BaseMaxHealth = 1500;
+    FString Json;
+    FAkUGCTowerDefenseTemplate::SerializeParameters(Proposed, Json);
+    FAkUGCCopilotPreview Preview;
+    TestTrue(TEXT("Proposal precompiles on copy"), FAkUGCCopilotValidation::Preview(Subsystem->GetDocument(), Json, Preview, &Error));
+    TestEqual(TEXT("Preview preserves authored document"), FAkUGCLogicPackHasher::HashDocument(Subsystem->GetDocument()), Before);
+    TestFalse(TEXT("Preview creates no undo entry"), Subsystem->CanUndo());
+    TestTrue(TEXT("Explicit proposal applies one transaction"), Subsystem->ApplyCopilotProposal(Preview, Subsystem->GetDocumentRevision(), &Error));
+    const FString After = FAkUGCLogicPackHasher::HashDocument(Subsystem->GetDocument());
+    TestTrue(TEXT("Preview becomes stale after apply"), !FAkUGCCopilotValidation::IsCurrent(Subsystem->GetDocument(), Preview));
+    TestTrue(TEXT("Single Undo restores whole proposal"), Subsystem->Undo().bSucceeded);
+    TestEqual(TEXT("Undo restores exact source document"), FAkUGCLogicPackHasher::HashDocument(Subsystem->GetDocument()), Before);
+    TestFalse(TEXT("Only one proposal history entry"), Subsystem->CanUndo());
+    TestTrue(TEXT("Redo restores all proposal changes"), Subsystem->Redo().bSucceeded);
+    TestEqual(TEXT("Redo restores exact result"), FAkUGCLogicPackHasher::HashDocument(Subsystem->GetDocument()), After);
+    Subsystem->CloseProject();
     return true;
 }
 #endif
