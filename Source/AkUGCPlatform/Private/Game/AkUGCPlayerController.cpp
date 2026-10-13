@@ -10,6 +10,12 @@
 #include "Kismet/GameplayStatics.h"
 #include "Net/UnrealNetwork.h"
 
+AAkUGCPlayerController::AAkUGCPlayerController()
+{
+    // Keep the explicit overview camera when a replicated Pawn is acknowledged.
+    bAutoManageActiveCameraTarget = false;
+}
+
 void AAkUGCPlayerController::SetupInputComponent()
 {
     Super::SetupInputComponent();

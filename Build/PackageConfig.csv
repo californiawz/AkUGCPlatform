@@ -4,3 +4,4 @@ CookDirectory,/Game/AkUGCPlatform/UGC,false,Enable after soft-reference content 
 NeverCook,/Game/Developers,true,Exclude developer-local assets
 NeverCook,/Landmass/Landscape/BlueprintBrushes,true,Exclude Landmass editor brush assets that reference editor-only materials
 StageUFS,Config/UGC,false,Enable after runtime UFS configuration exists
+StageUFS,Lua,true,Stage compiled runtime Lua scripts

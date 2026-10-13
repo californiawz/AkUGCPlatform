@@ -5,10 +5,29 @@ import re
 import socket
 import subprocess
 import time
+import uuid
 
 
 def read_log(path):
     return path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
+
+
+def verify_lua_startup(text, path):
+    events = [line for line in text.splitlines() if "[AkUGCPlatform]" in line or "LogAkLua:" in line or "LogSlua:" in line]
+    checks = {
+        "packaged_initialize": any("[AkUGCPlatform] Lua VM initialized" in line and "editor=false" in line for line in events),
+        "bootstrapped": any("[Subsystem] Lua bootstrapped" in line for line in events),
+        "gameplay_started": any("[AkUGCPlatform] gameplay started" in line for line in events),
+        "map_load_complete": any("[AkUGCPlatform] map load complete" in line for line in events),
+    }
+    errors = [line for line in text.splitlines()
+              if re.search(r"Log(?:AkLua|Slua):\s*Error:", line, re.IGNORECASE)
+              or "module not found" in line.lower() or "tearing down" in line.lower()
+              or "did not return a table" in line.lower() or "stack traceback:" in line.lower()
+              or re.search(r"\bentry\b.*\b(?:fail(?:ed|ure)?|uninitialized)\b", line, re.IGNORECASE)]
+    if not all(checks.values()) or errors:
+        raise RuntimeError(f"Packaged Lua startup failed: {path}\nChecks: {checks}\nErrors: {errors}\n" + "\n".join(events))
+    return {"validated": True, "checks": checks, "events": events}
 
 
 def wait_for(process, path, marker, timeout):
@@ -38,12 +57,16 @@ def main():
     parser.add_argument("--cook", action="store_true")
     parser.add_argument("--render", action="store_true")
     parser.add_argument("--port", type=int, default=17877)
+    parser.add_argument("--client", type=pathlib.Path, help="Archived Client executable (defaults to staged build)")
+    parser.add_argument("--server", type=pathlib.Path, help="Archived Server executable (defaults to staged build)")
+    parser.add_argument("--output", type=pathlib.Path, help="Fresh output directory (defaults to isolated UUID)")
     options = parser.parse_args()
     root = pathlib.Path(__file__).resolve().parents[2]
     project = root / "AkUGCPlatform.uproject"
-    output = root / "Saved" / "NetworkVisualVerification"
-    output.mkdir(parents=True, exist_ok=True)
-    (output / "result.json").unlink(missing_ok=True)
+    output = options.output.resolve() if options.output else root / "Saved/NetworkVisualVerification" / uuid.uuid4().hex
+    output.mkdir(parents=True, exist_ok=False)
+    if options.render:
+        from scene_visual_gate import validate_report
     editor = options.engine / "Engine/Binaries/Win64/UnrealEditor-Cmd.exe"
     uat = options.engine / "Engine/Build/BatchFiles/RunUAT.bat"
     if options.cook:
@@ -64,11 +87,11 @@ def main():
         raise RuntimeError("Fixture public key is invalid.")
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
         probe.bind(("127.0.0.1", options.port))
-    client = root / "Saved/StagedBuilds/WindowsClient/AkUGCPlatform/Binaries/Win64/AkUGCPlatformClient.exe"
-    server = root / "Saved/StagedBuilds/WindowsServer/AkUGCPlatform/Binaries/Win64/AkUGCPlatformServer.exe"
+    client = options.client.resolve() if options.client else root / "Saved/StagedBuilds/WindowsClient/AkUGCPlatform/Binaries/Win64/AkUGCPlatformClient.exe"
+    server = options.server.resolve() if options.server else root / "Saved/StagedBuilds/WindowsServer/AkUGCPlatform/Binaries/Win64/AkUGCPlatformServer.exe"
     for executable in (client, server):
-        if not executable.exists():
-            raise RuntimeError(f"Missing freshly staged executable: {executable}")
+        if not executable.is_file():
+            raise RuntimeError(f"Missing executable: {executable}")
     common = ["-AkUGCNetworkVisual", "-unattended", "-nop4", "-nosplash", "-nullrhi", "-stdout"]
     processes = []
     handles = []
@@ -76,17 +99,17 @@ def main():
 
     def launch(executable, arguments, name):
         log = output / f"{name}.log"
-        log.unlink(missing_ok=True)
         handle = (output / f"{name}.stdout.log").open("w", encoding="utf-8")
         handles.append(handle)
         launch_options = common
         if options.render and name != "server":
             launch_options = [arg for arg in common if arg != "-nullrhi"]
             capture = output / f"{name}_hud.png"
-            capture.unlink(missing_ok=True)
-            launch_options += ["-windowed", "-ResX=1280", "-ResY=720", f"-AkUGCHUDCapture={capture}"]
+            launch_options += ["-windowed", "-ResX=1280", "-ResY=720", f"-AkUGCHUDCapture={capture}",
+                               f"-AkUGCSceneVisual={output / (name + '_scene')}"]
+        explicit = options.server if name == "server" else options.client
         process = subprocess.Popen([str(executable), *arguments, *launch_options, f"-abslog={log}"],
-                                   cwd=root, stdout=handle, stderr=subprocess.STDOUT)
+                                   cwd=executable.parent if explicit else root, stdout=handle, stderr=subprocess.STDOUT)
         processes.append(process)
         return process, log
 
@@ -104,17 +127,19 @@ def main():
             "-ExecCmds=Automation RunTests AkUGC.Runtime.Network.ClientVisualReplication",
             "-TestExit=Automation Test Queue Empty"], "client2_late")
         wait_for(second, second_log, "[AkUGCNetworkVisual] ObservedEnemy", 35)
-        results = {}
+        results = {"sources": {"client": str(client), "server": str(server), "fixture_editor": str(editor)}, "lua_startup": {}}
         for name, process, log in (("client1", first, first_log), ("client2_late", second, second_log)):
             code = process.wait(timeout=110)
             text = read_log(log)
             if code or "[AkUGCNetworkVisual] ClientPassed" not in text or "Result={Fail}" in text:
                 raise RuntimeError(f"{name} failed, code={code}: {log}\n{text[-4000:]}")
             results[name] = re.findall(r"\[AkUGCNetworkVisual\].*", text)
+            results["lua_startup"][name] = verify_lua_startup(text, log)
         text = wait_for(ds, ds_log, "Result={Success} Name={ServerVisualBaseline}", 15)
         if "[AkUGCNetworkVisual] ServerPassed" not in text or "Result={Fail}" in text:
             raise RuntimeError(f"Server verification failed: {ds_log}")
         results["server"] = re.findall(r"\[AkUGCNetworkVisual\].*", text)
+        results["lua_startup"]["server"] = verify_lua_startup(text, ds_log)
         settlements = []
         for name in ("client1", "client2_late", "server"):
             terminal = next(line for line in results[name] if "Passed" in line)
@@ -125,12 +150,24 @@ def main():
         results["settlement"] = settlements[0]
         results["late_join_seconds"] = round(joined_at, 2)
         results["fresh_build_cook_stage_package"] = options.cook
-        results["rendering"] = "Rendered client HUD capture" if options.render else "NullRHI object/replication verification; not screenshot validation"
+        results["scene_visual_validated"] = False
+        results["rendering"] = "Native viewport official static-object attribution" if options.render else "NullRHI object/replication verification; not screenshot validation"
         if options.render:
             captures = [output / f"{name}_hud.png" for name in ("client1", "client2_late")]
             if not all(path.exists() and path.stat().st_size > 0 for path in captures):
                 raise RuntimeError("Rendered HUD screenshots were not produced.")
             results["hud_captures"] = [str(path) for path in captures]
+            results["scene_reports"] = [validate_report(output / f"{name}_scene/network/report.json")
+                                         for name in ("client1", "client2_late")]
+            from scene_visual_gate import validate_camera
+            results["settlement_scenes"] = []
+            for name in ("client1", "client2_late"):
+                scene = json.loads((output / f"{name}_scene/network/settlement.json").read_text(encoding="utf-8-sig"))
+                validate_camera(scene)
+                if not scene.get("meshes"):
+                    raise RuntimeError(f"Missing final settlement meshes for {name}")
+                results["settlement_scenes"].append(scene)
+            results["scene_visual_validated"] = all(r["scene_visual_validated"] for r in results["scene_reports"])
         (output / "result.json").write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
         print(json.dumps(results, ensure_ascii=False, indent=2))
     finally:

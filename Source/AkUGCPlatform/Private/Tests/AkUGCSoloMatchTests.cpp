@@ -1,4 +1,5 @@
 #include "Misc/AutomationTest.h"
+#include "AkUGCSceneVisualEvidence.h"
 
 #include "Command/AkUGCCommandExecutor.h"
 #include "Engine/Engine.h"
@@ -131,10 +132,10 @@ namespace AkUGCSoloSmoke
     class FObserve final : public IAutomationLatentCommand
     {
     public:
-        explicit FObserve(FAutomationTestBase* InTest) : Test(InTest), Started(FPlatformTime::Seconds()) {}
+        explicit FObserve(FAutomationTestBase* InTest) : Test(InTest), Started(FPlatformTime::Seconds()), Visual(TEXT("solo")) {}
         bool Update() override
         {
-            if (FPlatformTime::Seconds() - Started > 180.0) { Test->AddError(TEXT("Solo smoke timed out.")); return true; }
+            if (FPlatformTime::Seconds() - Started > 180.0) { Visual.Cancel(); Test->AddError(TEXT("Solo smoke timed out.")); return true; }
             UWorld* World = nullptr;
             for (const FWorldContext& Context : GEngine->GetWorldContexts())
             {
@@ -145,6 +146,14 @@ namespace AkUGCSoloSmoke
             AAkUGCGameState* State = World->GetGameState<AAkUGCGameState>();
             AAkUGCPlayerController* Controller = Cast<AAkUGCPlayerController>(World->GetFirstPlayerController());
             if (!Mode || !State || !Controller || !Mode->HasPreparedProject()) { return false; }
+            if (bReturned)
+            {
+                if (GFrameCounter < ReturnFrame + 3) { return false; }
+                if (Visual.IsEnabled() && !Visual.RecordState(World, TEXT("returned.json")))
+                { Test->AddError(TEXT("Cannot persist returned camera/mesh evidence.")); return true; }
+                UE_LOG(LogTemp, Display, TEXT("[AkUGCSoloSmoke] Passed Score=%d Returned=1 Resources=200"), FinalScore);
+                return true;
+            }
             if (!bStarted)
             {
                 Controller->StartSolo();
@@ -152,22 +161,38 @@ namespace AkUGCSoloSmoke
                 if (!Mode->HasAuthoritySession()) { Test->AddError(TEXT("PlayerController start did not start solo.")); return true; }
                 UE_LOG(LogTemp, Display, TEXT("[AkUGCSoloSmoke] Started BotTowers=%d"), Mode->GetBotTowerCount());
             }
+            if (Visual.IsEnabled() && !bEnemyEvidence)
+            { bEnemyEvidence = Visual.RecordEnemy(World); }
+            if (Visual.IsEnabled())
+            {
+                if (!Visual.Update(World)) { return false; }
+                if (!Visual.Succeeded()) { Visual.Cancel(); Test->AddError(Visual.GetError()); return true; }
+            }
             if (!State->GetScoreSnapshot().bSettled) { return false; }
+            if (Visual.IsEnabled() && !bEnemyEvidence)
+            { Test->AddError(TEXT("No projected official enemy evidence observed.")); return true; }
             FString Capture;
             if (FParse::Value(FCommandLine::Get(), TEXT("AkUGCHUDCapture="), Capture) && IFileManager::Get().FileSize(*Capture) <= 0) { return false; }
             const int32 Score = State->GetScoreSnapshot().TeamScore;
+            if (Visual.IsEnabled() && !Visual.RecordState(World, TEXT("settlement.json")))
+            { Test->AddError(TEXT("Cannot persist final settlement camera/mesh evidence.")); return true; }
             Controller->ReturnSolo();
             if (Mode->HasAuthoritySession() || State->GetMatchFlow() != EAkUGCMatchFlow::Preparation || State->GetResources() != 200)
             {
                 Test->AddError(TEXT("PlayerController return did not reset preparation.")); return true;
             }
+            if (Visual.IsEnabled())
+            { bReturned = true; ReturnFrame = GFrameCounter; FinalScore = Score; return false; }
             UE_LOG(LogTemp, Display, TEXT("[AkUGCSoloSmoke] Passed Score=%d Returned=1 Resources=200"), Score);
             return true;
         }
     private:
         FAutomationTestBase* Test;
         double Started;
-        bool bStarted = false;
+        bool bStarted = false, bEnemyEvidence = false, bReturned = false;
+        uint64 ReturnFrame = 0;
+        int32 FinalScore = 0;
+        AkUGCSceneVisual::FCapture Visual;
     };
 }
 

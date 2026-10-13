@@ -1,4 +1,5 @@
 #include "Misc/AutomationTest.h"
+#include "AkUGCSceneVisualEvidence.h"
 
 #include "Components/StaticMeshComponent.h"
 #include "Engine/Engine.h"
@@ -38,7 +39,7 @@ namespace AkUGCNetworkVisualTest
     {
     public:
         FObserveNetwork(FAutomationTestBase* InTest, bool bInServer)
-            : Test(InTest), bServer(bInServer), Started(FPlatformTime::Seconds())
+            : Test(InTest), bServer(bInServer), Started(FPlatformTime::Seconds()), Visual(TEXT("network"))
         {
             FAkUGCOfficialPrefabCatalog::RegisterTowerDefense(Registry);
         }
@@ -47,6 +48,7 @@ namespace AkUGCNetworkVisualTest
         {
             if (FPlatformTime::Seconds() - Started > 100.0)
             {
+                Visual.Cancel();
                 Test->AddError(TEXT("Timed out waiting for real network replication, movement and terminal state."));
                 return true;
             }
@@ -62,6 +64,28 @@ namespace AkUGCNetworkVisualTest
             else if (!World->GetNetDriver()->ServerConnection || !World->GetFirstPlayerController()
                 || !World->GetFirstPlayerController()->IsLocalController()) { return false; }
 
+            if (!bServer && bVisualReady && Visual.IsEnabled())
+            {
+                // Observe replication before the asynchronous visual sampler can
+                // yield. Late-join timing must not wait for every static screenshot.
+                const FGuid EnemyId = FGuid::NewDeterministicGuid(TEXT("ugc-runtime-spawn-0"));
+                for (TActorIterator<AAkUGCRuntimeEntityActor> It(World); It; ++It)
+                {
+                    if (It->GetEntityId() != EnemyId) { continue; }
+                    if (It->HasAuthority()) { Visual.Cancel(); Test->AddError(TEXT("Client entity has authority; this is not a replication test.")); return true; }
+                    if (!bObservedEnemy)
+                    {
+                        bObservedEnemy = true; InitialLocation = It->GetActorLocation();
+                        UE_LOG(LogTemp, Display, TEXT("[AkUGCNetworkVisual] ObservedEnemy Id=%s Resources=%d"),
+                            *EnemyId.ToString(EGuidFormats::Digits), State->GetResources());
+                    }
+                    bObservedMovement |= FVector::Distance(InitialLocation, It->GetActorLocation()) > 10.0;
+                    break;
+                }
+                if (!bEnemyEvidence) { bEnemyEvidence = Visual.RecordEnemy(World); }
+                if (!Visual.Update(World)) { return false; }
+                if (!Visual.Succeeded()) { Visual.Cancel(); Test->AddError(Visual.GetError()); return true; }
+            }
             TSet<FGuid> Ids;
             TSet<FName> Types;
             AAkUGCRuntimeEntityActor* Enemy = nullptr;
@@ -97,6 +121,7 @@ namespace AkUGCNetworkVisualTest
             const TArray<FName> Required = {TEXT("official.gameplay.base"), TEXT("official.gameplay.goal"),
                 TEXT("official.tower.basic"), TEXT("official.gameplay.enemy_spawn"), TEXT("official.gameplay.path_node")};
             for (FName Type : Required) { if (!Types.Contains(Type)) { return false; } }
+            if (!bServer && Visual.IsEnabled() && !Types.Contains(TEXT("official.environment.ground"))) { return false; }
             const FAkUGCTowerDefenseScoreSnapshot Score = State->GetScoreSnapshot();
             if (bServer)
             {
@@ -107,6 +132,8 @@ namespace AkUGCNetworkVisualTest
                     World->GetNetDriver()->ClientConnections.Num(), Ids.Num(), State->GetResources());
                 return true;
             }
+            bVisualReady = true;
+            if (Visual.IsEnabled() && !Visual.Succeeded()) { return false; }
             if (Enemy)
             {
                 if (Enemy->HasAuthority())
@@ -131,6 +158,10 @@ namespace AkUGCNetworkVisualTest
             FString CapturePath;
             if (FParse::Value(FCommandLine::Get(), TEXT("AkUGCHUDCapture="), CapturePath)
                 && IFileManager::Get().FileSize(*CapturePath) <= 0) { return false; }
+            if (Visual.IsEnabled() && !bEnemyEvidence)
+            { Test->AddError(TEXT("No projected official enemy evidence observed on rendered client.")); return true; }
+            if (Visual.IsEnabled() && !Visual.RecordState(World, TEXT("settlement.json")))
+            { Test->AddError(TEXT("Cannot persist network final camera/mesh evidence.")); return true; }
             Test->TestTrue(TEXT("Replicated enemy moved before server destruction"), bObservedMovement);
             UE_LOG(LogTemp, Display, TEXT("[AkUGCNetworkVisual] ClientPassed Id=%s Base=993 Resources=321 Score=500 Kills=0 Settled=1 Destroyed=1 Moved=1"),
                 *ExpectedEnemy.ToString(EGuidFormats::Digits));
@@ -145,6 +176,8 @@ namespace AkUGCNetworkVisualTest
         bool bObservedEnemy = false;
         bool bObservedMovement = false;
         FVector InitialLocation = FVector::ZeroVector;
+        bool bEnemyEvidence = false, bVisualReady = false;
+        AkUGCSceneVisual::FCapture Visual;
     };
 }
 

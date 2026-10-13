@@ -7,7 +7,7 @@ import time
 import uuid
 import socket
 
-from verify_network_visuals import read_log, run_checked, wait_for
+from verify_network_visuals import read_log, run_checked, verify_lua_startup, wait_for
 
 
 def run_cook_checked(args, path, timeout):
@@ -268,7 +268,7 @@ def verify_recovery(engine, root, output, fault, packaged=False, cook=False, hos
             handle.close()
 
 
-def verify_keyboard_rounds(engine, root, output, cook=False):
+def verify_keyboard_rounds(engine, root, output, cook=False, render=False):
     import ctypes
     from ctypes import wintypes
     from PIL import ImageGrab
@@ -342,6 +342,8 @@ def verify_keyboard_rounds(engine, root, output, cook=False):
                    f"-WinX={x}", "-WinY=60", "-unattended", "-UnattendedInput", "-nop4", "-nosplash", "-stdout",
                    f"-UserDir={directory}", f"-abslog={directory / 'process.log'}", f"-RoomKeyboardOutput={state_dir}",
                    "-ExecCmds=Automation RunTests AkUGC.Runtime.Room.OSKeyboardTwoRounds"]
+        if render:
+            command.append(f"-AkUGCSceneVisual={state_dir / 'scene'}")
         process = subprocess.Popen(command, cwd=root, stdout=stream, stderr=subprocess.STDOUT)
         processes.append(process)
         if not kernel.AssignProcessToJobObject(job, wintypes.HANDLE(int(process._handle))):
@@ -436,7 +438,7 @@ def verify_keyboard_rounds(engine, root, output, cook=False):
                 time.sleep(0.05)
         if tag == "finish":
             return
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + (30 if render and tag.startswith("playing") else 10)
         while time.monotonic() < deadline:
             try:
                 ack = json.loads((directory / "ack.json").read_text(encoding="utf-8"))
@@ -454,7 +456,10 @@ def verify_keyboard_rounds(engine, root, output, cook=False):
         if not user.GetClientRect(window, ctypes.byref(rect)) or not user.ClientToScreen(window, ctypes.byref(origin)):
             raise ctypes.WinError(ctypes.get_last_error())
         ImageGrab.grab(bbox=(origin.x, origin.y, origin.x + rect.right, origin.y + rect.bottom), all_screens=True).save(directory / f"{tag}.png")
-        snapshots.append({"player": player["name"], "tag": tag, "state": state(player)})
+        # state.json is refreshed by UE; a concurrent read may return the empty
+        # retry sentinel. Never persist that sentinel as an observed checkpoint.
+        observed = wait(player, lambda s: bool(s.get("scene", {}).get("camera", {}).get("manager_valid")), 10)
+        snapshots.append({"player": player["name"], "tag": tag, "state": observed})
 
     def both(tag):
         for p in players:
@@ -535,8 +540,27 @@ def verify_keyboard_rounds(engine, root, output, cook=False):
             if values[0] != values[1] or any(not v[tag].get("settled") or v[tag]["score_round"] != v[tag]["round"] for v in verified):
                 raise RuntimeError("Final confirmed settlement checkpoints differ across host and client")
             settlements.append(values[0])
+        from scene_visual_gate import validate_camera, validate_report
+        # Current snapshots as well as all twelve authoritative checkpoints must
+        # retain the fixed runtime camera through local/join/settlement/return.
+        for snapshot in snapshots:
+            validate_camera(snapshot["state"].get("scene", {}))
+        scene_reports = []
+        for player, checkpoints in zip(players, verified):
+            for tag in expected:
+                validate_camera(checkpoints[tag].get("scene", {}))
+                if not checkpoints[tag]["scene"].get("meshes"):
+                    raise RuntimeError(f"Missing final mesh checkpoint: {player['name']} {tag}")
+            if render:
+                for tag in ("playing1", "playing2"):
+                    path = player["state_dir"] / "scene" / tag / "report.json"
+                    if Path(checkpoints[tag].get("scene_report", "")).resolve() != path.resolve():
+                        raise RuntimeError("Missing fresh checkpoint-owned scene report")
+                    scene_reports.append(validate_report(path, require_enemy=False))
         result = {"passed": True, "packaged_game_client": True, "rendered_both": True, "automated_os_input": True,
-                  "scene_visual_validated": False, "visual_scope": "HUD and keyboard workflow; 3D scene not accepted",
+                  "scene_visual_validated": bool(scene_reports) and all(r["scene_visual_validated"] for r in scene_reports),
+                  "scene_reports": scene_reports,
+                  "visual_scope": "Two playing rounds: static official attributed pixels; settlement/return camera and mesh checkpoints" if render else "HUD/keyboard plus camera/mesh checkpoints; no pixel acceptance",
                   "human_ui_validated": False, "same_machine_not_cross_device": True, "fresh_cook": cook,
                   "rounds": 2, "settlements": settlements, "settlement_source": "final verified checkpoints", "port": port, "snapshots": snapshots}
         (output / "os-input-actions.json").write_text(json.dumps(actions, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -563,11 +587,25 @@ def verify_keyboard_rounds(engine, root, output, cook=False):
             raise RuntimeError("Keyboard process cleanup failed: " + "; ".join(cleanup_errors))
 
 
+def collect_room_settlements(text, path, rounds, members):
+    lines = re.findall(r"\[AkUGCRoomTest\] Settlement .*", text)
+    values = [dict(re.findall(r"\b(Round|Score|Resources|Kills|Base|Members)=(\d+)", line)) for line in lines]
+    fields = {"Round", "Score", "Resources", "Kills", "Base", "Members"}
+    if len(values) != rounds or any(set(value) != fields or int(value["Members"]) != members for value in values):
+        raise RuntimeError(f"Incomplete room settlements: {path}: {values}")
+    if any(int(after["Round"]) <= int(before["Round"]) for before, after in zip(values, values[1:])):
+        raise RuntimeError(f"Room settlement Round did not increase: {path}: {values}")
+    return values
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--engine", required=True, type=Path)
     parser.add_argument("--seeds", type=int, default=1)
     parser.add_argument("--rounds", type=int, default=1)
+    parser.add_argument("--client", type=Path, help="Archived Client executable (default DS mode only)")
+    parser.add_argument("--server", type=Path, help="Archived Server executable (default DS mode only)")
+    parser.add_argument("--members", type=int, choices=(2, 4), default=4)
     parser.add_argument("--cook", action="store_true")
     parser.add_argument("--listen", action="store_true")
     parser.add_argument("--reconnect", action="store_true")
@@ -575,7 +613,14 @@ def main():
     parser.add_argument("--packaged-recovery", action="store_true")
     parser.add_argument("--host-entry-ui", action="store_true")
     parser.add_argument("--keyboard-rounds", action="store_true")
+    parser.add_argument("--render", action="store_true", help="Keyboard rounds require native 3D attributed pixels")
+    parser.add_argument("--output", type=Path, help="Fresh isolated output directory")
     options = parser.parse_args()
+    default_ds = not (options.listen or options.reconnect or options.recovery or options.packaged_recovery or options.host_entry_ui or options.keyboard_rounds)
+    if not default_ds and options.members != 4:
+        parser.error("--members other than 4 is supported only in default DS mode")
+    if not default_ds and (options.client is not None or options.server is not None):
+        parser.error("--client and --server are supported only in default DS mode")
     if options.keyboard_rounds and (options.recovery or options.listen or options.reconnect or options.packaged_recovery or options.host_entry_ui or options.seeds != 1 or options.rounds != 1):
         parser.error("Keyboard two-round flow runs separately from other room modes")
     if options.packaged_recovery and not options.recovery:
@@ -587,10 +632,12 @@ def main():
     if options.listen and options.reconnect:
         parser.error("Listen and reconnect scenarios run separately")
     root = Path(__file__).resolve().parents[2]
-    output = root / "Saved/RoomVerification" / uuid.uuid4().hex
-    output.mkdir(parents=True)
+    if options.render and not options.keyboard_rounds:
+        parser.error("--render scene attribution is supported only with --keyboard-rounds")
+    output = options.output.resolve() if options.output else root / "Saved/RoomVerification" / uuid.uuid4().hex
+    output.mkdir(parents=True, exist_ok=False)
     if options.keyboard_rounds:
-        verify_keyboard_rounds(options.engine, root, output, options.cook)
+        verify_keyboard_rounds(options.engine, root, output, options.cook, options.render)
         return
     if options.recovery:
         if options.listen or options.reconnect or options.cook and not options.packaged_recovery or options.seeds != 1 or options.rounds != 1:
@@ -607,8 +654,11 @@ def main():
             args += (["-client", "-noserver", "-clientconfig=Development"] if mode == "Client" else
                      ["-server", "-noclient", "-serverplatform=Win64", "-serverconfig=Development"])
             run_checked(args, output / f"cook_{mode.lower()}.log", 3600)
-    client = root / "Saved/StagedBuilds/WindowsClient/AkUGCPlatform/Binaries/Win64/AkUGCPlatformClient.exe"
-    server = root / "Saved/StagedBuilds/WindowsServer/AkUGCPlatform/Binaries/Win64/AkUGCPlatformServer.exe"
+    client = options.client.resolve() if options.client else root / "Saved/StagedBuilds/WindowsClient/AkUGCPlatform/Binaries/Win64/AkUGCPlatformClient.exe"
+    server = options.server.resolve() if options.server else root / "Saved/StagedBuilds/WindowsServer/AkUGCPlatform/Binaries/Win64/AkUGCPlatformServer.exe"
+    for explicit, executable in ((options.client, client), (options.server, server)):
+        if explicit is not None and not executable.is_file():
+            raise RuntimeError(f"Missing executable: {executable}")
     results = []
     for seed in range(options.seeds):
         directory = output / f"{'listen' if options.listen else 'reconnect' if options.reconnect else 'ds'}_seed_{seed}"
@@ -624,12 +674,13 @@ def main():
             log.unlink(missing_ok=True)
             handle = (directory / f"{name}.stdout.log").open("w", encoding="utf-8")
             handles.append(handle)
+            explicit = options.server if name == "host" else options.client
             process = subprocess.Popen([str(executable), *args, "-unattended", "-nop4", "-nosplash", "-nullrhi", "-stdout", f"-abslog={log}"],
-                                       cwd=root, stdout=handle, stderr=subprocess.STDOUT)
+                                       cwd=executable.parent if explicit else root, stdout=handle, stderr=subprocess.STDOUT)
             processes.append(process)
             return process, log
 
-        test_args = ["-AkUGCRoomTest", f"-RoomExpectedMembers={2 if options.reconnect else 4}", f"-RoomTestRounds={options.rounds}",
+        test_args = ["-AkUGCRoomTest", f"-RoomExpectedMembers={2 if options.reconnect else options.members}", f"-RoomTestRounds={options.rounds}",
                      "-ExecCmds=Automation RunTests AkUGC.Runtime.Room.RealNetwork"]
         try:
             host_args = ["/Game/Maps/Phase0?listen?room=1" if options.listen else "/Game/Maps/Phase0",
@@ -640,7 +691,7 @@ def main():
             players = []
             if options.listen:
                 players.append((ds, ds_log))
-            initial_count = (2 if options.reconnect else 4) - int(options.listen)
+            initial_count = (2 if options.reconnect else options.members) - int(options.listen)
             for index in range(initial_count):
                 player = launch(client, [f"127.0.0.1:{port}", *test_args,
                     *(["-RoomExpectedMembers=2"] if options.reconnect else [])], f"client{index+1}")
@@ -655,8 +706,9 @@ def main():
                 players.append(late)
                 departing = launch(client, [f"127.0.0.1:{port}", *test_args, "-RoomTestDisconnect"], "departing")
                 wait_for(*departing, "[AkUGCRoomTest] Joined", 35)
-            fifth, fifth_log = launch(client, [f"127.0.0.1:{port}"], "rejected_fifth")
-            wait_for(fifth, fifth_log, "RoomFull", 35)
+            if options.members == 4:
+                fifth, fifth_log = launch(client, [f"127.0.0.1:{port}"], "rejected_fifth")
+                wait_for(fifth, fifth_log, "RoomFull", 35)
             if departing:
                 left = wait_for(*departing, "[AkUGCRoomTest] LeftForReconnect", 35)
                 old_id = re.search(r"LeftForReconnect Id=(\d+)", left).group(1)
@@ -667,19 +719,48 @@ def main():
                 if new_id == old_id:
                     raise RuntimeError("Reconnected client unexpectedly reused old identity.")
                 players.append(rejoined)
-            evidence = []
+            evidence, settlements, lua_startup = [], {}, {}
             for process, log in players:
                 text = wait_for(process, log, "Test Completed. Result={Success} Name={RealNetwork}", 170)
                 if "Result={Fail}" in text:
                     raise RuntimeError(f"Room test failed: {log}")
                 matches = re.findall(r"\[AkUGCRoomTest\] Passed .*", text)
+                if not matches:
+                    raise RuntimeError(f"Missing room Passed evidence: {log}")
                 evidence.append(matches[-1])
+                if default_ds:
+                    settlements[log.stem] = collect_room_settlements(text, log, options.rounds, options.members)
+                    lua_startup[log.stem] = verify_lua_startup(text, log)
+                    final = dict(re.findall(r"\b(Round|Score|Resources|Kills|Base|Members)=(\d+)", matches[-1]))
+                    observed_rounds = re.search(r"\bRounds=(\d+)", matches[-1])
+                    if final != settlements[log.stem][-1] or not observed_rounds or int(observed_rounds.group(1)) != options.rounds:
+                        raise RuntimeError(f"Final signature differs from last settlement: {log}")
             signatures = [dict(re.findall(r"(Round|Score|Resources|Kills|Base)=(\d+)", line)) for line in evidence]
             if any(value != signatures[0] for value in signatures):
                 raise RuntimeError(f"Room settlement mismatch: {signatures}")
-            results.append({"seed": seed, "members": 4, "rounds": options.rounds, "fifth_rejected": True,
-                            "late_join_and_reconnect": options.reconnect,
-                            "settlement": signatures[0], "client_evidence": evidence})
+            case = {"seed": seed, "members": options.members, "rounds": options.rounds, "fifth_rejected": options.members == 4,
+                    "late_join_and_reconnect": options.reconnect,
+                    "settlement": signatures[0], "client_evidence": evidence}
+            if default_ds:
+                if any(value != next(iter(settlements.values())) for value in settlements.values()):
+                    raise RuntimeError(f"Per-round room settlement mismatch: {settlements}")
+                host_text = read_log(ds_log)
+                if ds.poll() is not None or "Result={Fail}" in host_text or "Authority Logic Pack load failed" in host_text:
+                    raise RuntimeError(f"DS host failed before final evidence: {ds_log}")
+                lua_startup["host"] = verify_lua_startup(host_text, ds_log)
+                starts = re.findall(r"\[AkUGCRoom\] Started Members=(\d+) Round=(\d+)", host_text)
+                reference = next(iter(settlements.values()))
+                if host_text.count("[AkUGCRoom] Started") != options.rounds or starts != [(value["Members"], value["Round"]) for value in reference]:
+                    raise RuntimeError(f"Host Started count/rounds differ from settlements: {ds_log}: {starts}")
+                # ReturnRoomToPreparation emits no return log. A later Started proves
+                # the intervening return/readiness cycle; the final round is not returned.
+                case.update({"settlements": settlements, "lua_startup": lua_startup,
+                             "host_evidence": re.findall(r"\[AkUGCRoom\].*", host_text),
+                             "return_and_restart_cycles": max(0, options.rounds - 1),
+                             "first_round_return_and_restart": options.rounds > 1,
+                             "final_round_return_verified": False,
+                             "return_evidence": "Increasing host Started and matching client Settlement rounds; no explicit return log"})
+            results.append(case)
         finally:
             for process in processes:
                 if process.poll() is None:
@@ -692,6 +773,7 @@ def main():
             for handle in handles:
                 handle.close()
     result = {"mode": "listen" if options.listen else "dedicated_server", "cases": results,
+              "sources": {"client": str(client), "server": str(server), "fixture_editor": str(editor)},
               "fresh_cook": options.cook, "rendering": "NullRHI network/room verification"}
     result_path = output / ("listen_result.json" if options.listen else "reconnect_result.json" if options.reconnect else "ds_result.json")
     result_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")

@@ -1,4 +1,5 @@
 #include "Misc/AutomationTest.h"
+#include "AkUGCSceneVisualEvidence.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "Engine/NetDriver.h"
@@ -239,7 +240,7 @@ namespace AkUGCRoomKeyboard
         FObserve(FAutomationTestBase* InTest, FString InOutput) : Test(InTest), Output(MoveTemp(InOutput)), Started(FPlatformTime::Seconds()) {}
         bool Update() override
         {
-            if (FPlatformTime::Seconds() - Started > 300) { Test->AddError(TEXT("Room keyboard verification timed out.")); return true; }
+            if (FPlatformTime::Seconds() - Started > 300) { if (Visual) { Visual->Cancel(); } Test->AddError(TEXT("Room keyboard verification timed out.")); return true; }
             if (FPlatformTime::Seconds() - LastPoll < 0.1) { return false; }
             LastPoll = FPlatformTime::Seconds();
             UWorld* World = nullptr;
@@ -271,12 +272,23 @@ namespace AkUGCRoomKeyboard
             auto* Mode = World->GetAuthGameMode<AAkUGCGameMode>();
             Data->SetBoolField(TEXT("prepared"), Mode && Mode->HasPreparedProject());
             Data->SetBoolField(TEXT("authority_session"), Mode && Mode->HasAuthoritySession());
+            Data->SetObjectField(TEXT("scene"), AkUGCSceneVisual::Snapshot(World));
             Save(Data, TEXT("state.json"));
             FString Json; TSharedPtr<FJsonObject> Command;
             if (!FFileHelper::LoadFileToString(Json, *FPaths::Combine(Output, TEXT("command.json")))
                 || !FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Json), Command) || !Command.IsValid()) { return false; }
             double Seq = 0; FString Tag;
             if (!Command->TryGetNumberField(TEXT("seq"), Seq) || Seq <= LastSeq || !Command->TryGetStringField(TEXT("tag"), Tag)) { return false; }
+            const bool SampleCheckpoint = Tag == TEXT("playing1") || Tag == TEXT("playing2");
+            FString SceneOutput;
+            if (SampleCheckpoint && FParse::Value(FCommandLine::Get(), TEXT("AkUGCSceneVisual="), SceneOutput))
+            {
+                if (!Visual) { Visual = MakeUnique<AkUGCSceneVisual::FCapture>(Tag); }
+                if (!Visual->Update(World)) { return false; }
+                if (!Visual->Succeeded()) { Test->AddError(Visual->GetError()); Visual->Cancel(); return true; }
+                Data->SetStringField(TEXT("scene_report"), Visual->GetReportPath());
+                Visual.Reset();
+            }
             LastSeq = Seq;
             const TArray<FString> Order{TEXT("local"), TEXT("joined"), TEXT("unready"), TEXT("ready1"), TEXT("nonhost"),
                 TEXT("playing1"), TEXT("settled1"), TEXT("returned1"), TEXT("ready2"), TEXT("playing2"), TEXT("settled2"), TEXT("returned2")};
@@ -334,6 +346,7 @@ namespace AkUGCRoomKeyboard
         double Started, LastPoll = 0, LastSeq = 0;
         int32 Index = 0, FirstRound = 0, SecondRound = 0;
         bool Failed = false;
+        TUniquePtr<AkUGCSceneVisual::FCapture> Visual;
         TArray<TSharedPtr<FJsonValue>> Checkpoints;
     };
 }

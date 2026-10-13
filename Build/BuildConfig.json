@@ -40,7 +40,8 @@
     "extraUatArgs": [],
     "gameConfig": "GameConfig.json",
     "packageConfig": "PackageConfig.csv",
-    "chunkConfig": "Chunk.csv"
+    "chunkConfig": "Chunk.csv",
+    "runScriptTemplateDir": "${config_dir}/RunGameTemplates"
   },
   "profiles": {
     "win64": {

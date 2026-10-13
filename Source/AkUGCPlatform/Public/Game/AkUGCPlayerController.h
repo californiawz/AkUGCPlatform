@@ -9,6 +9,7 @@ class AKUGCPLATFORM_API AAkUGCPlayerController : public APlayerController
     GENERATED_BODY()
 
 public:
+    AAkUGCPlayerController();
     virtual void BeginPlay() override;
     virtual void SetupInputComponent() override;
     virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
