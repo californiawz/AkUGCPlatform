@@ -21,6 +21,7 @@ public class AkUGCEditor : ModuleRules
             "ApplicationCore",
             "HTTP",
             "SSL",
+            "OpenSSL",
             "Json",
             "InputCore",
             "LevelEditor",

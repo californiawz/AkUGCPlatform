@@ -437,3 +437,27 @@ P14 已提交 `276b674`；P15 已提交 `49a0e20`；P16 已提交 `6fd3282`；**
 - AkUGCPlatformEditor/Client/Server Win64 Development 编译。
 - 完整 AkUGC 自动化测试。
 - Lint + git diff --check。
+
+### 2026-10-14 续轮：Creator 参数滑动自动化技术门禁
+
+本轮在已提交 `5131244`（场景照明、联机相机、Lua 打包与新包验收）基础上继续收敛最后一个本机 Creator 交互阻断；以下修改和证据尚未提交。
+
+- 参数观察器现在从真实 Slate 指针事件核对波数控件身份、`SSpinBox` 捕获、非零位移、高精度模式、捕获期间及释放后的值，并拒绝键盘修改冒充滑动。真实渲染 Editor 中，自动 OS 输入将波数从3拖到2，捕获与释放值均为2，记录15次非零且15次高精度事件；10/10参数检查点全部通过，草稿、Save、单次Apply、Undo/Redo、Load与放弃草稿语义保持正确。证据 `Saved/CreatorSliderAdvance_20261014_1123_a1/editor-user/Saved/verification/result.json`。
+- 该报告准确标记 `slider_input_mode=native_shift_accelerated_os_input`、`numeric_slider_verified=true`，同时保持 `human_ui_validated=false`、`physical_input_provenance_verified=false`、`unmodified_physical_slider_verified=false`。这证明自动化路径中真实 Slate SpinBox 捕获与高精度事件生效，不证明事件来自实体HID/WM_INPUT，也不替代真人用未加速鼠标滑动验收。
+- 参数常规9点与作品库11点回归继续通过，证据分别为 `Saved/CreatorSliderAdvance_20261014_1125_parameter/editor-user/Saved/verification/result.json`、`Saved/CreatorSliderAdvance_20261014_1125_library/editor-user/Saved/verification/result.json`。本轮没有真实模型请求。
+- 定稿菜单复测发现两个驱动问题并修复：最大化主窗的Win32非客户区会使回报光标偏离控件中心，故仅菜单项允许“仍在控件边界内且新鲜Slate命中路径精确一致”，滑块及专属测试窗口继续使用3像素中心门禁；菜单弹窗成为同一Editor进程的前台HWND后允许发送MouseUp，任何外部进程前台仍立即停止输入。68项Python驱动回归通过。
+- 修复后的真实菜单入口打开Creator成功，证据 `Saved/CreatorSliderAdvance_20261014_menu_fix_2/result.json`；默认Copilot固定夹具8检查点、4个本机请求通过，证据 `Saved/CreatorSliderAdvance_20261014_copilot_fix_1/result.json`。首次菜单复测因同进程弹窗MouseUp被跳过而失败的 `Saved/CreatorSliderAdvance_20261014_menu_fix_1/result.json` 保留，未计为成功。
+- 最终Editor全量125项框架Success，42个Copilot协议场景全部完成；既有真实生成文档签名加载运行仍为Victory、1100分，大小步终态一致，且本轮未调用模型。证据 `Saved/CreatorSliderAdvance_20261014_full_1/result.json`、`generated-runtime.json`与`editor.log`。
+- AkUGCPlatformEditor/Client/Server Win64 Development均编译成功，日志为 `Saved/Logs/CreatorSliderAdvance_20261014_Editor.build.log`、`CreatorSliderAdvance_20261014_Client.build.log`、`CreatorSliderAdvance_20261014_Server.build.log`；Python语法及限定源码`git diff --check`通过。
+
+**当前判定**：本机Win64自动化技术链可作为Phase 1技术候选版，不等于Phase 1产品Go或真人验收完成。仍需外部门禁：实体鼠标/真人滑动与非程序员60分钟首作分享、真实独立核钥；2–4台独立设备以至少10个种子作品完成跨设备联机、真实文件传递和断网/重连一致性私测。正式美术、Android真机及发布私钥系统级保护继续按既定范围后续推进。提交与推送须另行明确授权。
+
+### 2026-10-14 续轮：Phase 1 外部门禁执行包
+
+- 新增 `Tools/Tests/phase1_external_acceptance.py`，提供 `init`、`seal` 与 `validate`：初始化和封存均要求 source commit 等于完全 clean HEAD，包括不存在非忽略的未跟踪文件；冻结完整 Creator ZIP、实际 AkUGCEditor DLL，以及 Listen Game/Client/Dedicated Server 三包摘要。Creator ZIP 必须包含启用的Editor项目/插件描述、Content/Config、BuildId 清单及有效唯一AkUGCEditor Win64 PE DLL，且包内模块与独立模块摘要一致；运行包必须包含与Game/Client/Server角色匹配的Win64 PE、非零BuildId `.target`、项目描述及有效Pak尾标识，归档内私钥被拒绝，结构检查与摘要绑定同一打开文件流并做前后复核。初始化直接生成十轮种子和四类恢复的完整字段骨架。核心检查覆盖60分钟时限、可信公钥/Ed25519确定性清单签名、产品Schema/能力白名单、包内发布ID、不同签名内容哈希与Document/Program载荷、Listen/Dedicated及2人/4人覆盖、玩家实际包角色、每端加载的发布ID/内容哈希、Game/Server权威观察与玩家终局一致、保持签名信封身份但改变载荷的篡改副本及绑定拒绝报告，以及按故障设备/恢复设备/进程实例/包/日志绑定的四类恢复证据。
+- 验证器对有界 JSON/`.akugc` 使用单次内存快照做摘要和解析，对大型归档、录屏及其他证据流式计算摘要，结束时复查文件未变化；拒绝重复JSON字段、路径逃逸、空文件、私钥、未知/缺失字段、角色或内容证据复用、候选包摘要漂移和未签署声明。`seal` 再做一轮稳定性检查后一次性排他写入清单及全部证据摘要锁，最终 `validate` 强制核对；输出必须是全新非证据文件。所有真人、实体设备、真实网络及同意声明仍只是人工签署，结果固定 `software_independently_verified_human_claims=false`；终局数值当前由观察者根据设备画面/日志录入并做一致性比较，不声称日志自动解析或软件独立证明。
+- 人工滑块驱动新增仅适用于 `--manual-slider` 的32位十六进制 `--acceptance-nonce`。Python 启动前冻结模块摘要；Editor 查询模块管理器中的实际已加载 AkUGCEditor 路径、现场计算 SHA-256，与冻结值核对，并将 nonce/实际摘要写入窗口标题、状态、全部检查点和最终报告，结束时双方再次复核DLL未变化。手册 `Docs/Phase1/ExternalAcceptanceRunbook.md` 准确说明驱动会自动完成其余参数步骤，但滑块检查点不发送自动移动/按键/拖动，由测试者自行移动实体鼠标；同时规定完整候选冻结、独立公钥渠道、签名包离线检查边界、权威端与玩家观察、故障恢复、协调者签署文件、一次性封存、隐私和Go/No-Go边界。
+- `Tools/Tests/test_phase1_external_acceptance.py` 覆盖完整成功、人工滑块/时限/Logic失败、真实Ed25519夹具、Schema/签名篡改、包内发布ID冲突、重复载荷、端点发布身份、Game/Server主机包及恢复模式错误、数量/人数/篡改/恢复缺口、证据及角色复用、路径逃逸/私钥/缺文件、恶意类型、重复字段、一次性锁及封存后篡改；Creator驱动CLI测试同步覆盖nonce和构建绑定。新增 `Tools/Tests/requirements.txt` 锁定外部验收所需Python依赖。
+- 最终收紧后 Python **94/94** 通过；AkUGCPlatformEditor Win64 Development 编译成功；Editor 全量仍为 **125项成功**，42个 Copilot 固定协议场景全部完成，结果 `Saved/Phase1AcceptanceTool_20261014_full_1/result.json` 为 `passed=true`。该运行未执行人工滑块、真人首作或跨设备联机，不能转化为外部门禁通过。
+
+该执行包只消除“如何实测、如何留证、如何判定”的流程阻断；当前尚无真人或跨设备新证据，Phase 1产品状态仍为No-Go。下一步必须安排非程序员测试者、旁观者及至少4台可联网Win64设备，按手册执行，不能继续由本机自动化代签。

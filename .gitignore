@@ -30,3 +30,8 @@ Build/*Client/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# Python local environments and bytecode
+.venv*/
+__pycache__/
+*.py[cod]

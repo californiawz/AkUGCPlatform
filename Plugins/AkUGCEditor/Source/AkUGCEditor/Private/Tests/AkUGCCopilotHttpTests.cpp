@@ -14,6 +14,9 @@
 #include "Command/AkUGCCommandExecutor.h"
 #include "Document/AkUGCDocumentJson.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Framework/Application/IInputProcessor.h"
+#include "Framework/Application/SlateUser.h"
+#include "InputCoreTypes.h"
 #include "Widgets/SWindow.h"
 #include "ImageUtils.h"
 #include "Widgets/SAkUGCCreatorPanel.h"
@@ -27,6 +30,11 @@
 #include "HAL/FileManager.h"
 #include "Pack/AkUGCLogicPackCodec.h"
 #include "Misc/App.h"
+#include "Modules/ModuleManager.h"
+
+#define UI OPENSSL_UI
+#include <openssl/evp.h>
+#undef UI
 
 #if WITH_DEV_AUTOMATION_TESTS
 struct FAkUGCCopilotTestAccess
@@ -619,6 +627,22 @@ bool FAkUGCWorkDeleteUnattendedTest::RunTest(const FString& Parameters)
 }
 namespace AkUGCCopilotMouseTest
 {
+    bool Sha256File(const FString& Path, FString& OutHash)
+    {
+        TArray<uint8> Bytes;
+        if (!FFileHelper::LoadFileToArray(Bytes, *Path) || Bytes.IsEmpty()) { return false; }
+        uint8 Digest[EVP_MAX_MD_SIZE];
+        uint32 DigestLength = 0;
+        if (EVP_Digest(Bytes.GetData(), static_cast<size_t>(Bytes.Num()), Digest, &DigestLength,
+                EVP_sha256(), nullptr) != 1 || DigestLength != 32) { return false; }
+        OutHash.Reset(DigestLength * 2);
+        for (uint32 Index = 0; Index < DigestLength; ++Index)
+        {
+            OutHash += FString::Printf(TEXT("%02x"), static_cast<uint32>(Digest[Index]));
+        }
+        return true;
+    }
+
     FString TextOf(const TSharedRef<SWidget>& Widget)
     {
         if (!Widget->GetTag().IsNone()) { return Widget->GetTag().ToString(); }
@@ -629,10 +653,144 @@ namespace AkUGCCopilotMouseTest
         { for (int32 I = 0; I < Children->Num(); ++I) { Text += TextOf(Children->GetChildAt(I)); } }
         return Text;
     }
+    class FParameterSliderObserver final : public IInputProcessor
+    {
+    public:
+        FParameterSliderObserver(const TSharedPtr<SWindow>& InWindow, const TSharedPtr<SAkUGCTowerDefenseParameterForm>& InForm)
+            : Window(InWindow), Form(InForm) {}
+
+        void Tick(const float DeltaTime, FSlateApplication& SlateApp, TSharedRef<ICursor> Cursor) override
+        {
+            const auto PinnedForm = Form.Pin();
+            const auto User = SlateApp.GetCursorUser();
+            if (!Window.IsValid() || !PinnedForm.IsValid() || !User.IsValid()) { return; }
+            // Input callbacks precede widget routing. Read values only on a later Slate tick.
+            if (bGesture && IsTargetCapture(SlateApp, User->GetCaptorPath(PointerIndex)))
+            { CapturedWaves = PinnedForm->GetDisplayedParameters().Waves.Num(); }
+            if (bReleasePending)
+            {
+                bReleasePending = false;
+                bReleased = !User->HasCapture(PointerIndex);
+                if (bReleased) { ReleasedWaves = PinnedForm->GetDisplayedParameters().Waves.Num(); }
+            }
+        }
+
+        bool HandleMouseButtonDownEvent(FSlateApplication& SlateApp, const FPointerEvent& MouseEvent) override
+        {
+            const auto PinnedWindow = Window.Pin();
+            const auto PinnedForm = Form.Pin();
+            if (MouseEvent.IsTouchEvent() || MouseEvent.GetEffectingButton() != EKeys::LeftMouseButton
+                || !PinnedWindow.IsValid() || !PinnedForm.IsValid()) { return false; }
+            const auto Hit = SlateApp.LocateWindowUnderMouse(MouseEvent.GetScreenSpacePosition(), {PinnedWindow.ToSharedRef()});
+            // Hit-test children may be below the spin box; actual capture is checked on move/tick/up.
+            if (!IsWavePath(SlateApp, Hit)) { return false; }
+            PointerIndex = MouseEvent.GetPointerIndex();
+            StartWaves = PinnedForm->GetDisplayedParameters().Waves.Num();
+            CapturedWaves = -1; ReleasedWaves = -1;
+            NonzeroDeltaEvents = 0; HighPrecisionDeltaEvents = 0; CaptureType.Reset();
+            bGesture = true; bReleasePending = false; bReleased = false; bTargetVerified = false;
+            return false;
+        }
+
+        bool HandleMouseMoveEvent(FSlateApplication& SlateApp, const FPointerEvent& MouseEvent) override
+        {
+            if (!bGesture || MouseEvent.IsTouchEvent() || MouseEvent.GetPointerIndex() != PointerIndex
+                || !MouseEvent.IsMouseButtonDown(EKeys::LeftMouseButton)) { return false; }
+            const auto User = SlateApp.GetCursorUser();
+            if (!User.IsValid()) { return false; }
+            const auto Capture = User->GetCaptorPath(PointerIndex, FWeakWidgetPath::EInterruptedPathHandling::Truncate, &MouseEvent);
+            if (!IsTargetCapture(SlateApp, Capture)) { return false; }
+            bTargetVerified = true;
+            CaptureType = Capture.Widgets.Last().Widget->GetTypeAsString();
+            const auto Delta = MouseEvent.GetCursorDelta();
+            if (Delta.X != 0 || Delta.Y != 0)
+            {
+                ++NonzeroDeltaEvents;
+                // Slate mode is evidence of an actual event, not proof of physical HID/WM_INPUT origin.
+                if (SlateApp.IsUsingHighPrecisionMouseMovment()) { ++HighPrecisionDeltaEvents; }
+            }
+            return false;
+        }
+
+        bool HandleMouseButtonUpEvent(FSlateApplication& SlateApp, const FPointerEvent& MouseEvent) override
+        {
+            if (!bGesture || MouseEvent.IsTouchEvent() || MouseEvent.GetEffectingButton() != EKeys::LeftMouseButton
+                || MouseEvent.GetPointerIndex() != PointerIndex) { return false; }
+            const auto User = SlateApp.GetCursorUser();
+            bTargetVerified &= User.IsValid() && IsTargetCapture(SlateApp,
+                User->GetCaptorPath(PointerIndex, FWeakWidgetPath::EInterruptedPathHandling::Truncate, &MouseEvent));
+            bGesture = false; bReleasePending = true;
+            return false;
+        }
+
+        bool HandleKeyDownEvent(FSlateApplication& SlateApp, const FKeyEvent& KeyEvent) override
+        {
+            const FKey Key = KeyEvent.GetKey();
+            if (Key == EKeys::LeftShift || Key == EKeys::RightShift || Key == EKeys::LeftControl || Key == EKeys::RightControl
+                || Key == EKeys::LeftAlt || Key == EKeys::RightAlt) { return false; }
+            const auto Focus = SlateApp.GetUserFocusedWidget(KeyEvent.GetUserIndex());
+            FWidgetPath Path;
+            if (Focus.IsValid() && SlateApp.GeneratePathToWidgetUnchecked(Focus.ToSharedRef(), Path) && IsWavePath(SlateApp, Path))
+            { bKeyboardValueInput = true; }
+            return false;
+        }
+
+        bool IsVerified() const
+        {
+            return bTargetVerified && CaptureType.StartsWith(TEXT("SSpinBox")) && StartWaves == 3
+                && CapturedWaves == 2 && ReleasedWaves == 2 && NonzeroDeltaEvents > 0
+                && HighPrecisionDeltaEvents > 0 && bReleased && !bKeyboardValueInput;
+        }
+
+        TSharedRef<FJsonObject> Evidence() const
+        {
+            const auto Object = MakeShared<FJsonObject>();
+            Object->SetStringField(TEXT("target"), TEXT("wave_count"));
+            Object->SetBoolField(TEXT("target_verified"), bTargetVerified);
+            Object->SetStringField(TEXT("capture_type"), CaptureType);
+            Object->SetNumberField(TEXT("start_waves"), StartWaves);
+            Object->SetNumberField(TEXT("captured_waves"), CapturedWaves);
+            Object->SetNumberField(TEXT("released_waves"), ReleasedWaves);
+            Object->SetNumberField(TEXT("nonzero_delta_events"), NonzeroDeltaEvents);
+            Object->SetNumberField(TEXT("high_precision_delta_events"), HighPrecisionDeltaEvents);
+            Object->SetBoolField(TEXT("released"), bReleased);
+            Object->SetBoolField(TEXT("keyboard_value_input"), bKeyboardValueInput);
+            return Object;
+        }
+
+    private:
+        bool IsWavePath(FSlateApplication& SlateApp, const FWidgetPath& Path) const
+        {
+            const auto PinnedWindow = Window.Pin();
+            const auto PinnedForm = Form.Pin();
+            if (!PinnedWindow.IsValid() || !PinnedForm.IsValid() || !Path.IsValid()
+                || !Path.ContainsWidget(PinnedForm.Get())
+                || SlateApp.FindWidgetWindow(Path.Widgets.Last().Widget) != PinnedWindow) { return false; }
+            for (int32 I = 0; I < Path.Widgets.Num(); ++I)
+            {
+                const auto Widget = Path.Widgets[I].Widget;
+                if (Widget->GetTypeAsString().StartsWith(TEXT("SNumericEntryBox"))
+                    && Widget->GetTag() == FName(TEXT("波数（1–3，默认 3）"))) { return true; }
+            }
+            return false;
+        }
+
+        bool IsTargetCapture(FSlateApplication& SlateApp, const FWidgetPath& Path) const
+        { return IsWavePath(SlateApp, Path) && Path.Widgets.Last().Widget->GetTypeAsString().StartsWith(TEXT("SSpinBox")); }
+
+        TWeakPtr<SWindow> Window;
+        TWeakPtr<SAkUGCTowerDefenseParameterForm> Form;
+        uint32 PointerIndex = 0;
+        int32 StartWaves = -1, CapturedWaves = -1, ReleasedWaves = -1;
+        int32 NonzeroDeltaEvents = 0, HighPrecisionDeltaEvents = 0;
+        FString CaptureType;
+        bool bGesture = false, bReleasePending = false, bReleased = false, bTargetVerified = false, bKeyboardValueInput = false;
+    };
     class FObserve final : public IAutomationLatentCommand
     {
     public:
         FObserve(FAutomationTestBase* InTest, FString InOutput) : Test(InTest), Output(MoveTemp(InOutput)), Started(FPlatformTime::Seconds()) {}
+        ~FObserve() override { UnregisterSliderObserver(); }
         bool Update() override
         {
             auto* Subsystem = GEditor ? GEditor->GetEditorSubsystem<UAkUGCEditorSubsystem>() : nullptr;
@@ -641,6 +799,43 @@ namespace AkUGCCopilotMouseTest
             const bool LiveMode = FParse::Param(FCommandLine::Get(), TEXT("CopilotMouseLive"));
             const bool ParameterMode = FParse::Param(FCommandLine::Get(), TEXT("CreatorParameterMouse"));
             const bool LibraryMode = FParse::Param(FCommandLine::Get(), TEXT("CreatorLibraryMouse"));
+            const bool SliderMode = ParameterMode && FParse::Param(FCommandLine::Get(), TEXT("CreatorSliderMouse"));
+            const bool ManualSliderMode = SliderMode && FParse::Param(FCommandLine::Get(), TEXT("CreatorManualSlider"));
+            FString AcceptanceNonce, CreatorBuildSha256;
+            const auto IsLowerHex = [](const FString& Value, int32 ExpectedLength)
+            {
+                if (Value.Len() != ExpectedLength) { return false; }
+                for (const TCHAR Character : Value)
+                {
+                    if (!((Character >= TEXT('0') && Character <= TEXT('9'))
+                        || (Character >= TEXT('a') && Character <= TEXT('f')))) { return false; }
+                }
+                return true;
+            };
+            const bool HasManualBinding = FParse::Value(
+                FCommandLine::Get(), TEXT("CreatorAcceptanceNonce="), AcceptanceNonce)
+                && FParse::Value(FCommandLine::Get(), TEXT("CreatorBuildSha256="), CreatorBuildSha256)
+                && IsLowerHex(AcceptanceNonce, 32) && IsLowerHex(CreatorBuildSha256, 64);
+            if (ManualSliderMode && !HasManualBinding)
+            {
+                Test->AddError(TEXT("Manual slider mode requires acceptance nonce and Creator build hash."));
+                Cleanup();
+                return true;
+            }
+            if (ManualSliderMode && ActualCreatorBuildSha256.IsEmpty())
+            {
+#if !IS_MONOLITHIC
+                CreatorModulePath = FModuleManager::Get().GetModuleFilename(FName(TEXT("AkUGCEditor")));
+#endif
+                if (CreatorModulePath.IsEmpty()
+                    || !Sha256File(CreatorModulePath, ActualCreatorBuildSha256)
+                    || ActualCreatorBuildSha256 != CreatorBuildSha256)
+                {
+                    Test->AddError(TEXT("Loaded AkUGCEditor module does not match CreatorBuildSha256."));
+                    Cleanup();
+                    return true;
+                }
+            }
             if (!Window.IsValid())
             {
                 FString SavedRoot = FPaths::ConvertRelativePathToFull(FPaths::ProjectSavedDir());
@@ -650,6 +845,16 @@ namespace AkUGCCopilotMouseTest
                     || !FPaths::IsUnderDirectory(FPaths::ConvertRelativePathToFull(FAkUGCWorkLibrary::DefaultDirectory()), SavedRoot)
                     || !FPaths::IsUnderDirectory(FPaths::ConvertRelativePathToFull(Subsystem->GetDefaultProjectPath()), SavedRoot)))
                 { Test->AddError(TEXT("Library OS test requires attended UI and isolated actual Saved root: ") + SavedRoot); return true; }
+                if (ParameterMode)
+                {
+                    FString UserDir;
+                    const bool HasUserDir = FParse::Value(FCommandLine::Get(), TEXT("UserDir="), UserDir) && !UserDir.IsEmpty();
+                    FString IsolatedSaved = HasUserDir ? FPaths::ConvertRelativePathToFull(FPaths::Combine(UserDir, TEXT("Saved"))) : FString();
+                    FPaths::NormalizeDirectoryName(IsolatedSaved);
+                    if (!HasUserDir || FParse::Param(FCommandLine::Get(), TEXT("unattended")) || SavedRoot != ExpectedSaved
+                        || SavedRoot != IsolatedSaved || !FPaths::IsUnderDirectory(FPaths::ConvertRelativePathToFull(Subsystem->GetDefaultProjectPath()), SavedRoot))
+                    { Test->AddError(TEXT("Parameter OS test requires attended UI and isolated actual UserDir/Saved root: ") + SavedRoot); return true; }
+                }
                 if (MenuMode)
                 {
                     Window = FGlobalTabmanager::Get()->GetRootWindow();
@@ -657,14 +862,17 @@ namespace AkUGCCopilotMouseTest
                 }
                 else
                 {
-                    Window = SNew(SWindow).Title(FText::FromString(TEXT("AkUGC Copilot OS Mouse Verification")))
+                    const FString Title = ManualSliderMode
+                        ? FString::Printf(TEXT("AkUGC Physical Slider [%s]"), *AcceptanceNonce)
+                        : TEXT("AkUGC Copilot OS Mouse Verification");
+                    Window = SNew(SWindow).Title(FText::FromString(Title))
                         .ClientSize(FVector2D(1500, 940)).SupportsMaximize(false).SupportsMinimize(false)
                         [SNew(SAkUGCCreatorPanel, Subsystem)];
                     FSlateApplication::Get().AddWindow(Window.ToSharedRef());
                 }
                 return false;
             }
-            if (FPlatformTime::Seconds() - Started > 180) { Test->AddError(TEXT("OS mouse verification timed out.")); Cleanup(); return true; }
+            if (FPlatformTime::Seconds() - Started > (ManualSliderMode ? 420 : 180)) { Test->AddError(TEXT("OS mouse verification timed out.")); Cleanup(); return true; }
             if (FPlatformTime::Seconds() - LastPoll < 0.15) { return false; }
             LastPoll = FPlatformTime::Seconds();
             TArray<TSharedPtr<FJsonValue>> Controls;
@@ -672,6 +880,12 @@ namespace AkUGCCopilotMouseTest
             for (int32 I = 0; I < Windows.Num(); ++I)
             { for (const auto& Child : Windows[I]->GetChildWindows()) { Windows.AddUnique(Child); } }
             for (const auto& Top : Windows) { Walk(Top, true, Controls, true); }
+            if (ParameterMode && Form.IsValid() && !SliderObserver.IsValid())
+            {
+                SliderObserver = MakeShared<FParameterSliderObserver>(Window, Form);
+                if (!FSlateApplication::Get().RegisterInputPreProcessor(SliderObserver))
+                { Test->AddError(TEXT("Cannot register read-only parameter slider observer.")); Cleanup(); return true; }
+            }
             const auto State = MakeShared<FJsonObject>();
             State->SetBoolField(TEXT("menu_mode"), MenuMode);
             State->SetStringField(TEXT("window_title"), Window->GetTitle().ToString());
@@ -711,6 +925,14 @@ namespace AkUGCCopilotMouseTest
                 State->SetNumberField(TEXT("draft_resources"), Draft.InitialResources);
                 State->SetNumberField(TEXT("draft_base_health"), Draft.BaseMaxHealth);
                 State->SetStringField(TEXT("project_path"), Subsystem->GetDefaultProjectPath());
+                State->SetNumberField(TEXT("document_revision"), Subsystem->GetDocumentRevision());
+                State->SetObjectField(TEXT("slider_evidence"), SliderObserver->Evidence());
+                State->SetBoolField(TEXT("manual_slider"), ManualSliderMode);
+                if (ManualSliderMode)
+                {
+                    State->SetStringField(TEXT("acceptance_nonce"), AcceptanceNonce);
+                    State->SetStringField(TEXT("creator_build_sha256"), ActualCreatorBuildSha256);
+                }
             }
             if (LibraryMode && WorkPanel.IsValid())
             {
@@ -749,6 +971,12 @@ namespace AkUGCCopilotMouseTest
                         FString Error;
                         const bool Readable = Form.IsValid() && Subsystem->GetTowerDefenseParameters(Current, &Error);
                         const bool Expected = Readable && Current.Waves.Num() == 2 && Current.InitialResources == 425 && Current.BaseMaxHealth == 1700;
+                        if (Tag == TEXT("slider") && SliderMode)
+                        {
+                            Passed = Readable && SliderObserver.IsValid() && SliderObserver->IsVerified()
+                                && Form->GetDisplayedParameters().Waves.Num() == 2 && Hash == Before
+                                && Subsystem->GetDocumentRevision() == BeforeRevision && !Subsystem->CanUndo() && !Subsystem->CanRedo();
+                        }
                         if (Tag == TEXT("draft"))
                         {
                             const auto Draft = Form.IsValid() ? Form->GetDisplayedParameters() : FAkUGCTowerDefenseParameters();
@@ -793,9 +1021,30 @@ namespace AkUGCCopilotMouseTest
                     if (Tag == TEXT("explained")) { Passed = Panel.IsValid() && !FAkUGCCopilotTestAccess::Explanation(*Panel).IsEmpty() && !FAkUGCCopilotTestAccess::Preview(*Panel).bValidated && Hash == Before && !Subsystem->CanUndo(); }
                     if (Tag == TEXT("finish"))
                     {
-                        const bool All = Checkpoints.Num() == (MenuMode ? 1 : LibraryMode ? 11 : ParameterMode ? 9 : LiveMode ? 5 : 8) && !bFailed
+                        const int32 ExpectedCheckpoints = MenuMode ? 1 : LibraryMode ? 11 : ParameterMode ? (SliderMode ? 10 : 9) : LiveMode ? 5 : 8;
+                        const bool NumericSliderVerified = SliderMode && bSliderCheckpointVerified && SliderObserver.IsValid() && SliderObserver->IsVerified();
+                        FString CurrentCreatorBuildSha256;
+                        const bool ManualBuildUnchanged = !ManualSliderMode
+                            || (Sha256File(CreatorModulePath, CurrentCreatorBuildSha256)
+                                && CurrentCreatorBuildSha256 == ActualCreatorBuildSha256
+                                && ActualCreatorBuildSha256 == CreatorBuildSha256);
+                        const bool All = Checkpoints.Num() == ExpectedCheckpoints && !bFailed && (!SliderMode || NumericSliderVerified)
+                            && ManualBuildUnchanged
                             && (MenuMode || LibraryMode || (Panel.IsValid() && FAkUGCCopilotTestAccess::KeyEmpty(*Panel)));
                         State->SetBoolField(TEXT("passed"), All); State->SetBoolField(TEXT("human_ui_validated"), false);
+                        if (ParameterMode)
+                        {
+                            State->SetBoolField(TEXT("numeric_slider_verified"), All && NumericSliderVerified);
+                            State->SetBoolField(TEXT("manual_slider"), ManualSliderMode);
+                            State->SetNumberField(TEXT("checkpoint_count"), Checkpoints.Num());
+                            State->SetNumberField(TEXT("expected_checkpoints"), ExpectedCheckpoints);
+                            if (ManualSliderMode)
+                            {
+                                State->SetStringField(TEXT("acceptance_nonce"), AcceptanceNonce);
+                                State->SetStringField(TEXT("creator_build_sha256"), ActualCreatorBuildSha256);
+                                State->SetBoolField(TEXT("creator_build_unchanged_during_run"), ManualBuildUnchanged);
+                            }
+                        }
                         State->SetBoolField(TEXT("real_model_mode"), LiveMode);
                         State->SetNumberField(TEXT("last_http_code"), Panel.IsValid() ? FAkUGCCopilotTestAccess::HttpCode(*Panel) : 0);
                         State->SetStringField(TEXT("kind"), MenuMode ? TEXT("OS_mouse_editor_menu_entry") : LibraryMode ? TEXT("OS_mouse_work_library_publish_export_delete_import") : ParameterMode ? TEXT("OS_mouse_keyboard_creator_parameters") : LiveMode ? TEXT("OS_mouse_keyboard_real_model_generation") : TEXT("OS_mouse_keyboard_creator_copilot_fixture"));
@@ -805,7 +1054,8 @@ namespace AkUGCCopilotMouseTest
                         Cleanup(); return true;
                     }
                     const TArray<FString> Order = MenuMode ? TArray<FString>{TEXT("menu")} : LibraryMode
-                        ? TArray<FString>{TEXT("new"), TEXT("library-saved"), TEXT("published"), TEXT("exported"), TEXT("delete-pending"), TEXT("delete-cancelled"), TEXT("deleted"), TEXT("untrusted"), TEXT("wrong-key"), TEXT("imported"), TEXT("import-idempotent")} : ParameterMode
+                        ? TArray<FString>{TEXT("new"), TEXT("library-saved"), TEXT("published"), TEXT("exported"), TEXT("delete-pending"), TEXT("delete-cancelled"), TEXT("deleted"), TEXT("untrusted"), TEXT("wrong-key"), TEXT("imported"), TEXT("import-idempotent")} : SliderMode
+                        ? TArray<FString>{TEXT("new"), TEXT("slider"), TEXT("draft"), TEXT("saved-draft"), TEXT("parameters-applied"), TEXT("parameters-undo"), TEXT("parameters-redo"), TEXT("saved-applied"), TEXT("reloaded"), TEXT("discarded")} : ParameterMode
                         ? TArray<FString>{TEXT("new"), TEXT("draft"), TEXT("saved-draft"), TEXT("parameters-applied"), TEXT("parameters-undo"), TEXT("parameters-redo"), TEXT("saved-applied"), TEXT("reloaded"), TEXT("discarded")} : LiveMode
                         ? TArray<FString>{TEXT("new"), TEXT("preview"), TEXT("applied"), TEXT("undo"), TEXT("redo")}
                         : TArray<FString>{TEXT("new"), TEXT("preview"), TEXT("applied"), TEXT("undo"), TEXT("redo"), TEXT("cancel"), TEXT("rejected"), TEXT("explained")};
@@ -822,6 +1072,16 @@ namespace AkUGCCopilotMouseTest
                         }
                         const auto Item = MakeShared<FJsonObject>(); Item->SetStringField(TEXT("tag"), Tag);
                         Item->SetBoolField(TEXT("passed"), Passed && Captured); Item->SetStringField(TEXT("document_hash"), Hash);
+                        if (ManualSliderMode)
+                        {
+                            Item->SetStringField(TEXT("acceptance_nonce"), AcceptanceNonce);
+                            Item->SetStringField(TEXT("creator_build_sha256"), ActualCreatorBuildSha256);
+                        }
+                        if (Tag == TEXT("slider"))
+                        {
+                            bSliderCheckpointVerified = Passed && Captured;
+                            if (SliderObserver.IsValid()) { Item->SetObjectField(TEXT("slider_evidence"), SliderObserver->Evidence()); }
+                        }
                         Checkpoints.Add(MakeShared<FJsonValueObject>(Item)); bFailed |= !Passed || !Captured;
                         State->SetNumberField(TEXT("ack"), LastSeq); State->SetBoolField(TEXT("checkpoint_passed"), Passed && Captured);
                         Save(State, TEXT("ui-ack.json"));
@@ -931,24 +1191,33 @@ namespace AkUGCCopilotMouseTest
             FString Json; FJsonSerializer::Serialize(Object, TJsonWriterFactory<>::Create(&Json));
             FFileHelper::SaveStringToFile(Json, *FPaths::Combine(Output, Name), FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
         }
+        void UnregisterSliderObserver()
+        {
+            if (SliderObserver.IsValid() && FSlateApplication::IsInitialized())
+            { FSlateApplication::Get().UnregisterInputPreProcessor(SliderObserver); }
+            SliderObserver.Reset();
+        }
         void Cleanup()
         {
-            if (!FParse::Param(FCommandLine::Get(), TEXT("CopilotMenuEntry")))
+            UnregisterSliderObserver();
+            if (Window.IsValid() && FSlateApplication::IsInitialized() && !FParse::Param(FCommandLine::Get(), TEXT("CopilotMenuEntry")))
             { FSlateApplication::Get().RequestDestroyWindow(Window.ToSharedRef()); }
             Window.Reset(); Panel.Reset(); Form.Reset(); WorkPanel.Reset();
             if (GEditor) { GEditor->GetEditorSubsystem<UAkUGCEditorSubsystem>()->CloseProject(); }
         }
         FAutomationTestBase* Test;
         FString Output, Before, Applied;
+        FString CreatorModulePath, ActualCreatorBuildSha256;
         FString PublisherKey, PublishedPath, PublishedJson, ExportedPath, ExportedJson;
         FGuid PublishedId;
         TSharedPtr<SAkUGCWorkLibraryPanel> WorkPanel;
         uint64 BeforeRevision = 0;
         double Started, LastPoll = 0, LastSeq = 0;
-        bool bFailed = false;
+        bool bFailed = false, bSliderCheckpointVerified = false;
         TSharedPtr<SWindow> Window;
         TSharedPtr<SAkUGCCopilotPanel> Panel;
         TSharedPtr<SAkUGCTowerDefenseParameterForm> Form;
+        TSharedPtr<FParameterSliderObserver> SliderObserver;
         TArray<TSharedPtr<FJsonValue>> Checkpoints;
     };
 }
@@ -959,6 +1228,13 @@ bool FAkUGCCopilotMouseTest::RunTest(const FString& Parameters)
     FString Output;
     if (!FParse::Value(FCommandLine::Get(), TEXT("CopilotMouseOutput="), Output))
     { AddWarning(TEXT("Mouse UI test skipped: explicit desktop driver required.")); return true; }
+    const bool ParameterMode = FParse::Param(FCommandLine::Get(), TEXT("CreatorParameterMouse"));
+    const bool SliderMode = FParse::Param(FCommandLine::Get(), TEXT("CreatorSliderMouse"));
+    const bool ManualSliderMode = FParse::Param(FCommandLine::Get(), TEXT("CreatorManualSlider"));
+    if ((SliderMode && !ParameterMode) || (ManualSliderMode && (!ParameterMode || !SliderMode))
+        || (ParameterMode && (FParse::Param(FCommandLine::Get(), TEXT("CopilotMenuEntry"))
+            || FParse::Param(FCommandLine::Get(), TEXT("CopilotMouseLive")) || FParse::Param(FCommandLine::Get(), TEXT("CreatorLibraryMouse")))))
+    { AddError(TEXT("Slider UI requires exclusive CreatorParameterMouse; manual mode also requires CreatorSliderMouse.")); return false; }
     if (FParse::Param(FCommandLine::Get(), TEXT("nullrhi"))
         || (FParse::Param(FCommandLine::Get(), TEXT("CopilotMouseLive")) && !FParse::Param(FCommandLine::Get(), TEXT("CopilotLiveAuthorized")))
         || !FPaths::IsUnderDirectory(FPaths::ConvertRelativePathToFull(Output), FPaths::ConvertRelativePathToFull(FPaths::ProjectSavedDir())))

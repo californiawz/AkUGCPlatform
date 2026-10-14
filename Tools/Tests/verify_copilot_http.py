@@ -1,5 +1,6 @@
 import argparse
 from collections import Counter
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -16,7 +17,342 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
 
-def drive_mouse_ui(process, output, base, menu=False, live=False, parameters=False, slider=False, library=False):
+def slider_evidence_diagnostics(evidence):
+    if not isinstance(evidence, dict):
+        return ["slider_evidence missing or not an object"]
+    failures = []
+    for name, expected in (("target", "wave_count"), ("target_verified", True),
+                           ("released", True), ("keyboard_value_input", False)):
+        if type(evidence.get(name)) is not type(expected) or evidence.get(name) != expected:
+            failures.append(name + " did not match required value")
+    capture = evidence.get("capture_type")
+    if not isinstance(capture, str) or not capture.startswith("SSpinBox"):
+        failures.append("capture_type is not SSpinBox")
+    for name, expected in (("start_waves", 3), ("captured_waves", 2), ("released_waves", 2)):
+        value = evidence.get(name)
+        if type(value) not in (int, float) or value != expected:
+            failures.append(name + " did not match required value")
+    for name in ("nonzero_delta_events", "high_precision_delta_events"):
+        value = evidence.get(name)
+        if type(value) not in (int, float) or not 0 < value < float("inf"):
+            failures.append(name + " must be positive")
+    return failures
+
+
+def validate_slider_evidence(evidence):
+    """Validate observed Slate events, not their physical HID/WM_INPUT provenance."""
+    return not slider_evidence_diagnostics(evidence)
+
+
+def read_json(path):
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        return value if isinstance(value, (dict, list)) else {}
+    except (FileNotFoundError, PermissionError, json.JSONDecodeError):
+        return {}
+
+
+def write_json(path, value):
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+    deadline = time.monotonic() + 3
+    while True:
+        try:
+            temporary.replace(path)
+            return
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.05)
+
+
+class ActionJournal(list):
+    def __init__(self, path):
+        super().__init__()
+        self.path = path
+        self.flush()
+
+    def append(self, action):
+        super().append(action)
+        self.flush()
+
+    def flush(self):
+        write_json(self.path, self)
+
+
+def fresh_control_hit(state, candidate, label, require_spinbox=False, allow_cursor_within_bounds=False):
+    """The hover path and cursor must belong to the same fresh geometry snapshot."""
+    fields = ("type", "label", "x", "y", "width", "height", "enabled")
+    if not any(all(c.get(k) == candidate.get(k) for k in fields) for c in state.get("controls", [])):
+        return False
+    if not candidate.get("enabled") or candidate.get("width", 0) <= 1 or candidate.get("height", 0) <= 1:
+        return False
+    x, y = state.get("cursor_x"), state.get("cursor_y")
+    if type(x) not in (int, float) or type(y) not in (int, float):
+        return False
+    x_tolerance = max(3, candidate["width"] / 2 + 1) if allow_cursor_within_bounds else 3
+    y_tolerance = max(3, candidate["height"] / 2 + 1) if allow_cursor_within_bounds else 3
+    if abs(x - candidate["x"]) > x_tolerance or abs(y - candidate["y"]) > y_tolerance:
+        return False
+    hover = state.get("hover_path", [])
+    return (any(p.startswith(candidate["type"] + ":") and label in p for p in hover)
+            and (not require_spinbox or any(p.startswith("SSpinBox") for p in hover)))
+
+
+def owns_input_foreground(window, process_pid, menu, get_foreground, get_owner):
+    active = get_foreground()
+    return (bool(window) and get_owner(window) == process_pid and get_owner(active) == process_pid
+            and (menu or active == window))
+
+
+def recover_initial_focus(window, process_pid, get_foreground, get_owner, set_foreground,
+                          clock=time.monotonic, sleep=time.sleep):
+    deadline = clock() + 5
+    while True:
+        if not window or get_owner(window) != process_pid:
+            raise RuntimeError("Verification window does not belong to launched Editor")
+        if get_foreground() == window:
+            return
+        if clock() >= deadline:
+            raise RuntimeError("Verification window could not acquire foreground within 5 seconds")
+        set_foreground(window)
+        sleep(0.1)
+
+
+def wait_for_startup_controls(process, read_state, enumerate_windows, get_foreground, get_owner,
+                              set_foreground, actions, clock=time.monotonic, sleep=time.sleep):
+    """Foreground only this run's large Editor windows before Slate controls exist."""
+    deadline = clock() + 100
+    attempted = set()
+    pending_switches = set()
+    while clock() < deadline:
+        if process.poll() is not None:
+            raise RuntimeError("Editor exited before startup Slate controls appeared")
+        state = read_state()
+        if state.get("controls"):
+            return state
+        active = get_foreground()
+        if active in pending_switches and get_owner(active) == process.pid:
+            actions.append({"action": "startup_foreground_switch_observed", "pid": process.pid,
+                            "window": active})
+            pending_switches.remove(active)
+        candidates = [c for c in enumerate_windows()
+                      if c.get("pid") == process.pid and c.get("visible")
+                      and c.get("width", 0) > 800 and c.get("height", 0) > 600
+                      and ("AkUGCPlatform" in c.get("title", "")
+                           or "AkUGC Copilot OS Mouse Verification" in c.get("title", ""))]
+        candidates.sort(key=lambda c: c["width"] * c["height"], reverse=True)
+        for candidate in candidates:
+            handle = candidate["window"]
+            if not handle or handle in attempted or get_owner(handle) != process.pid:
+                continue
+            # State may have appeared during EnumWindows. Never resume startup focus after that.
+            state = read_state()
+            if state.get("controls"):
+                return state
+            if clock() >= deadline:
+                break
+            active = get_foreground()
+            if active != handle and len(attempted) < 5:
+                attempted.add(handle)
+                # Recheck HWND ownership immediately before the only activation attempt.
+                if get_owner(handle) != process.pid:
+                    continue
+                accepted = bool(set_foreground(handle))
+                after = get_foreground()
+                switched = after == handle and get_owner(handle) == process.pid
+                actions.append({"action": "startup_window_activation", "pid": process.pid,
+                                "window": handle, "foreground_before": active, "foreground_after": after,
+                                "activation_accepted": accepted, "foreground_switched": switched})
+                if not switched:
+                    pending_switches.add(handle)
+            break
+        sleep(min(0.5, max(0, deadline - clock())))
+    raise TimeoutError("Startup Slate controls did not appear within 100 seconds")
+
+
+def parse_arguments(argv=None, root=None):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--engine", required=True, type=Path)
+    parser.add_argument("--all-tests", action="store_true")
+    parser.add_argument("--generated-document", type=Path)
+    parser.add_argument("--mouse-ui", action="store_true")
+    parser.add_argument("--menu-entry", action="store_true")
+    parser.add_argument("--mouse-live-authorized", action="store_true")
+    parser.add_argument("--parameter-ui", action="store_true")
+    sliders = parser.add_mutually_exclusive_group()
+    sliders.add_argument("--slider-ui", action="store_true")
+    sliders.add_argument("--manual-slider", action="store_true")
+    parser.add_argument("--acceptance-nonce")
+    parser.add_argument("--library-ui", action="store_true")
+    parser.add_argument("--output", type=Path, help="Fresh run directory under project Saved")
+    args = parser.parse_args(argv)
+    if (args.slider_ui or args.manual_slider) and not args.parameter_ui:
+        parser.error("Slider modes require --parameter-ui")
+    if args.manual_slider:
+        if not isinstance(args.acceptance_nonce, str) or re.fullmatch(
+                r"[0-9a-fA-F]{32}", args.acceptance_nonce) is None:
+            parser.error("--manual-slider requires a 32-digit hexadecimal --acceptance-nonce")
+        args.acceptance_nonce = args.acceptance_nonce.lower()
+    elif args.acceptance_nonce is not None:
+        parser.error("--acceptance-nonce is only valid with --manual-slider")
+    if (args.menu_entry or args.mouse_live_authorized or args.parameter_ui or args.library_ui) and not args.mouse_ui:
+        parser.error("Menu, live, parameter and library modes require --mouse-ui")
+    if sum((args.menu_entry, args.mouse_live_authorized, args.parameter_ui, args.library_ui)) > 1:
+        parser.error("Menu, live, parameter and library modes run separately")
+    if args.mouse_live_authorized:
+        import os
+        if not os.environ.get("DEEPSEEK_API_KEY"):
+            parser.error("Live OS input requires process key")
+    if args.mouse_ui and (args.all_tests or args.generated_document):
+        parser.error("--mouse-ui runs separately from headless full regression")
+    root = (root or Path(__file__).resolve().parents[2]).resolve()
+    if args.manual_slider:
+        try:
+            args.creator_build_sha256 = creator_build_sha256(root)
+        except OSError:
+            parser.error("Cannot hash the Creator module used by --manual-slider")
+    else:
+        args.creator_build_sha256 = None
+    saved = (root / "Saved").resolve()
+    if args.generated_document:
+        args.generated_document = args.generated_document.resolve()
+        if not args.all_tests or not args.generated_document.is_file() or not args.generated_document.is_relative_to(saved):
+            parser.error("--generated-document requires --all-tests and an existing document under project Saved")
+    if args.output:
+        args.output = args.output.resolve()
+        if args.output == saved or not args.output.is_relative_to(saved) or args.output.exists():
+            parser.error("--output must be a fresh directory strictly under project Saved")
+    return args
+
+
+def verification_paths(args, root):
+    run_root = args.output or root / "Saved/CopilotHttpVerification" / uuid.uuid4().hex
+    user_dir = run_root / "editor-user"
+    output = user_dir / "Saved/verification" if args.parameter_ui or args.library_ui else run_root
+    # Reserving the fresh root fails rather than overwriting any previous verification.
+    run_root.mkdir(parents=True, exist_ok=False)
+    if output != run_root:
+        output.mkdir(parents=True, exist_ok=False)
+    return output, user_dir
+
+
+def attempt_relative_slider_drag(width, send_move, read_state, actions,
+                                 clock=time.monotonic, sleep=time.sleep):
+    """Bounded OS motion sized to the observed slider width; not proof of success."""
+    if type(width) not in (int, float) or not 1 < width < float("inf"):
+        raise RuntimeError("Wave slider width must be a finite positive geometry value")
+    step = max(12, min(48, round(width / 48)))
+    # Leave five seconds of the caller's twelve-second gesture budget for release evidence.
+    deadline = clock() + 7
+    actions.append({"action": "numeric_slider_motion_plan", "width": width, "step_pixels": step,
+                    "max_steps": 80, "motion_budget_seconds": 7,
+                    "physical_input_provenance_verified": False})
+    steps = 0
+    for _ in range(80):
+        if clock() >= deadline:
+            break
+        send_move(-step)
+        steps += 1
+        actions.append({"action": "relative_mouse_move_sent", "dx": -step, "dy": 0,
+                        "physical_input_provenance_verified": False})
+        if read_state().get("slider_evidence", {}).get("captured_waves") == 2:
+            break
+        remaining = deadline - clock()
+        if remaining <= 0:
+            break
+        sleep(min(0.08, remaining))
+        if read_state().get("slider_evidence", {}).get("captured_waves") == 2:
+            break
+    return steps
+
+
+def mouse_ui_command(command, args, output, user_dir):
+    command = [part for part in command if part != "-nullrhi" and not part.startswith("-ExecCmds=")]
+    command[0] = str(args.engine / "Engine/Binaries/Win64/UnrealEditor.exe")
+    command += ["-ExecCmds=Automation RunTests AkUGC.Editor.Copilot.OSMouseInteraction", f"-CopilotMouseOutput={output}"]
+    if args.menu_entry:
+        command += ["-CopilotMenuEntry"]
+    if args.mouse_live_authorized:
+        command += ["-CopilotMouseLive", "-CopilotLiveAuthorized"]
+    if args.parameter_ui:
+        command += ["-CreatorParameterMouse"]
+    if args.slider_ui or args.manual_slider:
+        command += ["-CreatorSliderMouse"]
+    if args.manual_slider:
+        command += [
+            "-CreatorManualSlider",
+            f"-CreatorAcceptanceNonce={args.acceptance_nonce}",
+            f"-CreatorBuildSha256={args.creator_build_sha256}",
+        ]
+    if args.library_ui:
+        command += ["-CreatorLibraryMouse"]
+    if args.parameter_ui or args.library_ui:
+        command = [part for part in command if part != "-unattended"]
+        command += ["-UnattendedInput", f"-UserDir={user_dir}"]
+    return command
+
+
+def creator_build_sha256(root=None):
+    root = (root or Path(__file__).resolve().parents[2]).resolve()
+    path = root / "Plugins/AkUGCEditor/Binaries/Win64/UnrealEditor-AkUGCEditor.dll"
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def slider_result_details(output, args, completed=False):
+    state = read_json(output / "ui-state.json")
+    latest = state.get("slider_evidence") if isinstance(state, dict) else None
+    latched = read_json(output / "slider-evidence.json")
+    evidence = latched if validate_slider_evidence(latched) else latest
+    requested = args.slider_ui or args.manual_slider
+    actions = read_json(output / "os-input-actions.json")
+    shift_used = args.slider_ui and isinstance(actions, list) and any(
+        a.get("action") == "modifier_down" and a.get("modifier") == "LeftShift"
+        and a.get("target") == "wave_count" for a in actions if isinstance(a, dict))
+    input_mode = ("native_shift_accelerated_os_input" if args.slider_ui else
+                  "awaited_physical_mouse" if args.manual_slider else "not_requested")
+    result = {
+        "numeric_slider_verified": bool(
+            requested and completed and validate_slider_evidence(evidence)),
+        "manual_slider": args.manual_slider,
+        "human_ui_validated": False,
+        "slider_input_mode": input_mode,
+        "native_shift_acceleration_used": bool(shift_used),
+        "physical_input_provenance_verified": False,
+        "unmodified_physical_slider_verified": False,
+        "slider_evidence": evidence,
+        "slider_diagnostics": slider_evidence_diagnostics(evidence) if requested else [],
+        "slider_event_source": "observed Slate events; physical HID/WM_INPUT origin not certified",
+        "automated_slider_motion": bool(args.slider_ui),
+    }
+    if args.manual_slider:
+        current_build_hash = creator_build_sha256()
+        build_unchanged = current_build_hash == args.creator_build_sha256
+        result["numeric_slider_verified"] = (
+            result["numeric_slider_verified"] and build_unchanged)
+        result.update({
+            "acceptance_nonce": args.acceptance_nonce,
+            "creator_build_sha256": args.creator_build_sha256,
+            "creator_build_unchanged_during_run": build_unchanged,
+        })
+    return result
+
+
+def drive_mouse_ui(process, output, base, menu=False, live=False, parameters=False, slider=False,
+                   library=False, manual_slider=False):
+    actions = ActionJournal(output / "os-input-actions.json")
+    try:
+        return _drive_mouse_ui(process, output, base, menu, live, parameters, slider, library,
+                               manual_slider, actions)
+    finally:
+        actions.flush()
+
+
+def _drive_mouse_ui(process, output, base, menu, live, parameters, slider, library, manual_slider, actions):
     import ctypes
     from ctypes import wintypes
 
@@ -28,10 +364,13 @@ def drive_mouse_ui(process, output, base, menu=False, live=False, parameters=Fal
     user.GetForegroundWindow.restype = wintypes.HWND
     user.SetForegroundWindow.argtypes = [wintypes.HWND]
     user.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    user.IsWindowVisible.argtypes = [wintypes.HWND]
+    callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    user.EnumWindows.argtypes = [callback_type, wintypes.LPARAM]
     user.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
     user.FindWindowW.restype = wintypes.HWND
     title = "AkUGC Copilot OS Mouse Verification"
-    actions = []
+    window = None
 
     class Mouse(ctypes.Structure):
         _fields_ = [("dx", wintypes.LONG), ("dy", wintypes.LONG), ("data", wintypes.DWORD),
@@ -50,70 +389,99 @@ def drive_mouse_ui(process, output, base, menu=False, live=False, parameters=Fal
     user.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(Input), ctypes.c_int]
 
     def read(name="ui-state.json"):
+        path = output / name
         try:
-            return json.loads((output / name).read_text(encoding="utf-8"))
-        except (FileNotFoundError, PermissionError, json.JSONDecodeError):
+            before = path.stat().st_mtime_ns
+            state = read_json(path)
+            if not isinstance(state, dict) or path.stat().st_mtime_ns != before:
+                return {}
+            state["_snapshot_version"] = before
+            return state
+        except (FileNotFoundError, PermissionError):
             return {}
+
+    def owner(handle):
+        pid = wintypes.DWORD()
+        user.GetWindowThreadProcessId(handle, ctypes.byref(pid))
+        return pid.value
+
+    def foreground():
+        if not owns_input_foreground(
+                window, process.pid, menu, user.GetForegroundWindow, owner):
+            raise RuntimeError("Verification window lost foreground; stopped without sending input elsewhere")
 
     def wait(check, timeout=30):
         end = time.monotonic() + timeout
         while time.monotonic() < end:
             if process.poll() is not None:
                 raise RuntimeError("Editor exited before OS UI validation finished")
+            if window is not None:
+                foreground()
             state = read()
             if check(state):
                 return state
-            time.sleep(0.1)
+            time.sleep(min(0.1, max(0, end - time.monotonic())))
         raise TimeoutError("OS UI expected state not reached")
 
-    if library:
-        callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-        user.EnumWindows.argtypes = [callback_type, wintypes.LPARAM]
-        user.IsWindowVisible.argtypes = [wintypes.HWND]
-        end = time.monotonic() + 100
-        while time.monotonic() < end and not read().get("controls"):
-            def focus_owned(window, _):
-                owner = wintypes.DWORD()
-                user.GetWindowThreadProcessId(window, ctypes.byref(owner))
-                rect = wintypes.RECT()
-                if owner.value == process.pid and user.IsWindowVisible(window) and user.GetWindowRect(window, ctypes.byref(rect)):
-                    if rect.right - rect.left > 800 and rect.bottom - rect.top > 600:
-                        user.SetForegroundWindow(window)
+    def startup_windows():
+        candidates = []
+
+        def collect(handle, _):
+            pid = owner(handle)
+            if pid != process.pid or not user.IsWindowVisible(handle):
                 return True
-            user.EnumWindows(callback_type(focus_owned), 0)
-            if process.poll() is not None:
-                raise RuntimeError("Editor exited during library startup")
-            time.sleep(0.5)
-    state = wait(lambda s: bool(s.get("controls")), 100)
-    if menu:
+            rect = wintypes.RECT()
+            if not user.GetWindowRect(handle, ctypes.byref(rect)):
+                return True
+            width, height = rect.right - rect.left, rect.bottom - rect.top
+            if width <= 800 or height <= 600:
+                return True
+            text = ctypes.create_unicode_buffer(512)
+            user.GetWindowTextW(handle, text, len(text))
+            candidates.append({"window": handle, "pid": pid, "visible": True,
+                               "width": width, "height": height, "title": text.value})
+            return True
+
+        if not user.EnumWindows(callback_type(collect), 0):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return candidates
+
+    state = wait_for_startup_controls(process, read, startup_windows, user.GetForegroundWindow,
+                                      owner, user.SetForegroundWindow, actions,
+                                      clock=time.monotonic, sleep=time.sleep)
+    if menu or manual_slider:
         title = state["window_title"]
     window = user.FindWindowW(None, title)
-    pid = wintypes.DWORD()
-    if not window or not user.GetWindowThreadProcessId(window, ctypes.byref(pid)) or pid.value != process.pid:
-        raise RuntimeError("Verification Slate window not found in the launched Editor process")
-    user.SetForegroundWindow(window)
-    time.sleep(0.5)
+    recover_initial_focus(window, process.pid, user.GetForegroundWindow, owner, user.SetForegroundWindow)
+    actions.append({"action": "initial_focus_verified", "pid": process.pid})
 
-    def foreground():
-        active = user.GetForegroundWindow()
-        active_pid = wintypes.DWORD()
-        user.GetWindowThreadProcessId(active, ctypes.byref(active_pid))
-        if (not menu and active != window) or active_pid.value != process.pid:
-            raise RuntimeError("Verification window lost foreground; stopped without sending input elsewhere")
-
-    def position_cursor(x, y):
+    def position_cursor(x, y, state=None):
         foreground()
-        state = wait(lambda s: bool(s.get("controls")), 5)
+        state = state or wait(lambda s: bool(s.get("controls")), 5)
         rect = wintypes.RECT()
         if not user.GetWindowRect(window, ctypes.byref(rect)):
             raise ctypes.WinError(ctypes.get_last_error())
         physical_x = rect.left + (x - state["window_x"]) * (rect.right - rect.left) / state["window_width"]
         physical_y = rect.top + (y - state["window_y"]) * (rect.bottom - rect.top) / state["window_height"]
-        user.SetCursorPos(int(physical_x), int(physical_y))
+        foreground()
+        if not user.SetCursorPos(int(physical_x), int(physical_y)):
+            raise ctypes.WinError(ctypes.get_last_error())
         foreground()
 
-    def control(label, kind="SButton", scroll=False):
-        for _ in range(24 if scroll else 1):
+    def mouse(flags, dx=0, dy=0, data=0):
+        foreground()
+        user.mouse_event(flags, dx, dy, data, 0)
+
+    def release_mouse():
+        if owns_input_foreground(
+                window, process.pid, menu, user.GetForegroundWindow, owner):
+            user.mouse_event(0x0004, 0, 0, 0, 0)
+        else:
+            actions.append({"action": "release_skipped_after_focus_loss"})
+
+    def control(label, kind="SButton", scroll=False, require_spinbox=False, move=True,
+                allow_cursor_within_bounds=False):
+        for _ in range(24 if scroll else 3):
             state = wait(lambda s: bool(s.get("controls")), 5)
             candidates = [c for c in state.get("controls", []) if (c["type"] == kind or kind == "SNumericEntryBox" and c["type"].startswith(kind)) and label in c["label"]
                           and c["width"] > 1 and c["height"] > 1
@@ -121,54 +489,77 @@ def drive_mouse_ui(process, output, base, menu=False, live=False, parameters=Fal
                           and state["window_y"] + (0 if menu else 60) < c["y"] < state["window_y"] + state["window_height"] - (0 if menu else 90)]
             if candidates:
                 candidate = candidates[0]
-                if not candidate["enabled"]:
+                if not candidate["enabled"] or not move:
                     return candidate
-                position_cursor(candidate["x"], candidate["y"])
-                time.sleep(0.2)
-                if any(p.startswith(candidate["type"] + ":") and label in p for p in read().get("hover_path", [])):
+                version = state["_snapshot_version"]
+                position_cursor(candidate["x"], candidate["y"], state)
+                try:
+                    wait(lambda s: s.get("_snapshot_version", 0) > version
+                         and fresh_control_hit(s, candidate, label, require_spinbox,
+                                               allow_cursor_within_bounds), 1)
                     return candidate
-            if not scroll:
-                break
-            position_cursor(state["window_x"] + state["window_width"] * 0.8,
-                            state["window_y"] + state["window_height"] * 0.75)
-            user.mouse_event(0x0800, 0, 0, ctypes.c_uint32(-360).value, 0)
-            time.sleep(0.3)
-        raise RuntimeError(f"Visible UI control not found: {label}")
+                except TimeoutError:
+                    pass
+            if scroll:
+                position_cursor(state["window_x"] + state["window_width"] * 0.8,
+                                state["window_y"] + state["window_height"] * 0.75, state)
+                mouse(0x0800, data=ctypes.c_uint32(-360).value)
+                time.sleep(0.3)
+        raise RuntimeError(f"Visible UI control not found with a fresh Slate hit: {label}")
 
-    def click(label, kind="SButton", scroll=False):
-        c = control(label, kind, scroll)
+    def click(label, kind="SButton", scroll=False, allow_cursor_within_bounds=False):
+        c = control(label, kind, scroll,
+                    allow_cursor_within_bounds=allow_cursor_within_bounds)
         if not c["enabled"]:
             raise RuntimeError(f"UI control unexpectedly disabled: {label}")
-        position_cursor(c["x"], c["y"])
-        wait(lambda s: any(p.startswith(c["type"] + ":") and label in p for p in s.get("hover_path", [])), 3)
-        foreground()
-        user.mouse_event(0x0002, 0, 0, 0, 0)
-        user.mouse_event(0x0004, 0, 0, 0, 0)
+        if not fresh_control_hit(read(), c, label,
+                                 allow_cursor_within_bounds=allow_cursor_within_bounds):
+            raise RuntimeError("UI geometry or cursor changed before mouse down")
+        actions.append({"action": "mouse_click_started", "label": label, "x": c["x"], "y": c["y"],
+                        "slate_hit_verified": True})
+        mouse(0x0002)
+        try:
+            foreground()
+        finally:
+            release_mouse()
         time.sleep(0.35)
         actions.append({"action": "mouse_click", "label": label, "x": c["x"], "y": c["y"],
                         "slate_hit_verified": True})
 
     def fill(label, text, kind="SEditableTextBox"):
+        if (slider or manual_slider) and kind == "SNumericEntryBox" and "波数" in label:
+            raise RuntimeError("Slider mode must never use keyboard value input for wave count")
         click(label, kind, not parameters)
-        foreground()
-        user.keybd_event(0x11, 0, 0, 0)
-        user.keybd_event(0x41, 0, 0, 0)
-        user.keybd_event(0x41, 0, 2, 0)
-        user.keybd_event(0x11, 0, 2, 0)
-        user.keybd_event(0x08, 0, 0, 0)
-        user.keybd_event(0x08, 0, 2, 0)
-        for ch in text:
+        held_keys = set()
+
+        def key(vk, up=False):
             foreground()
-            events = (Input * 2)()
-            events[0].type = events[1].type = 1
-            events[0].value.keyboard = Keyboard(0, ord(ch), 4, 0, 0)
-            events[1].value.keyboard = Keyboard(0, ord(ch), 6, 0, 0)
-            if user.SendInput(2, events, ctypes.sizeof(Input)) != 2:
-                raise ctypes.WinError(ctypes.get_last_error())
-        if kind == "SNumericEntryBox":
-            foreground()
-            user.keybd_event(0x0D, 0, 0, 0)
-            user.keybd_event(0x0D, 0, 2, 0)
+            user.keybd_event(vk, 0, 2 if up else 0, 0)
+            held_keys.discard(vk) if up else held_keys.add(vk)
+
+        actions.append({"action": "keyboard_input_started", "label": label, "characters": len(text)})
+        try:
+            key(0x11)
+            key(0x41)
+            key(0x41, True)
+            key(0x11, True)
+            key(0x08)
+            key(0x08, True)
+            for ch in text:
+                foreground()
+                events = (Input * 2)()
+                events[0].type = events[1].type = 1
+                events[0].value.keyboard = Keyboard(0, ord(ch), 4, 0, 0)
+                events[1].value.keyboard = Keyboard(0, ord(ch), 6, 0, 0)
+                if user.SendInput(2, events, ctypes.sizeof(Input)) != 2:
+                    raise ctypes.WinError(ctypes.get_last_error())
+            if kind == "SNumericEntryBox":
+                key(0x0D)
+                key(0x0D, True)
+        finally:
+            if user.GetForegroundWindow() == window and owner(window) == process.pid:
+                for vk in held_keys:
+                    user.keybd_event(vk, 0, 2, 0)
         time.sleep(0.4)
         actions.append({"action": "keyboard_input", "label": label, "characters": len(text)})
 
@@ -205,20 +596,20 @@ def drive_mouse_ui(process, output, base, menu=False, live=False, parameters=Fal
         window_label = next((t for t in labels if t in ("窗口", "窗口(W)", "Window")), None)
         if not window_label:
             raise RuntimeError("Editor Window menu label not found")
-        click(window_label, "STextBlock")
+        click(window_label, "STextBlock", allow_cursor_within_bounds=True)
         wait(lambda s: any(c["label"] == "AkUGC Creator Studio" for c in s.get("controls", [])))
-        click("AkUGC Creator Studio", "STextBlock")
+        click("AkUGC Creator Studio", "STextBlock", allow_cursor_within_bounds=True)
         wait(lambda s: s.get("creator_tab_open"))
         checkpoint("menu")
         checkpoint("finish")
         (output / "os-input-actions.json").write_text(json.dumps(actions, ensure_ascii=False, indent=2), encoding="utf-8")
         return
 
-    if library:
+    if library or parameters:
         state = read()
-        for name in ("library_directory", "project_path"):
-            if not Path(state[name]).resolve().is_relative_to(output.parent.resolve()):
-                raise RuntimeError("Library test path escaped isolated Saved root")
+        for name in (("library_directory", "project_path") if library else ("project_path",)):
+            if not state.get(name) or not Path(state[name]).resolve().is_relative_to(output.parent.resolve()):
+                raise RuntimeError("Creator test path escaped isolated Saved root")
     click("新建默认可玩塔防")
     wait(lambda s: s.get("project_open"))
     checkpoint("new")
@@ -286,59 +677,106 @@ def drive_mouse_ui(process, output, base, menu=False, live=False, parameters=Fal
         (output / "os-input-actions.json").write_text(json.dumps(actions, ensure_ascii=False, indent=2), encoding="utf-8")
         return
     if parameters:
+        wait(lambda s: s.get("draft_waves") == 3)
+        if slider or manual_slider:
+            label = "波数（1–3，默认 3）"
+            before = read()
+            if (type(before.get("document_revision")) not in (int, float)
+                    or type(before.get("can_undo")) is not bool or type(before.get("can_redo")) is not bool):
+                raise RuntimeError("Slider baseline document revision or history evidence is missing")
+            c = control(label, "SNumericEntryBox", require_spinbox=True, move=not manual_slider)
+            if not c["enabled"]:
+                raise RuntimeError("Wave slider is disabled")
+            if manual_slider:
+                instructions = "请在本验证窗口用物理鼠标按住波数框，向左拖动默认 3 至 2 后松开；不要键盘输入。"
+                write_json(output / "slider-ready.json", {
+                    "phase": "awaiting_physical_mouse", "instructions": instructions,
+                    "pid": process.pid, "target": "wave_count", "target_geometry": c,
+                    "acceptance_nonce": before.get("acceptance_nonce"),
+                    "creator_build_sha256": before.get("creator_build_sha256"),
+                    "window": {k: before[k] for k in ("window_x", "window_y", "window_width", "window_height")},
+                    "timeout_seconds": 240})
+                actions.append({
+                    "action": "awaiting_physical_mouse",
+                    "target": "wave_count",
+                    "acceptance_nonce": before.get("acceptance_nonce"),
+                    "creator_build_sha256": before.get("creator_build_sha256"),
+                })
+                print(instructions, flush=True)
+                captured = wait(lambda s: validate_slider_evidence(s.get("slider_evidence"))
+                                and s.get("draft_waves") == 2 and not s.get("mouse_captured"), 240)
+            else:
+                if not fresh_control_hit(read(), c, label, require_spinbox=True):
+                    raise RuntimeError("Wave slider geometry or cursor changed before mouse down")
+                actions.append({"action": "numeric_slider_drag_started", "target": "wave_count",
+                                "slate_hit_verified": True, "start_waves": 3})
+                gesture_deadline = time.monotonic() + 12
+                shift_held = False
+                try:
+                    foreground()
+                    user.keybd_event(0xA0, 0x2A, 0, 0)  # LeftShift enables the native slider multiplier.
+                    shift_held = True
+                    actions.append({"action": "modifier_down", "modifier": "LeftShift",
+                                    "target": "wave_count", "purpose": "native_slider_acceleration",
+                                    "physical_input_provenance_verified": False})
+                    mouse(0x0002)
+                    try:
+                        attempt_relative_slider_drag(c["width"], lambda dx: mouse(0x0001, dx=dx), read,
+                                                     actions, clock=time.monotonic, sleep=time.sleep)
+                    finally:
+                        # Mouse release must reach the slider while Shift is still held.
+                        release_mouse()
+                finally:
+                    if shift_held:
+                        if user.GetForegroundWindow() == window and owner(window) == process.pid:
+                            user.keybd_event(0xA0, 0x2A, 2, 0)
+                            actions.append({"action": "modifier_up", "modifier": "LeftShift",
+                                            "target": "wave_count"})
+                        else:
+                            actions.append({"action": "modifier_release_skipped_after_focus_loss",
+                                            "modifier": "LeftShift", "target": "wave_count"})
+                captured = wait(lambda s: validate_slider_evidence(s.get("slider_evidence"))
+                                and s.get("draft_waves") == 2 and not s.get("mouse_captured"),
+                                min(5, max(0, gesture_deadline - time.monotonic())))
+            if (captured.get("document_revision") != before.get("document_revision")
+                    or captured.get("can_undo") != before.get("can_undo")
+                    or captured.get("can_redo") != before.get("can_redo")):
+                raise RuntimeError("Slider changed document revision or history before Apply")
+            write_json(output / "slider-evidence.json", captured["slider_evidence"])
+            actions.append({"action": "numeric_slider_evidence_validated", "target": "wave_count",
+                            "evidence_source": "Slate IInputProcessor observation",
+                            "physical_input_provenance_verified": False})
+            checkpoint("slider")
+        else:
+            fill("波数", "2", "SNumericEntryBox")
         fill("基地生命", "1700", "SNumericEntryBox")
         fill("初始资源", "425", "SNumericEntryBox")
-        fill("波数", "2", "SNumericEntryBox")
-        if slider:
-            c = control("波数", "SNumericEntryBox")
-            position_cursor(c["x"], c["y"])
-            wait(lambda s: any(p.startswith(c["type"] + ":") and "波数" in p for p in s.get("hover_path", [])), 3)
-            foreground()
-            user.mouse_event(0x0002, 0, 0, 0, 0)
-            try:
-                user.keybd_event(0x10, 0, 0, 0)
-                try:
-                    for _ in range(10):
-                        foreground()
-                        user.mouse_event(0x0001, 100, 0, 0, 0)
-                        time.sleep(0.08)
-                    wait(lambda s: s.get("draft_waves") == 3 and s.get("mouse_captured"), 3)
-                finally:
-                    foreground()
-                    user.keybd_event(0x10, 0, 2, 0)
-            finally:
-                foreground()
-                user.mouse_event(0x0004, 0, 0, 0, 0)
-            time.sleep(0.5)
-            wait(lambda s: s.get("draft_waves") == 3 and not s.get("mouse_captured"), 3)
-            actions.append({"action": "numeric_slider_drag", "label": "波数", "slate_hit_verified": True,
-                            "active_capture_observed": True, "released_value_preserved": True})
-            fill("波数", "2", "SNumericEntryBox")
         wait(lambda s: s.get("draft_waves") == 2 and s.get("draft_resources") == 425 and s.get("draft_base_health") == 1700)
         checkpoint("draft")
         click("Save")
+        wait(lambda s: s.get("draft_waves") == 2)
         checkpoint("saved-draft")
         click("应用参数", scroll=True)
-        wait(lambda s: s.get("can_undo"))
+        wait(lambda s: s.get("can_undo") and s.get("draft_waves") == 2)
         checkpoint("parameters-applied")
         click("Undo")
         wait(lambda s: not s.get("can_undo") and s.get("draft_waves") == 3)
         checkpoint("parameters-undo")
         click("Redo")
-        wait(lambda s: s.get("can_undo") and s.get("draft_resources") == 425)
+        wait(lambda s: s.get("can_undo") and s.get("draft_resources") == 425 and s.get("draft_waves") == 2)
         checkpoint("parameters-redo")
         click("Save")
+        wait(lambda s: s.get("draft_waves") == 2)
         checkpoint("saved-applied")
         click("Load")
-        wait(lambda s: not s.get("can_undo") and not s.get("can_redo"))
+        wait(lambda s: not s.get("can_undo") and not s.get("can_redo") and s.get("draft_waves") == 2)
         checkpoint("reloaded")
         fill("初始资源", "999", "SNumericEntryBox")
-        wait(lambda s: s.get("draft_resources") == 999)
+        wait(lambda s: s.get("draft_resources") == 999 and s.get("draft_waves") == 2)
         click("重新读取项目 / 放弃草稿", scroll=True)
-        wait(lambda s: s.get("draft_resources") == 425)
+        wait(lambda s: s.get("draft_resources") == 425 and s.get("draft_waves") == 2)
         checkpoint("discarded")
         checkpoint("finish")
-        (output / "os-input-actions.json").write_text(json.dumps(actions, ensure_ascii=False, indent=2), encoding="utf-8")
         return
     click("发布与本地作品库", scroll=True)
     time.sleep(0.5)
@@ -402,40 +840,32 @@ def drive_mouse_ui(process, output, base, menu=False, live=False, parameters=Fal
     (output / "os-input-actions.json").write_text(json.dumps(actions, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--engine", required=True, type=Path)
-    parser.add_argument("--all-tests", action="store_true")
-    parser.add_argument("--generated-document", type=Path)
-    parser.add_argument("--mouse-ui", action="store_true")
-    parser.add_argument("--menu-entry", action="store_true")
-    parser.add_argument("--mouse-live-authorized", action="store_true")
-    parser.add_argument("--parameter-ui", action="store_true")
-    parser.add_argument("--slider-ui", action="store_true")
-    parser.add_argument("--library-ui", action="store_true")
-    args = parser.parse_args()
-    if args.slider_ui and not args.parameter_ui:
-        parser.error("--slider-ui requires --parameter-ui")
-    if (args.menu_entry or args.mouse_live_authorized or args.parameter_ui or args.library_ui) and not args.mouse_ui:
-        parser.error("Menu, live, parameter and library modes require --mouse-ui")
-    if sum((args.menu_entry, args.mouse_live_authorized, args.parameter_ui, args.library_ui)) > 1:
-        parser.error("Menu, live and parameter modes run separately")
-    if args.mouse_live_authorized:
-        import os
-        if not os.environ.get("DEEPSEEK_API_KEY"):
-            parser.error("Live OS input requires process key")
-    if args.mouse_ui and (args.all_tests or args.generated_document):
-        parser.error("--mouse-ui runs separately from headless full regression")
+def main(argv=None):
+    args = parse_arguments(argv)
     root = Path(__file__).resolve().parents[2]
-    if args.generated_document:
-        args.generated_document = args.generated_document.resolve()
-        if not args.all_tests or not args.generated_document.is_file() or not args.generated_document.is_relative_to(root / "Saved"):
-            parser.error("--generated-document requires --all-tests and an existing document under project Saved")
-    output = root / "Saved/CopilotHttpVerification" / uuid.uuid4().hex
-    user_dir = output / "editor-user"
-    if args.library_ui:
-        output = user_dir / "Saved/verification"
-    output.mkdir(parents=True)
+    output, user_dir = verification_paths(args, root)
+    try:
+        return _run_verification(args, root, output, user_dir)
+    except BaseException as error:
+        if args.mouse_ui:
+            result = read_json(output / "result.json")
+            result = result if isinstance(result, dict) else {}
+            result.update(slider_result_details(output, args))
+            result.update({"passed": False, "error_type": type(error).__name__,
+                           "error": "Mouse UI driver stopped; inspect action journal and slider diagnostics",
+                           "actions": read_json(output / "os-input-actions.json"),
+                           "automated_os_input": True})
+            write_json(output / "result.json", result)
+            print(output / "result.json", flush=True)
+        raise
+    finally:
+        if args.mouse_ui:
+            # Keep the incrementally written journal even after startup/input exceptions.
+            actions = read_json(output / "os-input-actions.json")
+            write_json(output / "os-input-actions.json", actions if isinstance(actions, list) else [])
+
+
+def _run_verification(args, root, output, user_dir):
     events = []
     mutex = threading.Lock()
     wave = {"enemyPrefabId": "official.unit.basic_enemy", "enemyCount": 8, "spawnIntervalSeconds": 1.0,
@@ -575,70 +1005,66 @@ def main():
         do_POST = serve
         do_GET = serve
 
-    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "localhost")])
-    now = datetime.now(timezone.utc)
-    certificate = (x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
-                   .serial_number(x509.random_serial_number()).not_valid_before(now - timedelta(minutes=5))
-                   .not_valid_after(now + timedelta(days=1)).add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
-                   .add_extension(x509.SubjectAlternativeName([x509.DNSName("localhost")]), critical=False).sign(key, hashes.SHA256()))
-    cert_path, key_path = output / "fixture-ca.pem", output / "fixture-tls.key"
-    cert_path.write_bytes(certificate.public_bytes(serialization.Encoding.PEM))
-    key_path.write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    tls_server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    context.load_cert_chain(cert_path, key_path)
-    tls_server.socket = context.wrap_socket(tls_server.socket, server_side=True)
-    threads = [threading.Thread(target=item.serve_forever, daemon=True) for item in (server, tls_server)]
-    for thread in threads:
-        thread.start()
+    server = tls_server = key_path = None
+    threads = []
+    fixture_flags = []
+    if not args.parameter_ui:
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "localhost")])
+        now = datetime.now(timezone.utc)
+        certificate = (x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
+                       .serial_number(x509.random_serial_number()).not_valid_before(now - timedelta(minutes=5))
+                       .not_valid_after(now + timedelta(days=1)).add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+                       .add_extension(x509.SubjectAlternativeName([x509.DNSName("localhost")]), critical=False).sign(key, hashes.SHA256()))
+        cert_path, key_path = output / "fixture-ca.pem", output / "fixture-tls.key"
+        cert_path.write_bytes(certificate.public_bytes(serialization.Encoding.PEM))
+        key_path.write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        tls_server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(cert_path, key_path)
+        tls_server.socket = context.wrap_socket(tls_server.socket, server_side=True)
+        threads = [threading.Thread(target=item.serve_forever, daemon=True) for item in (server, tls_server)]
+        for thread in threads:
+            thread.start()
+        fixture_flags = [f"-CopilotFixture=http://127.0.0.1:{server.server_port}",
+                         f"-CopilotTlsFixture=https://localhost:{tls_server.server_port}", f"-CopilotTlsCa={cert_path}",
+                         f"-CopilotTlsMismatch=https://127.0.0.1:{tls_server.server_port}"]
     log = output / "editor.log"
     selector = "AkUGC" if args.all_tests else "AkUGC.Editor.Copilot.RealHttpProtocol"
     command = [str(args.engine / "Engine/Binaries/Win64/UnrealEditor-Cmd.exe"), str(root / "AkUGCPlatform.uproject"),
-               f"-CopilotFixture=http://127.0.0.1:{server.server_port}",
-               f"-CopilotTlsFixture=https://localhost:{tls_server.server_port}", f"-CopilotTlsCa={cert_path}",
-               f"-CopilotTlsMismatch=https://127.0.0.1:{tls_server.server_port}", f"-ExecCmds=Automation RunTests {selector}",
+               *fixture_flags, f"-ExecCmds=Automation RunTests {selector}",
                "-TestExit=Automation Test Queue Empty", "-unattended", "-nop4", "-nosplash", "-nullrhi", "-stdout", f"-abslog={log}"]
     if args.generated_document:
         command += [f"-CopilotGeneratedDocument={args.generated_document}", f"-CopilotRuntimeOutput={output / 'generated-runtime.json'}"]
     if args.mouse_ui:
-        command[0] = str(args.engine / "Engine/Binaries/Win64/UnrealEditor.exe")
-        command = [part for part in command if part != "-nullrhi" and not part.startswith("-ExecCmds=")]
-        ui_selector = "Automation RunTests AkUGC.Editor.Copilot.OSMouseInteraction"
-        if args.slider_ui:
-            ui_selector = "Slate.ForceRawInputSimulation 1," + ui_selector
-        command += [f"-ExecCmds={ui_selector}", f"-CopilotMouseOutput={output}"]
-        if args.menu_entry:
-            command += ["-CopilotMenuEntry"]
-        if args.mouse_live_authorized:
-            command += ["-CopilotMouseLive", "-CopilotLiveAuthorized"]
-        if args.parameter_ui:
-            command += ["-CreatorParameterMouse"]
-        if args.library_ui:
-            command = [part for part in command if part != "-unattended"]
-            command += ["-CreatorLibraryMouse", "-UnattendedInput", f"-UserDir={user_dir}"]
+        command = mouse_ui_command(command, args, output, user_dir)
     try:
         with (output / "stdout.log").open("w", encoding="utf-8") as stream:
             import os
             child_env = dict(os.environ)
             child_env.pop("DEEPSEEK_API_KEY", None)
+            deadline = time.monotonic() + (420 if args.manual_slider else 220)
             process = subprocess.Popen(command, cwd=root, stdout=stream, stderr=subprocess.STDOUT, env=child_env)
             try:
                 if args.mouse_ui:
-                    drive_mouse_ui(process, output, f"http://127.0.0.1:{server.server_port}", args.menu_entry, args.mouse_live_authorized, args.parameter_ui, args.slider_ui, args.library_ui)
-                code = process.wait(timeout=220)
+                    base = f"http://127.0.0.1:{server.server_port}" if server else ""
+                    drive_mouse_ui(process, output, base, args.menu_entry, args.mouse_live_authorized,
+                                   args.parameter_ui, args.slider_ui, args.library_ui, args.manual_slider)
+                code = process.wait(timeout=max(1, deadline - time.monotonic()))
             finally:
                 if process.poll() is None:
                     process.terminate()
                     process.wait(timeout=15)
     finally:
         for item in (server, tls_server):
-            item.shutdown()
-            item.server_close()
+            if item is not None:
+                item.shutdown()
+                item.server_close()
         for thread in threads:
             thread.join(timeout=5)
-        key_path.unlink(missing_ok=True)
+        if key_path is not None:
+            key_path.unlink(missing_ok=True)
     raw = log.read_bytes()
     try:
         text = raw.decode("utf-8")
@@ -666,8 +1092,11 @@ def main():
         result["real_model_called"] = args.mouse_live_authorized
         result["model_calls_budget"] = 1 if args.mouse_live_authorized else 0
         result["automated_os_input"] = True
-        result["numeric_slider_verified"] = args.slider_ui and any(a.get("action") == "numeric_slider_drag" for a in json.loads((output / "os-input-actions.json").read_text(encoding="utf-8")))
-        (output / "result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        result.update(slider_result_details(output, args, completed=bool(result["passed"])))
+        if args.slider_ui or args.manual_slider:
+            result["passed"] = result["passed"] and result["numeric_slider_verified"]
+        result["actions"] = read_json(output / "os-input-actions.json")
+        write_json(output / "result.json", result)
         print(output / "result.json")
         print("mouse_ui_passed=", result["passed"])
         if not result["passed"]:
