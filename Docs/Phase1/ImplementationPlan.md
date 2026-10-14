@@ -461,3 +461,16 @@ P14 已提交 `276b674`；P15 已提交 `49a0e20`；P16 已提交 `6fd3282`；**
 - 最终收紧后 Python **94/94** 通过；AkUGCPlatformEditor Win64 Development 编译成功；Editor 全量仍为 **125项成功**，42个 Copilot 固定协议场景全部完成，结果 `Saved/Phase1AcceptanceTool_20261014_full_1/result.json` 为 `passed=true`。该运行未执行人工滑块、真人首作或跨设备联机，不能转化为外部门禁通过。
 
 该执行包只消除“如何实测、如何留证、如何判定”的流程阻断；当前尚无真人或跨设备新证据，Phase 1产品状态仍为No-Go。下一步必须安排非程序员测试者、旁观者及至少4台可联网Win64设备，按手册执行，不能继续由本机自动化代签。
+
+### 2026-10-14 续轮：四参与者本机预演
+
+- 外部门禁执行包已提交为 `8398740`。按用户要求，在物理设备暂不可用时先执行明确不计外部门禁的本机四参与者预演；没有修改 `acceptance.json`，也没有把本机日志作为实体设备证据。
+- 打包 Dedicated Server + 4 个独立打包 Client：10个签名种子各2轮，共20局全部完成；四个Client每轮终局一致，每个种子均实际拒绝第5个Client，Server和四端Lua启动链成立。结果 `Saved/LocalFourProcessRehearsal_20261014_1400_ds10x2/ds_result.json`。
+- Editor `-game` Listen主机 + 3个打包Client：同样10种子各2轮，共20局全部完成，四参与者终局一致并逐种子拒绝第5个连接。结果 `Saved/LocalFourProcessRehearsal_20261014_1420_listen10x2/listen_result.json`。此模式只复核既有Editor Listen路径，不冒充打包Game候选。
+- `verify_rooms.py`新增显式`--packaged-listen`和`--game`：使用真实打包 `AkUGCPlatform.exe` Listen主机 + 3个打包Client。先完成1种子单轮冒烟，再完成10种子各2轮；四端终局一致，每种子拒绝第5个连接。结果 `Saved/LocalFourProcessRehearsal_20261014_packaged_listen_smoke/packaged_listen_result.json`、`Saved/LocalFourProcessRehearsal_20261014_1445_packaged_listen10x2/packaged_listen_result.json`。
+- 三个完整模式合计60个四人回合、30次满房拒绝；终局均为Score500、Resources321、Kills0，基地生命按种子稳定为993/986/979。脚本汇总断言通过，所有Game/Client/Server/Editor进程已清理。Python全量仍为94/94，脚本语法与补丁格式检查通过。
+- 全部运行准确标记`fresh_cook=false`和`NullRHI network/room verification`：复用本轮前已有成功打包的Runtime包，本次提交只改Editor测试/验收工具而未改Runtime；使用同机回环、自动化夹具且无真实渲染。它们不验证独立物理设备、真实局域网、人工操作、真实文件传递、独立核钥或视觉，Phase 1产品状态继续为No-Go。
+- 本机恢复矩阵随后全部重跑通过：打包Game从本地准备经真实OS F6建房后主动离房并恢复，结果 `Saved/LocalFourProcessRehearsal_20261014_1510_recovery_leave/recovery_result.json`；Client双向100%丢包在4秒原生超时后恢复，结果 `Saved/LocalFourProcessRehearsal_20261014_1511_recovery_timeout/recovery_result.json`；强制终止打包Listen主机后保留60秒原生超时并恢复，结果 `Saved/LocalFourProcessRehearsal_20261014_1512_recovery_crash/recovery_result.json`。三者均确认Client目标身份、实际监听端口、旧NetDriver/会话清理、干净本地准备及后续单人开始/返回。
+- Dedicated重连预演同样通过：先2人开局、运行中加入至4人、一个Client显式退出后以新进程/新成员身份加入，四端收到一致终局；结果 `Saved/LocalFourProcessRehearsal_20261014_1514_reconnect/reconnect_result.json`。这是新身份重新加入，不宣称恢复旧身份。
+
+本机可替代的联机与恢复预检已闭环。下一目标不再重复堆叠同机轮数，而是冻结并归档Creator/Game/Client/Server候选、执行一次本地证据模板初始化演练；最终仍必须回到手册规定的真人与物理设备执行，不能将上述结果写入外部门禁清单。

@@ -603,11 +603,14 @@ def main():
     parser.add_argument("--engine", required=True, type=Path)
     parser.add_argument("--seeds", type=int, default=1)
     parser.add_argument("--rounds", type=int, default=1)
-    parser.add_argument("--client", type=Path, help="Archived Client executable (default DS mode only)")
+    parser.add_argument("--client", type=Path, help="Archived Client executable (DS or packaged Listen mode)")
     parser.add_argument("--server", type=Path, help="Archived Server executable (default DS mode only)")
+    parser.add_argument("--game", type=Path, help="Archived Game executable (packaged Listen mode only)")
     parser.add_argument("--members", type=int, choices=(2, 4), default=4)
     parser.add_argument("--cook", action="store_true")
     parser.add_argument("--listen", action="store_true")
+    parser.add_argument("--packaged-listen", action="store_true",
+                        help="Use the staged Game executable as the Listen host")
     parser.add_argument("--reconnect", action="store_true")
     parser.add_argument("--recovery", choices=("leave", "crash", "timeout"))
     parser.add_argument("--packaged-recovery", action="store_true")
@@ -616,10 +619,19 @@ def main():
     parser.add_argument("--render", action="store_true", help="Keyboard rounds require native 3D attributed pixels")
     parser.add_argument("--output", type=Path, help="Fresh isolated output directory")
     options = parser.parse_args()
-    default_ds = not (options.listen or options.reconnect or options.recovery or options.packaged_recovery or options.host_entry_ui or options.keyboard_rounds)
+    default_ds = not (
+        options.listen or options.packaged_listen or options.reconnect or options.recovery
+        or options.packaged_recovery or options.host_entry_ui or options.keyboard_rounds)
     if not default_ds and options.members != 4:
         parser.error("--members other than 4 is supported only in default DS mode")
-    if not default_ds and (options.client is not None or options.server is not None):
+    if options.packaged_listen and not options.listen:
+        parser.error("--packaged-listen requires --listen")
+    if options.game is not None and not options.packaged_listen:
+        parser.error("--game requires --packaged-listen")
+    if options.packaged_listen and options.server is not None:
+        parser.error("--server is not used by packaged Listen mode")
+    if not default_ds and not options.packaged_listen and (
+            options.client is not None or options.server is not None):
         parser.error("--client and --server are supported only in default DS mode")
     if options.keyboard_rounds and (options.recovery or options.listen or options.reconnect or options.packaged_recovery or options.host_entry_ui or options.seeds != 1 or options.rounds != 1):
         parser.error("Keyboard two-round flow runs separately from other room modes")
@@ -648,17 +660,32 @@ def main():
     project = root / "AkUGCPlatform.uproject"
     if options.cook:
         uat = options.engine / "Engine/Build/BatchFiles/RunUAT.bat"
-        for mode, target in (("Client", "AkUGCPlatformClient"), ("Server", "AkUGCPlatformServer")):
+        targets = (
+            (("Game", "AkUGCPlatform"), ("Client", "AkUGCPlatformClient"))
+            if options.packaged_listen else
+            (("Client", "AkUGCPlatformClient"), ("Server", "AkUGCPlatformServer"))
+        )
+        for mode, target in targets:
             args = [str(uat), "BuildCookRun", f"-project={project}", "-noP4", "-unattended", "-utf8output",
                     "-platform=Win64", f"-target={target}", "-build", "-cook", "-stage", "-pak", "-package"]
-            args += (["-client", "-noserver", "-clientconfig=Development"] if mode == "Client" else
-                     ["-server", "-noclient", "-serverplatform=Win64", "-serverconfig=Development"])
+            args += (
+                ["-client", "-noserver", "-clientconfig=Development"] if mode == "Client"
+                else ["-server", "-noclient", "-serverplatform=Win64", "-serverconfig=Development"]
+                if mode == "Server" else ["-clientconfig=Development"])
             run_checked(args, output / f"cook_{mode.lower()}.log", 3600)
+    game = options.game.resolve() if options.game else root / "Saved/StagedBuilds/Windows/AkUGCPlatform/Binaries/Win64/AkUGCPlatform.exe"
     client = options.client.resolve() if options.client else root / "Saved/StagedBuilds/WindowsClient/AkUGCPlatform/Binaries/Win64/AkUGCPlatformClient.exe"
     server = options.server.resolve() if options.server else root / "Saved/StagedBuilds/WindowsServer/AkUGCPlatform/Binaries/Win64/AkUGCPlatformServer.exe"
     for explicit, executable in ((options.client, client), (options.server, server)):
         if explicit is not None and not executable.is_file():
             raise RuntimeError(f"Missing executable: {executable}")
+    if options.packaged_listen:
+        for executable in (game, client):
+            if not executable.is_file():
+                raise RuntimeError(f"Missing packaged Listen executable: {executable}")
+            paks = executable.parents[2] / "Content/Paks"
+            if not paks.is_dir() or not any(paks.glob("*.pak")):
+                raise RuntimeError(f"Missing packaged Listen content: {paks}")
     results = []
     for seed in range(options.seeds):
         directory = output / f"{'listen' if options.listen else 'reconnect' if options.reconnect else 'ds'}_seed_{seed}"
@@ -674,7 +701,9 @@ def main():
             log.unlink(missing_ok=True)
             handle = (directory / f"{name}.stdout.log").open("w", encoding="utf-8")
             handles.append(handle)
-            explicit = options.server if name == "host" else options.client
+            explicit = (
+                options.game if name == "host" and options.packaged_listen
+                else options.server if name == "host" else options.client)
             process = subprocess.Popen([str(executable), *args, "-unattended", "-nop4", "-nosplash", "-nullrhi", "-stdout", f"-abslog={log}"],
                                        cwd=executable.parent if explicit else root, stdout=handle, stderr=subprocess.STDOUT)
             processes.append(process)
@@ -685,8 +714,11 @@ def main():
         try:
             host_args = ["/Game/Maps/Phase0?listen?room=1" if options.listen else "/Game/Maps/Phase0",
                          "-AkUGCRoom", f"-port={port}", f"-LogicPack={pack}", f"-LogicPackKey={key.read_text(encoding='utf-8-sig').strip()}"]
-            ds, ds_log = launch(editor if options.listen else server,
-                                ([str(project), "-game"] if options.listen else []) + host_args + (test_args if options.listen else []), "host")
+            host_executable = game if options.packaged_listen else editor if options.listen else server
+            host_prefix = [] if options.packaged_listen else [str(project), "-game"] if options.listen else []
+            ds, ds_log = launch(
+                host_executable,
+                host_prefix + host_args + (test_args if options.listen else []), "host")
             wait_for(ds, ds_log, "listening on port", 60)
             players = []
             if options.listen:
@@ -772,10 +804,14 @@ def main():
                         process.wait(timeout=15)
             for handle in handles:
                 handle.close()
-    result = {"mode": "listen" if options.listen else "dedicated_server", "cases": results,
-              "sources": {"client": str(client), "server": str(server), "fixture_editor": str(editor)},
+    result = {"mode": "packaged_listen" if options.packaged_listen else "listen" if options.listen else "dedicated_server", "cases": results,
+              "sources": {"client": str(client), "server": str(server), "game": str(game),
+                          "fixture_editor": str(editor)},
               "fresh_cook": options.cook, "rendering": "NullRHI network/room verification"}
-    result_path = output / ("listen_result.json" if options.listen else "reconnect_result.json" if options.reconnect else "ds_result.json")
+    result_path = output / (
+        "packaged_listen_result.json" if options.packaged_listen else
+        "listen_result.json" if options.listen else
+        "reconnect_result.json" if options.reconnect else "ds_result.json")
     result_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     print(result_path)
     print(json.dumps(result, ensure_ascii=False, indent=2))

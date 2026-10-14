@@ -119,6 +119,27 @@ Python 验证器会严格解析 `.akugc` JSON，核对签名清单字段、可�
 
 ## 5. 十种子跨设备联机
 
+### 5.0 可选本机四参与者预演
+
+在占用物理设备前，可先用回环网络、NullRHI 和自动化输入预演十种子双轮。Dedicated 模式运行一个打包 Server 和四个打包 Client；Packaged Listen 模式运行一个打包 Game 主机和三个打包 Client。两者都会为每个种子额外验证第 5 个连接被拒绝：
+
+```powershell
+$Game = "Saved\StagedBuilds\Windows\AkUGCPlatform\Binaries\Win64\AkUGCPlatform.exe"
+$Client = "Saved\StagedBuilds\WindowsClient\AkUGCPlatform\Binaries\Win64\AkUGCPlatformClient.exe"
+$Server = "Saved\StagedBuilds\WindowsServer\AkUGCPlatform\Binaries\Win64\AkUGCPlatformServer.exe"
+
+& $Python Tools/Tests/verify_rooms.py --engine $EngineRoot `
+  --seeds 10 --rounds 2 --members 4 --client $Client --server $Server `
+  --output Saved/LocalFourProcessRehearsal/<session>-dedicated
+
+& $Python Tools/Tests/verify_rooms.py --engine $EngineRoot `
+  --listen --packaged-listen --seeds 10 --rounds 2 --members 4 `
+  --game $Game --client $Client `
+  --output Saved/LocalFourProcessRehearsal/<session>-listen
+```
+
+本预演只用于尽早发现包、房间容量、复制和终局一致性问题。它使用同一台计算机、自动化测试作品和回环网络，不验证物理设备、真实局域网、人工操作、视觉、真实文件传递或独立核钥；其日志和结果不得填入 `acceptance.json`，也不得签署为外部门禁证据。
+
 ### 5.1 每个种子作品
 
 每台物理设备先解压对应冻结包到本地只读候选目录；不得从共享目录直接运行。开放选定 TCP/UDP 端口，并用实际局域网 IPv4 替换 `$HostIp`。每轮创建新的证据目录，`$Pack` 必须是本轮真实传递到主机设备的 `.akugc`，`$Key` 必须来自独立渠道：
