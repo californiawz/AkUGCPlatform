@@ -53,6 +53,30 @@ $Commit = git rev-parse HEAD
 
 这些是静态格式、角色清单和摘要绑定检查，不能单独证明二进制可启动、BuildId 与指定引擎实际兼容或 Pak 可被产品完整加载。Creator 的真实模块加载由人工滑块运行现场核对，Game/Client/Server 与 Paks 则必须由后续候选包启动、十种子和故障恢复原始证据补足；不得把初始化成功写成候选已可运行。
 
+### 2.1 可选候选冻结本机演练
+
+正式占用验收设备前，可以在完全干净的候选源码 worktree 中演练归档和清单初始化。若日常工作区包含未提交的个人改动，必须另建 detached worktree，不能为了通过检查而删除或暂存这些改动。以下路径都可以使用绝对路径指向已有 staged 构建；`--output` 必须是不存在的新目录：
+
+```powershell
+$Commit = git rev-parse HEAD
+& $Python Tools/Tests/prepare_phase1_candidate.py `
+  --project-root . `
+  --source-commit $Commit `
+  --creator-module <build-root>/Plugins/AkUGCEditor/Binaries/Win64/UnrealEditor-AkUGCEditor.dll `
+  --creator-modules-manifest <build-root>/Plugins/AkUGCEditor/Binaries/Win64/UnrealEditor.modules `
+  --game-root <build-root>/Saved/StagedBuilds/Windows/AkUGCPlatform `
+  --game-target <build-root>/Binaries/Win64/AkUGCPlatform.target `
+  --client-root <build-root>/Saved/StagedBuilds/WindowsClient/AkUGCPlatform `
+  --client-target <build-root>/Binaries/Win64/AkUGCPlatformClient.target `
+  --server-root <build-root>/Saved/StagedBuilds/WindowsServer/AkUGCPlatform `
+  --server-target <build-root>/Binaries/Win64/AkUGCPlatformServer.target `
+  --output <build-root>/Saved/Phase1CandidateRehearsal/<session>
+```
+
+工具复制实际 Editor 模块，将干净源码中的项目描述和各角色 `.target` 注入对应归档，并归档 Creator 项目文件和三个 staged 可分发树；staged 根目录中运行后生成的 `Saved` 会被排除。工具拒绝私钥、链接、路径碰撞和已有输出，并立即运行与 `init` 相同的 PE、BuildId、Target、Pak 和归档结构检查。产物位于输出目录的 `baseline/`，`candidate-preparation.json` 固定写明 `local_rehearsal=true` 和 `production_acceptance_evidence=false`。随后可将这五个基线文件传给上节 `init` 命令，确认全新 `acceptance.json` 骨架能够生成；不得填写虚构人工证据，也不得执行 `seal` 冒充通过。
+
+本演练只证明声明提交当时干净、归档过程和静态结构检查成功。它不证明输入二进制由该源码提交构建，不证明包能启动或引擎 BuildId 兼容，也不替代实体鼠标、非程序员、真实网络和物理设备验收。正式候选仍须由受控构建流程提供源码到二进制的来源记录。
+
 ## 3. 实体鼠标滑动
 
 此步骤独立于 60 分钟可用性计时。测试者和旁观者可以与可用性测试相同，也可以不同。
