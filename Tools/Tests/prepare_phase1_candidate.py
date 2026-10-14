@@ -35,6 +35,7 @@ CREATOR_TOP_LEVEL = (
     "Content",
     "Plugins",
     "Source",
+    "Lua",
     "Binaries",
 )
 CREATOR_EXCLUDED_DIRECTORIES = {
@@ -162,7 +163,8 @@ def collect_creator(
     for name in CREATOR_TOP_LEVEL:
         source = project_root / name
         if not source.exists():
-            if name in {"AkUGCPlatform.uproject", "Config", "Content", "Plugins"}:
+            if name in {
+                    "AkUGCPlatform.uproject", "Config", "Content", "Plugins", "Lua"}:
                 raise ValueError(f"Creator source is missing required path: {source}")
             continue
         if source.is_file():

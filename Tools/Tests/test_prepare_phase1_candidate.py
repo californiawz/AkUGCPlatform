@@ -118,6 +118,9 @@ class PreparePhase1CandidateTests(unittest.TestCase):
         (self.project / "Content").mkdir()
         (self.project / "Content" / "Marker.txt").write_text(
             "candidate", encoding="utf-8")
+        (self.project / "Lua").mkdir()
+        (self.project / "Lua" / "Main.lua").write_text(
+            "return {}\n", encoding="utf-8")
         plugin = self.project / "Plugins" / "AkUGCEditor"
         write_json(
             plugin / "AkUGCEditor.uplugin",
@@ -193,11 +196,14 @@ class PreparePhase1CandidateTests(unittest.TestCase):
             "12345678-1234-1234-1234-123456789abc",
         )
         self.assertTrue((output / "baseline" / "CreatorBuild.dll").is_file())
+        creator_archive = output / "baseline" / "CreatorPackage.zip"
         self.assertEqual(
             candidate.inspect_creator_package(
-                output / "baseline" / "CreatorPackage.zip")["creator_build_id"],
+                creator_archive)["creator_build_id"],
             "12345678-1234-1234-1234-123456789abc",
         )
+        with zipfile.ZipFile(creator_archive) as package:
+            self.assertIn("AkUGCPlatform/Lua/Main.lua", package.namelist())
         for role, archive in (
                 ("game_package", "GamePackage.zip"),
                 ("client_package", "ClientPackage.zip"),

@@ -32,7 +32,7 @@ $Python = ".\.venv-phase1-acceptance\Scripts\python.exe"
 ```
 
 1. 为 Creator、Listen Game、Client 和 Dedicated Server 生成最终候选构建。测试中途不得替换任何一项。
-2. 将完整 Creator 候选目录（项目 Content/Config、实际插件模块及引擎 BuildId 清单）、Game、Client 和 Server 分别压缩为归档文件。归档中不得包含 `private.key`、模型 API Key、Publisher 私钥目录或个人配置。
+2. 将完整 Creator 候选目录（项目 Content/Config/Lua、实际插件模块及引擎 BuildId 清单）、Game、Client 和 Server 分别压缩为归档文件。归档中不得包含 `private.key`、模型 API Key、Publisher 私钥目录或个人配置。
 3. Creator 标识文件必须使用本轮实际加载的 `Plugins/AkUGCEditor/Binaries/Win64/UnrealEditor-AkUGCEditor.dll`；人工滑块报告会重新计算该文件摘要。
 4. 在项目 `Saved` 下建立全新的会话目录，将 Creator 完整归档、Creator 模块标识和三个运行包共五个文件复制到该目录的 `baseline/`；初始化工具拒绝引用目录外文件、空文件、`.key` 或符号链接。
 5. 提交候选源码并确认工作区完全干净，再初始化清单。工具会拒绝 `--source-commit` 与当前 HEAD 不同、存在已跟踪修改，或存在任何未被 `.gitignore` 排除的未跟踪文件；五个文件必须同时提供，工具会保存相对路径、随机会话 nonce 和 SHA-256，最终校验时重新读取文件核对：
@@ -53,7 +53,25 @@ $Commit = git rev-parse HEAD
 
 这些是静态格式、角色清单和摘要绑定检查，不能单独证明二进制可启动、BuildId 与指定引擎实际兼容或 Pak 可被产品完整加载。Creator 的真实模块加载由人工滑块运行现场核对，Game/Client/Server 与 Paks 则必须由后续候选包启动、十种子和故障恢复原始证据补足；不得把初始化成功写成候选已可运行。
 
-### 2.1 可选候选冻结本机演练
+### 2.1 可选 clean HEAD 本机全新构建
+
+日常工作区有未提交改动时，先从候选提交建立全新的 detached worktree。该 worktree 中不得已有 `Binaries`、`Intermediate`、`Saved`、`DerivedDataCache` 或 `Content/Lua`。构建来源报告必须写到 worktree 之外的全新目录：
+
+```powershell
+$Commit = git rev-parse HEAD
+& $Python Tools/Tests/build_phase1_candidate.py `
+  --project-root . `
+  --source-commit $Commit `
+  --engine $EngineRoot `
+  --luac E:/AkStudio/UnrealGameBuilerTool/LuaTool/Win64/luac.exe `
+  --output <build-root>/Saved/Phase1FreshBuild/<session>
+```
+
+工具先要求项目的 `DefaultGame.ini` 已将 `Content/Lua` 配置为 UFS staging 目录，再从已提交的 `Lua/` 生成临时 `Content/Lua/*.luac`，依次构建 Editor、Game、Client、Server，并为三种运行目标执行完整 Build/Cook/Stage/Pak/Package。成功后删除临时 Lua 产物及 UAT 生成的 `Build/Windows*` 打包顺序目录，使源码 worktree 恢复干净；`fresh-build-provenance.json` 记录源码提交、引擎与 Lua 编译器指纹、精确命令、日志摘要、Editor 模块 BuildId、Target receipt、PE/Pak 和完整 staged 文件树 SHA-256。任一步骤失败会保留日志及 `fresh-build-failure.json`，不得沿用部分产物。
+
+该报告提供一次本机 clean HEAD 到输出的可审计来源链，但使用共享引擎二进制与缓存，不是 hermetic 或可复现构建证明，也不是受控生产构建服务签章。报告固定保留 `production_build_attestation=false` 和 `reproducible_build_verified=false`，不能单独作为外部验收通过证据。
+
+### 2.2 可选候选冻结本机演练
 
 正式占用验收设备前，可以在完全干净的候选源码 worktree 中演练归档和清单初始化。若日常工作区包含未提交的个人改动，必须另建 detached worktree，不能为了通过检查而删除或暂存这些改动。以下路径都可以使用绝对路径指向已有 staged 构建；`--output` 必须是不存在的新目录：
 
