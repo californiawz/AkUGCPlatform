@@ -147,4 +147,29 @@
 3. 仅 `published` Release 可下载；客户端仍必须使用现有本地验签与内容哈希校验，不能信任服务端绕过。
 4. 第二个隔离用户下载、导入并完成一局；篡改包、Release ID 冲突、撤回版本和重试竞争均有自动化拒绝证据。
 
+### P19.1：不可变 Registry 与本地分发闭环
+
+**实现**：
+
+- 新增 `Services/ReleaseRegistry` Go 服务与版本化契约。Bearer 主体分为 Creator、Reviewer、Publisher 和 Player；本地认证配置只保存 token SHA-256 摘要，Creator 主体显式绑定允许使用的 Ed25519 发布公钥。
+- 上传入口在 16 MiB 预算内拒绝非法 UTF-8、过深/过多 token、重复字段、未知包字段、非法 UUID/hex 与无效 Manifest Ed25519 签名；Go 确定性 Manifest 编码已与 Unreal 实际签名夹具互验。
+- Go 的快速外层验签之后必须调用 `AkUGCPackTool -ValidateWork`。该受信任命令复用 `FAkUGCLogicPackLoader::LoadVerified`，重新检查签发公钥、ContentHash、Document、Logic IR 与能力白名单；验证器缺失、超时或拒绝时上传失败，不允许降级。
+- PostgreSQL 保存不超过 16 MiB 的首版制品及 SHA-256，使用主键、Check、不可变字段触发器、`Owner + Idempotency-Key` 事务级 advisory lock 和 Release 行级锁保护重复提交与状态竞争；所有实际状态变化在同一事务追加审计记录。
+- 状态固定为 `submitted → approved/rejected`、`approved → published`、`published → revoked`。Reviewer 不能审核自己的作品；只有 Owner + Publisher 可发布或撤回；`rejected` 与 `revoked` 不可下载，重复目标操作幂等，其他竞争返回明确冲突。
+- `Tools/Tests/verify_release_registry.py` 使用临时 PostgreSQL、独立 Creator/Reviewer/Player token 和独立作品库运行真实 HTTP 流程，并在下载后再次执行本地深度验证和 Packaged Client 游戏回归。四台物理设备仍由本机隔离角色代替。
+- 详细协议与当前边界记录在 `Docs/Phase2/ReleaseRegistryContract.md`；公钥轮换链登记、对象存储、私人可见性、协作者和构建任务留在后续 P19/P20 切片。
+
+**已验证（2026-10-15）**：
+
+- AkUGCPlatformEditor、Client、Server Win64 Development 编译成功；Python 回归 120/120。
+- Go 单元、HTTP、内存并发与真实 PostgreSQL 隔离 Schema 集成测试通过，`go vet ./...` 通过；Windows 当前未启用 CGO，因此本轮未执行 `go test -race`。
+- Editor `AkUGC` 完整自动化 134/134，Copilot 本地 HTTP/TLS 协议夹具 42/42。
+- 最终本机隔离闭环的 8 路并发提交产生一个 `201` 和七个 `200`，并完成未授权上传、篡改、Release ID 冲突、未发布下载、撤回下载拒绝，以及 Player 下载后本地深度验签和一局结算；证据位于本机 `Saved/ReleaseRegistryVerification/P19_Final3/result.json`。
+
+**边界**：
+
+- 当前静态 Bearer 认证和无 TLS HTTP 被强制限制在 loopback，仅用于本机 Alpha；公网部署必须替换正式身份提供方并启用 TLS。
+- 当前 Creator/Reviewer/Player 隔离是同一台机器上的独立 token、目录和进程，不等同于四台物理设备验收。
+- Creator Studio 与 Player 产品内的 Registry 操作仍需在 P19.2 接入；本切片由真实 PackTool、HTTP、PostgreSQL 和 Packaged Client 编排证明服务契约。
+
 玩家 Asset Pack 白名单试点放在 Release Registry 稳定之后，避免同时扩大网络、内容与沙箱攻击面。

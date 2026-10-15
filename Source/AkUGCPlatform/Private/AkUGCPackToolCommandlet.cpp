@@ -15,6 +15,7 @@
 #include "Prefab/AkUGCOfficialPrefabCatalog.h"
 #include "Prefab/AkUGCPrefabRegistry.h"
 #include "Template/AkUGCTowerDefenseTemplate.h"
+#include "Validation/AkUGCInputBudget.h"
 
 int32 UAkUGCPackToolCommandlet::Main(const FString& Params)
 {
@@ -27,6 +28,59 @@ int32 UAkUGCPackToolCommandlet::Main(const FString& Params)
 
     FString PublicKeyPath;
     FParse::Value(*Params, TEXT("PublicKey="), PublicKeyPath);
+
+    if (FParse::Param(*Params, TEXT("ValidateWork")))
+    {
+        FString InputPath;
+        FString TrustedKey;
+        if (!FParse::Value(*Params, TEXT("Input="), InputPath)
+            || !FParse::Value(*Params, TEXT("TrustedKey="), TrustedKey))
+        {
+            UE_LOG(LogTemp, Error, TEXT("[AkUGCPackTool] -ValidateWork requires -Input and -TrustedKey."));
+            return 20;
+        }
+        FString Json;
+        FString Error;
+        if (!AkUGCInputBudget::LoadTextFile(
+                InputPath,
+                AkUGCInputBudget::MaxLogicPackBytes,
+                TEXT("Registry Logic Pack"),
+                Json,
+                &Error))
+        {
+            UE_LOG(LogTemp, Error, TEXT("[AkUGCPackTool] Validation input rejected: %s"), *Error);
+            return 21;
+        }
+        const FAkUGCLogicPackLoadResult Verified =
+            FAkUGCLogicPackLoader::LoadVerified(Json, TrustedKey.TrimStartAndEnd().ToLower());
+        if (!Verified.bSucceeded)
+        {
+            UE_LOG(LogTemp, Error, TEXT("[AkUGCPackTool] Validation failed: %s"), *Verified.ErrorMessage);
+            return 22;
+        }
+        const FString Result = FString::Printf(
+            TEXT("{\"version\":1,\"releaseId\":\"%s\",\"projectId\":\"%s\",")
+            TEXT("\"schemaVersion\":%d,\"contentHash\":\"%s\",\"publicKey\":\"%s\"}"),
+            *Verified.Pack.Manifest.ReleaseId.ToString(EGuidFormats::DigitsWithHyphensLower),
+            *Verified.Pack.Manifest.ProjectId.ToString(EGuidFormats::DigitsWithHyphensLower),
+            Verified.Pack.Manifest.SchemaVersion,
+            *Verified.Pack.Manifest.ContentHash,
+            *Verified.Pack.Signature.PublicKey);
+        if (!FFileHelper::SaveStringToFile(
+                Result,
+                *OutputPath,
+                FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
+        {
+            UE_LOG(LogTemp, Error, TEXT("[AkUGCPackTool] Failed to write validation result."));
+            return 23;
+        }
+        UE_LOG(
+            LogTemp,
+            Display,
+            TEXT("[AkUGCPackTool] Validated Work=%s"),
+            *Verified.Pack.Manifest.ReleaseId.ToString(EGuidFormats::Digits));
+        return 0;
+    }
 
     // 1. 构造完整塔防场景。
     FAkUGCProjectDocument Document;
