@@ -1,6 +1,6 @@
 # Release Registry v1 契约
 
-> 状态：P19 最小分发闭环与 P20.1 云项目权限基础；2026-10-15。
+> 状态：P19 最小分发闭环与 P20.2 Creator Studio 云项目接入；2026-10-15。
 > 范围：云项目、协作者、不可变 `.akugc` 版本的提交、审核、发布、撤回和下载。
 
 ## 信任边界
@@ -55,14 +55,17 @@
 
 ## Creator Studio 客户端
 
-- 面板只操作最近一次成功的本地签名发布；上传前重新读取并以该记录的独立公钥、ReleaseId 和 ContentHash 执行 `LoadVerified`，不接受任意手工路径绕过。
+- 面板只操作最近一次成功的本地签名发布；上传前重新读取并以该记录的独立公钥执行 `LoadVerified`，同时绑定 ReleaseId、ContentHash、发布公钥、Pack Manifest ProjectId、Document Manifest ProjectId、当前 Document ProjectId 和作品名称，不接受任意手工路径或云端元数据绕过。
 - 静态 token 阶段仅允许 loopback HTTP；Base URL、Creator token 和请求状态只存在于面板内存，不写入项目、配置或作品库。
+- 上传前先读取当前 Project。存在时只有 Owner/Editor 可继续；404 时使用 `akugc-project-<ProjectIdDigits>` 和当前 Document DisplayName 创建，创建并发返回 409 时重新读取权限后再决定是否提交。Viewer、项目外主体和 Project 绑定不一致都明确停止，不发送制品。
 - 上传使用 `akugc-release-<ReleaseIdDigits>` 作为稳定幂等键。重复点击或重启后的相同包由 Registry 返回现有 Release，不创建新版本。
-- submit/get/publish 响应最多 64 KiB，必须是规范 UTF-8、无重复和未知字段的契约 JSON；返回的 ReleaseId、公钥及 ContentHash 必须与本地签名记录一致。
+- submit/get/publish 以及 Project/Member/Version 响应最多 64 KiB，必须是规范 UTF-8、无重复和未知字段的契约 JSON；返回的 ProjectId、ReleaseId、公钥及 ContentHash 必须与当前 Document 和本地签名记录一致。
 - P20.1 响应新增必需的 `submittedBySubject`；Creator 严格解析器同步校验该字段，避免真实 Registry 与本地协议夹具漂移。
-- Registry 元数据只用于显示状态和启用发布操作。客户端不能把响应里的 `publisherPublicKey` 当作信任根，也不能修改、重新签名或覆盖本地制品。
+- P20.2 面板按 Project → Members → Versions 串行刷新，版本请求固定 `limit=100`；若返回 `nextCursor`，界面必须说明只展示最新 100 条，不能暗示历史完整。
+- 只有当前 Project 的 Owner 可以从面板设置或移除成员；Subject 必须匹配 `[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}`，可设置角色只有 Editor/Viewer，不能通过客户端请求修改 Owner。
+- Registry 元数据只用于显示状态和启用授权操作。客户端不能把响应里的 `publisherPublicKey` 当作信任根，也不能修改、重新签名或覆盖本地制品；任何 Registry 请求链都不得推进 Document Revision 或改变 Document Hash。
 - Reviewer 操作不进入 Creator 面板；Creator 只有在刷新得到 `approved` 后才能发起 publish。撤回和公钥轮换链登记留在后续切片。
-- 取消只终止客户端等待，不能回滚可能已经到达服务端的提交或发布；取消后必须刷新状态确认最终结果。
+- 取消会终止当前客户端等待并阻止自动创建、提交或后续刷新链继续执行，但不能回滚可能已经到达服务端的操作；取消后必须刷新状态确认最终结果。
 
 ## Packaged Player 客户端
 
@@ -126,6 +129,6 @@
 
 - P19 v1 将小于 16 MiB 的制品保存在 PostgreSQL `bytea`，便于先证明事务与不可变语义；对象存储拆分在 Registry 契约稳定后进行，迁移时 ArtifactSHA256 和不可变语义不得改变。
 - Publisher 公钥当前由本地认证配置绑定；P18.1 的双签名轮换链登记 API 是后续 P19 切片，不能通过修改现有 Release 的公钥来模拟轮换。
-- P19.2 已接入 Creator Studio，P19.3 已接入 Packaged Player；P20.1 先完成 Registry 项目/成员/版本基础与本机协议验收，Creator Studio 的项目和协作者产品界面留给下一切片。
+- P19.2 已接入 Creator Release 操作，P19.3 已接入 Packaged Player，P20.1 完成 Registry 项目权限基础，P20.2 已接入 Creator Studio 项目登记、成员管理和版本历史。
 - Reviewer UI、撤回 UI、私人/公开可见性、正式 IdP、构建任务、DS 固定版本和资产包上传不属于本切片。
 - 四台真实物理设备验收按当前决策延期；本阶段使用本机隔离 Owner、Editor、Viewer、Reviewer、Player 和 PostgreSQL 进程验证。

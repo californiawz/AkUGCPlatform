@@ -874,6 +874,8 @@ def _run_verification(args, root, output, user_dir):
     events = []
     registry_events = []
     registry_release = {}
+    registry_project = {}
+    registry_members = {}
     mutex = threading.Lock()
     wave = {"enemyPrefabId": "official.unit.basic_enemy", "enemyCount": 8, "spawnIntervalSeconds": 1.0,
             "enemyMaxHealth": 100.0, "enemyMoveSpeed": 300.0, "enemyGoalDamage": 10.0, "startDelaySeconds": 0.0}
@@ -1043,6 +1045,26 @@ def _run_verification(args, root, output, user_dir):
                 "updatedAt": f"2026-10-15T06:0{revision - 1}:00Z",
             }
 
+        def project(self):
+            revision = registry_project["revision"]
+            return {
+                "projectId": registry_project["project_id"],
+                "displayName": registry_project["display_name"],
+                "ownerSubject": "creator-a",
+                "revision": revision,
+                "createdAt": "2026-10-15T05:00:00Z",
+                "updatedAt": f"2026-10-15T05:0{revision - 1}:00Z",
+            }
+
+        def member(self, subject, role):
+            return {
+                "projectId": registry_project["project_id"],
+                "subject": subject,
+                "role": role,
+                "addedAt": "2026-10-15T05:01:00Z",
+                "updatedAt": "2026-10-15T05:02:00Z",
+            }
+
         def serve(self):
             authorization_valid = (
                 self.headers.get("Authorization")
@@ -1059,9 +1081,131 @@ def _run_verification(args, root, output, user_dir):
             }
             with mutex:
                 registry_events.append(event)
+            body = self.rfile.read(size) if size else b""
             if not authorization_valid:
                 self.send_json(401, {"error": {"code": "unauthenticated"}})
                 return
+            project_prefix = "/v1/projects/"
+            if self.command == "GET" and self.path.startswith(project_prefix):
+                suffix = self.path[len(project_prefix):]
+                requested_id = suffix.split("/", 1)[0]
+                try:
+                    requested_id = str(uuid.UUID(requested_id)).lower()
+                except ValueError:
+                    self.send_json(400, {"error": {"code": "invalid_input"}})
+                    return
+                if "project_id" not in registry_project:
+                    registry_project["requested_id"] = requested_id
+                    self.send_json(404, {"error": {"code": "not_found"}})
+                    return
+            if self.command == "POST" and self.path == "/v1/projects":
+                try:
+                    value = json.loads(body.decode("utf-8"))
+                    project_id = str(uuid.UUID(value["projectId"])).lower()
+                    display_name = value["displayName"]
+                except (KeyError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                    self.send_json(400, {"error": {"code": "invalid_input"}})
+                    return
+                if (
+                    event["content_type"] != "application/json"
+                    or event["idempotency_key"].lower()
+                        != "akugc-project-" + project_id.replace("-", "")
+                    or registry_project.get("requested_id") != project_id
+                    or not isinstance(display_name, str)
+                    or not display_name
+                ):
+                    self.send_json(400, {"error": {"code": "invalid_input"}})
+                    return
+                registry_project.clear()
+                registry_project.update(
+                    {
+                        "project_id": project_id,
+                        "display_name": display_name,
+                        "revision": 1,
+                    }
+                )
+                self.send_json(
+                    201,
+                    {"created": True, "project": self.project()},
+                )
+                return
+            if "project_id" in registry_project:
+                project_id = registry_project["project_id"]
+                project_path = f"/v1/projects/{project_id}"
+                if self.command == "GET" and self.path == project_path:
+                    self.send_json(
+                        200,
+                        {"accessRole": "owner", "project": self.project()},
+                    )
+                    return
+                if self.command == "GET" and self.path == project_path + "/members":
+                    self.send_json(
+                        200,
+                        {
+                            "members": [self.member("creator-a", "owner")]
+                            + [
+                                self.member(subject, role)
+                                for subject, role in sorted(registry_members.items())
+                            ]
+                        },
+                    )
+                    return
+                if (
+                    self.command == "GET"
+                    and self.path == project_path + "/versions?limit=100"
+                ):
+                    versions = []
+                    if registry_release:
+                        versions.append(
+                            self.release(
+                                registry_release.get("status", "submitted"),
+                                registry_release.get("revision", 1),
+                            )
+                        )
+                    self.send_json(200, {"versions": versions})
+                    return
+                member_prefix = project_path + "/members/"
+                if self.path.startswith(member_prefix):
+                    subject = self.path[len(member_prefix):]
+                    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", subject):
+                        self.send_json(400, {"error": {"code": "invalid_input"}})
+                        return
+                    if self.command == "PUT":
+                        try:
+                            value = json.loads(body.decode("utf-8"))
+                            role = value["role"]
+                        except (KeyError, TypeError, UnicodeDecodeError, json.JSONDecodeError):
+                            self.send_json(400, {"error": {"code": "invalid_input"}})
+                            return
+                        if (
+                            event["content_type"] != "application/json"
+                            or role not in ("editor", "viewer")
+                        ):
+                            self.send_json(400, {"error": {"code": "invalid_input"}})
+                            return
+                        changed = registry_members.get(subject) != role
+                        registry_members[subject] = role
+                        if changed:
+                            registry_project["revision"] += 1
+                        self.send_json(
+                            200,
+                            {
+                                "changed": changed,
+                                "member": self.member(subject, role),
+                                "project": self.project(),
+                            },
+                        )
+                        return
+                    if self.command == "DELETE":
+                        changed = subject in registry_members
+                        registry_members.pop(subject, None)
+                        if changed:
+                            registry_project["revision"] += 1
+                        self.send_json(
+                            200,
+                            {"changed": changed, "project": self.project()},
+                        )
+                        return
             if self.command == "POST" and self.path == "/v1/releases":
                 if (
                     size < 1
@@ -1074,7 +1218,7 @@ def _run_verification(args, root, output, user_dir):
                 ):
                     self.send_json(400, {"error": {"code": "invalid_input"}})
                     return
-                artifact = self.rfile.read(size)
+                artifact = body
                 try:
                     pack = json.loads(artifact.decode("utf-8-sig"))
                     manifest = pack["manifest"]
@@ -1093,8 +1237,17 @@ def _run_verification(args, root, output, user_dir):
                         "content_hash": manifest["contentHash"],
                         "artifact_sha256": hashlib.sha256(artifact).hexdigest(),
                         "artifact_size": len(artifact),
+                        "status": "submitted",
+                        "revision": 1,
                     }
                 )
+                if (
+                    "project_id" not in registry_project
+                    or registry_release["project_id"]
+                    != registry_project["project_id"]
+                ):
+                    self.send_json(409, {"error": {"code": "project_mismatch"}})
+                    return
                 self.send_json(
                     201,
                     {"created": True, "release": self.release("submitted", 1)},
@@ -1104,6 +1257,8 @@ def _run_verification(args, root, output, user_dir):
                 f"/v1/releases/{registry_release.get('release_id', '')}"
             )
             if self.command == "GET" and self.path == expected_path:
+                registry_release["status"] = "approved"
+                registry_release["revision"] = 2
                 self.send_json(200, {"release": self.release("approved", 2)})
                 return
             if (
@@ -1111,6 +1266,8 @@ def _run_verification(args, root, output, user_dir):
                 and self.path == expected_path + "/publish"
                 and size == 0
             ):
+                registry_release["status"] = "published"
+                registry_release["revision"] = 3
                 self.send_json(
                     200,
                     {"changed": True, "release": self.release("published", 3)},
@@ -1126,6 +1283,8 @@ def _run_verification(args, root, output, user_dir):
 
         do_POST = serve
         do_GET = serve
+        do_PUT = serve
+        do_DELETE = serve
 
     server = tls_server = registry_server = key_path = None
     threads = []
@@ -1259,23 +1418,52 @@ def _run_verification(args, root, output, user_dir):
         if not result["passed"]:
             raise RuntimeError("Mouse UI validation failed")
         return
+    registry_project_path = (
+        f"/v1/projects/{registry_release.get('project_id', '')}"
+    )
+    registry_release_path = (
+        f"/v1/releases/{registry_release.get('release_id', '')}"
+    )
+    registry_expected_sequence = [
+        ("GET", registry_project_path),
+        ("POST", "/v1/projects"),
+        ("POST", "/v1/releases"),
+        ("GET", registry_release_path),
+        ("GET", registry_project_path),
+        ("GET", registry_project_path + "/members"),
+        ("GET", registry_project_path + "/versions?limit=100"),
+        ("PUT", registry_project_path + "/members/editor-b"),
+        ("GET", registry_project_path),
+        ("GET", registry_project_path + "/members"),
+        ("GET", registry_project_path + "/versions?limit=100"),
+        ("DELETE", registry_project_path + "/members/editor-b"),
+        ("GET", registry_project_path),
+        ("GET", registry_project_path + "/members"),
+        ("GET", registry_project_path + "/versions?limit=100"),
+        ("POST", registry_release_path + "/publish"),
+    ]
     registry_protocol_passed = (
         not args.all_tests
         or (
-            "[AkUGCReleaseRegistryHTTP] Passed Operations=3 LoopbackOnly=1" in text
-            and len(registry_events) == 3
-            and registry_events[0]["method"] == "POST"
-            and registry_events[0]["path"] == "/v1/releases"
-            and registry_events[0]["content_type"] == "application/vnd.akugc+json"
-            and registry_events[0]["idempotency_key"].startswith("akugc-release-")
-            and registry_events[0]["content_length"] > 0
-            and registry_events[1]["method"] == "GET"
-            and registry_events[1]["path"].endswith(registry_release["release_id"])
-            and registry_events[2]["method"] == "POST"
-            and registry_events[2]["path"].endswith(
-                registry_release["release_id"] + "/publish"
+            "[AkUGCReleaseRegistryHTTP] Passed Operations=16 LoopbackOnly=1" in text
+            and [
+                (event["method"], event["path"])
+                for event in registry_events
+            ] == registry_expected_sequence
+            and registry_events[1]["content_type"] == "application/json"
+            and registry_events[1]["idempotency_key"].startswith(
+                "akugc-project-"
             )
-            and registry_events[2]["content_length"] == 0
+            and registry_events[2]["content_type"]
+                == "application/vnd.akugc+json"
+            and registry_events[2]["idempotency_key"].startswith(
+                "akugc-release-"
+            )
+            and registry_events[2]["content_length"] > 0
+            and registry_events[7]["content_type"] == "application/json"
+            and registry_events[7]["content_length"] > 0
+            and registry_events[11]["content_length"] == 0
+            and registry_events[15]["content_length"] == 0
             and all(event["authorization_valid"] for event in registry_events)
         )
     )

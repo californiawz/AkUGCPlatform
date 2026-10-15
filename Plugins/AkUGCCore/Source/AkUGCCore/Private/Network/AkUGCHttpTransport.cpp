@@ -95,7 +95,7 @@ namespace AkUGCHttpCurl
 			|| Spec.Url.Contains(TEXT("@"))
 			|| Spec.Url.Contains(TEXT("\\"))
 			|| Spec.Url.Contains(TEXT("#"))
-			|| Spec.Url.Contains(TEXT("?"))
+			|| (!Spec.bAllowQuery && Spec.Url.Contains(TEXT("?")))
 			|| (!Spec.Url.StartsWith(
 					TEXT("https://"),
 					ESearchCase::CaseSensitive)
@@ -476,10 +476,18 @@ FAkUGCHttpRequestPtr FAkUGCHttpTransport::Start(
 				Set(CURLOPT_NOSIGNAL, 1L);
 				Set(CURLOPT_SSL_VERIFYPEER, 1L);
 				Set(CURLOPT_SSL_VERIFYHOST, 2L);
-				if (Spec.Method == EAkUGCHttpMethod::Post)
+				if (Spec.Method == EAkUGCHttpMethod::Post
+					|| Spec.Method == EAkUGCHttpMethod::Put)
 				{
 					static const uint8 EmptyBody = 0;
-					Set(CURLOPT_POST, 1L);
+					if (Spec.Method == EAkUGCHttpMethod::Post)
+					{
+						Set(CURLOPT_POST, 1L);
+					}
+					else
+					{
+						Set(CURLOPT_CUSTOMREQUEST, "PUT");
+					}
 					Set(
 						CURLOPT_POSTFIELDS,
 						Spec.Body.IsEmpty()
@@ -489,6 +497,10 @@ FAkUGCHttpRequestPtr FAkUGCHttpTransport::Start(
 					Set(
 						CURLOPT_POSTFIELDSIZE_LARGE,
 						static_cast<curl_off_t>(Spec.Body.Num()));
+				}
+				else if (Spec.Method == EAkUGCHttpMethod::Delete)
+				{
+					Set(CURLOPT_CUSTOMREQUEST, "DELETE");
 				}
 				else
 				{

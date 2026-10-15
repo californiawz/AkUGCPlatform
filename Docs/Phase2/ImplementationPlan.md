@@ -252,4 +252,30 @@
 - 私人/公开作品页、构建任务与对象存储、DS 固定版本/回滚、运营观测和 Asset Pack 均未进入本切片。
 - 四台真实物理设备验收继续按当前决策延期，不计入 P20.1 通过证据。
 
+### P20.2：Creator Studio 云项目产品接入
+
+**目标**：让 Creator Studio 直接登记当前 Portable Project、查看项目成员与不可变版本，并由 Owner 管理 Editor/Viewer；上传签名作品时自动确保同一 ProjectId 已登记，不再依赖外部编排。
+
+**实现**：
+
+- Creator Registry 客户端新增 Project 创建/读取、成员列表、成员设置/移除和最多 100 条版本历史接口，并支持有界异步 PUT/DELETE。Base URL 与静态 token 仍只存在于当前面板内存，loopback 限制不放宽。
+- 上传链先从当前 Document 读取 ProjectId 和 DisplayName，再重新读取并本地验签最近制品，同时绑定 Pack Manifest ProjectId、Document Manifest ProjectId、ReleaseId、ContentHash、发布公钥和作品名称。随后先读取云 Project：不存在时使用 `akugc-project-<ProjectIdDigits>` 幂等登记；并发创建冲突会重新读取权限，只有 Owner/Editor 才继续提交。
+- 作品库面板新增云项目刷新、Owner 协作者设置/移除，以及项目、成员和最新 100 条版本摘要。刷新按 Project → Members → Versions 单槽串行执行；存在 `nextCursor` 时明确提示历史已截断，不把云元数据当作作品信任根。
+- Project、Member 和 Version 控制面响应继续限制为 64 KiB，要求规范 UTF-8、无重复/未知字段、规范 UUID、安全 Subject、受支持角色和正确 Project 绑定；版本元数据不包含制品字节。
+- 取消当前请求会停止整个后续链。任一创建、读取、成员变更、版本刷新或 Release 操作都不能推进 Document Revision、改变 Document Hash、覆盖作品库记录或重新签名制品。
+- Editor 真实 HTTP 夹具覆盖首次 404、项目创建、签名包提交、Release 查询、项目/成员/版本刷新、成员 PUT/DELETE、变更后刷新和发布；同时保留严格解析、传输限制和本地文档不变式回归。
+
+**已验证（2026-10-15）**：
+
+- AkUGCPlatformEditor、Client、Server Win64 Development 编译成功；Python 回归 120/120。
+- Editor `AkUGC` 完整自动化 140/140，Copilot HTTP/TLS 42/42；Creator Registry 产品链完成 16 个真实 loopback HTTP 操作，并确认整个链未修改 Creator Revision 或 Document Hash。
+- 最终证据位于本机 `Saved/P20_2_Copilot_Final4/result.json`。
+
+**边界**：
+
+- 本切片没有邀请接受、改名、所有权转移、组织、公网 IdP/TLS 或 token 持久化；成员 Subject 由 Owner 显式输入，正式账号选择器留给身份系统接入。
+- 项目元数据和版本状态仅用于管理与展示；Creator、Player 和后续 DS 仍必须使用独立可信公钥本地验签。
+- 私人/公开作品页、构建任务与对象存储、DS 固定版本/回滚、运营观测和 Asset Pack 均留给后续 Creator Alpha 切片。
+- 四台真实物理设备验收继续按当前决策延期，不计入 P20.2 通过证据。
+
 玩家 Asset Pack 白名单试点放在 Release Registry 稳定之后，避免同时扩大网络、内容与沙箱攻击面。

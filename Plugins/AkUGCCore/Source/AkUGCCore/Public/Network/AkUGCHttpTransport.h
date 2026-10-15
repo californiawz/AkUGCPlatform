@@ -5,7 +5,9 @@
 enum class EAkUGCHttpMethod : uint8
 {
 	Get,
-	Post
+	Post,
+	Put,
+	Delete
 };
 
 struct AKUGCCORE_API FAkUGCHttpHeader
@@ -26,6 +28,7 @@ struct AKUGCCORE_API FAkUGCHttpRequestSpec
 	int32 MaxResponseBytes = 256 * 1024;
 	int32 MaxResponseHeaderBytes = 64 * 1024;
 	bool bAllowLoopbackHttpWithBearer = false;
+	bool bAllowQuery = false;
 	bool bAcceptCompressedResponse = true;
 #if WITH_DEV_AUTOMATION_TESTS
 	FString TestCaBundle;

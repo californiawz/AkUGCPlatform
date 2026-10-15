@@ -30,7 +30,7 @@ void SAkUGCWorkLibraryPanel::Construct(const FArguments& InArgs, UAkUGCEditorSub
 {
     Subsystem = InSubsystem;
     RegistryBaseUrl = TEXT("http://127.0.0.1:8088");
-    RegistryStatus = TEXT("Registry token 只保留在当前面板内存中；P19 本机模式只允许 loopback HTTP。请先完成一次本地签名发布。");
+    RegistryStatus = TEXT("Registry token 只保留在当前面板内存中；本机 Alpha 只允许 loopback HTTP。请先完成一次本地签名发布。");
     RecoveryPath = FPaths::Combine(
         FPaths::ProjectSavedDir(),
         TEXT("UGC/Recovery"),
@@ -60,24 +60,28 @@ void SAkUGCWorkLibraryPanel::Construct(const FArguments& InArgs, UAkUGCEditorSub
         + SVerticalBox::Slot().AutoHeight().Padding(0, 8, 0, 2)
         [SNew(STextBlock).Text(FText::FromString(TEXT("Release Registry（本机 Alpha）")))]
         + SVerticalBox::Slot().AutoHeight()
-        [SNew(STextBlock).Text(FText::FromString(TEXT("先上传最近一次本地签名包；独立 Reviewer 审核后刷新状态，再发布。静态 token 不保存，且不会替代作品签名或 Player 本地验签。"))).AutoWrapText(true)]
+        [SNew(STextBlock).Text(FText::FromString(TEXT("上传会先确认当前云 Project，不存在时自动登记，再提交已本地验签且 Project 绑定一致的签名包。静态 token 不保存，项目元数据不会替代作品签名或 Player 本地验签。"))).AutoWrapText(true)]
         + SVerticalBox::Slot().AutoHeight().Padding(0, 2)
         [SNew(SEditableTextBox)
+            .IsEnabled_Lambda([this] { return !PendingRegistryRequest.IsValid(); })
             .HintText(FText::FromString(TEXT("Registry Base URL（仅 http://127.0.0.1 或 localhost）")))
             .Text_Lambda([this] { return FText::FromString(RegistryBaseUrl); })
             .OnTextChanged_Lambda([this](const FText& Text) { RegistryBaseUrl = Text.ToString(); })]
         + SVerticalBox::Slot().AutoHeight().Padding(0, 2)
         [SNew(SEditableTextBox)
+            .IsEnabled_Lambda([this] { return !PendingRegistryRequest.IsValid(); })
             .IsPassword(true)
             .HintText(FText::FromString(TEXT("Creator Bearer Token（仅面板内存，不保存）")))
             .OnTextChanged_Lambda([this](const FText& Text) { RegistryToken = Text.ToString(); })]
         + SVerticalBox::Slot().AutoHeight()
         [SNew(SHorizontalBox)
             + SHorizontalBox::Slot().AutoWidth().Padding(2)
-            [SNew(SButton).Text(FText::FromString(TEXT("上传最近签名包")))
+            [SNew(SButton).Text(FText::FromString(TEXT("登记项目并上传签名包")))
                 .IsEnabled_Lambda([this]
                     {
                         return !PendingRegistryRequest.IsValid()
+                            && Subsystem.IsValid()
+                            && Subsystem->HasOpenProject()
                             && LastPublishedEntry.IsSet()
                             && !LastPublishedSharePath.IsEmpty()
                             && !RegistryToken.IsEmpty();
@@ -99,16 +103,75 @@ void SAkUGCWorkLibraryPanel::Construct(const FArguments& InArgs, UAkUGCEditorSub
                         return !PendingRegistryRequest.IsValid()
                             && LastPublishedEntry.IsSet()
                             && RegistryReleaseStatus == TEXT("approved")
+                            && RegistryReleaseProjectId.IsValid()
+                            && Subsystem.IsValid()
+                            && Subsystem->HasOpenProject()
+                            && Subsystem->GetDocument().Manifest.ProjectId
+                                == RegistryReleaseProjectId
                             && !RegistryToken.IsEmpty();
                     })
                 .OnClicked(this, &SAkUGCWorkLibraryPanel::PublishToRegistry)]
+            + SHorizontalBox::Slot().AutoWidth().Padding(2)
+            [SNew(SButton).Text(FText::FromString(TEXT("刷新云项目")))
+                .IsEnabled_Lambda([this]
+                    {
+                        return !PendingRegistryRequest.IsValid()
+                            && Subsystem.IsValid()
+                            && Subsystem->HasOpenProject()
+                            && !RegistryToken.IsEmpty();
+                    })
+                .OnClicked(this, &SAkUGCWorkLibraryPanel::RefreshRegistryProject)]
             + SHorizontalBox::Slot().AutoWidth().Padding(2)
             [SNew(SButton).Text(FText::FromString(TEXT("取消 Registry 请求")))
                 .IsEnabled_Lambda([this] { return PendingRegistryRequest.IsValid(); })
                 .OnClicked(this, &SAkUGCWorkLibraryPanel::CancelRegistryRequest)]
         ]
+        + SVerticalBox::Slot().AutoHeight().Padding(0, 2)
+        [SNew(SHorizontalBox)
+            + SHorizontalBox::Slot().FillWidth(1.0f).Padding(2)
+            [SNew(SEditableTextBox)
+                .IsEnabled_Lambda([this] { return !PendingRegistryRequest.IsValid(); })
+                .HintText(FText::FromString(TEXT("协作者 subject")))
+                .Text_Lambda([this] { return FText::FromString(RegistryMemberSubject); })
+                .OnTextChanged_Lambda([this](const FText& Text)
+                    { RegistryMemberSubject = Text.ToString(); })]
+            + SHorizontalBox::Slot().AutoWidth().Padding(2)
+            [SNew(SEditableTextBox)
+                .IsEnabled_Lambda([this] { return !PendingRegistryRequest.IsValid(); })
+                .MinDesiredWidth(100.0f)
+                .HintText(FText::FromString(TEXT("editor / viewer")))
+                .Text_Lambda([this] { return FText::FromString(RegistryMemberRole); })
+                .OnTextChanged_Lambda([this](const FText& Text)
+                    { RegistryMemberRole = Text.ToString(); })]
+            + SHorizontalBox::Slot().AutoWidth().Padding(2)
+            [SNew(SButton).Text(FText::FromString(TEXT("设置协作者")))
+                .IsEnabled_Lambda([this]
+                    {
+                        return !PendingRegistryRequest.IsValid()
+                            && RegistryProjectAccessRole == TEXT("owner")
+                            && !RegistryMemberSubject.IsEmpty()
+                            && !RegistryToken.IsEmpty();
+                    })
+                .OnClicked(this, &SAkUGCWorkLibraryPanel::SetRegistryMember)]
+            + SHorizontalBox::Slot().AutoWidth().Padding(2)
+            [SNew(SButton).Text(FText::FromString(TEXT("移除协作者")))
+                .IsEnabled_Lambda([this]
+                    {
+                        return !PendingRegistryRequest.IsValid()
+                            && RegistryProjectAccessRole == TEXT("owner")
+                            && !RegistryMemberSubject.IsEmpty()
+                            && !RegistryToken.IsEmpty();
+                    })
+                .OnClicked(this, &SAkUGCWorkLibraryPanel::RemoveRegistryMember)]
+        ]
         + SVerticalBox::Slot().AutoHeight()
         [SNew(STextBlock).Text_Lambda([this] { return FText::FromString(RegistryStatus); }).AutoWrapText(true)]
+        + SVerticalBox::Slot().AutoHeight()
+        [SNew(STextBlock).Text_Lambda([this] { return FText::FromString(RegistryProjectSummary); }).AutoWrapText(true)]
+        + SVerticalBox::Slot().AutoHeight()
+        [SNew(STextBlock).Text_Lambda([this] { return FText::FromString(RegistryMembersSummary); }).AutoWrapText(true)]
+        + SVerticalBox::Slot().AutoHeight()
+        [SNew(STextBlock).Text_Lambda([this] { return FText::FromString(RegistryVersionsSummary); }).AutoWrapText(true)]
         + SVerticalBox::Slot().AutoHeight().Padding(0, 8, 0, 2)
         [SNew(STextBlock).Text(FText::FromString(TEXT("发布身份恢复与轮换")))]
         + SVerticalBox::Slot().AutoHeight()
@@ -217,6 +280,7 @@ FReply SAkUGCWorkLibraryPanel::Publish()
         LastPublishedEntry = Entry;
         LastPublishedSharePath = Path;
         RegistryReleaseStatus.Reset();
+        RegistryReleaseProjectId.Invalidate();
         RegistryStatus = TEXT("本地签名包已就绪；可显式上传到 Registry。");
         bConfirmedTrust = false;
         Refresh();
@@ -234,24 +298,45 @@ FReply SAkUGCWorkLibraryPanel::SubmitToRegistry()
         return FReply::Handled();
     }
     FString Error;
-    const FAkUGCWorkEntry Entry = LastPublishedEntry.GetValue();
-    const FAkUGCEditorHttpRequestPtr Request =
-        FAkUGCReleaseRegistryClient::StartSubmit(
-            RegistryBaseUrl,
-            RegistryToken,
-            Entry,
-            LastPublishedSharePath,
-            RegistryRequestTimeoutSeconds,
-            Error);
-    if (!Request.IsValid())
+    FGuid ProjectId;
+    FString ProjectName;
+    if (!CurrentProjectIdentity(ProjectId, ProjectName, Error))
     {
         RegistryStatus = Error;
         return FReply::Handled();
     }
+    if (RegistryProject.ProjectId.IsValid()
+        && RegistryProject.ProjectId != ProjectId)
+    {
+        ClearRegistryProjectView();
+    }
+    const FAkUGCWorkEntry Entry = LastPublishedEntry.GetValue();
+    if (!FAkUGCReleaseRegistryClient::ValidateSubmissionArtifact(
+            Entry,
+            LastPublishedSharePath,
+            ProjectId,
+            Error))
+    {
+        RegistryStatus = Error;
+        return FReply::Handled();
+    }
+    const FAkUGCEditorHttpRequestPtr Request =
+        FAkUGCReleaseRegistryClient::StartGetProject(
+            RegistryBaseUrl,
+            RegistryToken,
+            ProjectId,
+            RegistryRequestTimeoutSeconds,
+            Error);
     RegistryRequestEntry = Entry;
-    PendingRegistryOperation = EAkUGCReleaseRegistryOperation::Submit;
-    PendingRegistryRequest = Request;
-    RegistryStatus = TEXT("正在上传本地签名包；禁止重定向，当前项目和本地作品库不会被修改。");
+    RegistryRequestProjectId = ProjectId;
+    RegistryRequestProjectName = ProjectName;
+    PendingProjectOperation = EAkUGCProjectRegistryOperation::GetProject;
+    bRegistryChainCancelled = false;
+    StartRegistryRequest(
+        EAkUGCRegistryPanelRequest::EnsureProject,
+        Request,
+        Error,
+        TEXT("正在确认云 Project；不存在时会先登记，再上传本地签名包。"));
     return FReply::Handled();
 }
 
@@ -262,6 +347,13 @@ FReply SAkUGCWorkLibraryPanel::RefreshRegistryStatus()
         return FReply::Handled();
     }
     FString Error;
+    FGuid ProjectId;
+    FString ProjectName;
+    if (!CurrentProjectIdentity(ProjectId, ProjectName, Error))
+    {
+        RegistryStatus = Error;
+        return FReply::Handled();
+    }
     const FAkUGCWorkEntry Entry = LastPublishedEntry.GetValue();
     const FAkUGCEditorHttpRequestPtr Request =
         FAkUGCReleaseRegistryClient::StartGet(
@@ -270,15 +362,16 @@ FReply SAkUGCWorkLibraryPanel::RefreshRegistryStatus()
             Entry.ReleaseId,
             RegistryRequestTimeoutSeconds,
             Error);
-    if (!Request.IsValid())
-    {
-        RegistryStatus = Error;
-        return FReply::Handled();
-    }
     RegistryRequestEntry = Entry;
+    RegistryRequestProjectId = ProjectId;
+    RegistryRequestProjectName = ProjectName;
     PendingRegistryOperation = EAkUGCReleaseRegistryOperation::Get;
-    PendingRegistryRequest = Request;
-    RegistryStatus = TEXT("正在刷新 Registry 状态；当前项目和本地作品库不会被修改。");
+    bRegistryChainCancelled = false;
+    StartRegistryRequest(
+        EAkUGCRegistryPanelRequest::GetRelease,
+        Request,
+        Error,
+        TEXT("正在刷新 Registry Release 状态；当前项目和本地作品库不会被修改。"));
     return FReply::Handled();
 }
 
@@ -291,7 +384,29 @@ FReply SAkUGCWorkLibraryPanel::PublishToRegistry()
         return FReply::Handled();
     }
     FString Error;
+    FGuid ProjectId;
+    FString ProjectName;
+    if (!CurrentProjectIdentity(ProjectId, ProjectName, Error))
+    {
+        RegistryStatus = Error;
+        return FReply::Handled();
+    }
+    if (RegistryReleaseProjectId != ProjectId)
+    {
+        RegistryStatus =
+            TEXT("已审核 Release 不属于当前 Document Project。");
+        return FReply::Handled();
+    }
     const FAkUGCWorkEntry Entry = LastPublishedEntry.GetValue();
+    if (!FAkUGCReleaseRegistryClient::ValidateSubmissionArtifact(
+            Entry,
+            LastPublishedSharePath,
+            ProjectId,
+            Error))
+    {
+        RegistryStatus = Error;
+        return FReply::Handled();
+    }
     const FAkUGCEditorHttpRequestPtr Request =
         FAkUGCReleaseRegistryClient::StartPublish(
             RegistryBaseUrl,
@@ -299,15 +414,112 @@ FReply SAkUGCWorkLibraryPanel::PublishToRegistry()
             Entry.ReleaseId,
             RegistryRequestTimeoutSeconds,
             Error);
-    if (!Request.IsValid())
+    RegistryRequestEntry = Entry;
+    RegistryRequestProjectId = ProjectId;
+    RegistryRequestProjectName = ProjectName;
+    PendingRegistryOperation = EAkUGCReleaseRegistryOperation::Publish;
+    bRegistryChainCancelled = false;
+    StartRegistryRequest(
+        EAkUGCRegistryPanelRequest::PublishRelease,
+        Request,
+        Error,
+        TEXT("正在发布已审核 Release；不会修改或重新签名本地制品。"));
+    return FReply::Handled();
+}
+
+FReply SAkUGCWorkLibraryPanel::RefreshRegistryProject()
+{
+    if (PendingRegistryRequest.IsValid())
     {
-        RegistryStatus = Error;
         return FReply::Handled();
     }
-    RegistryRequestEntry = Entry;
-    PendingRegistryOperation = EAkUGCReleaseRegistryOperation::Publish;
-    PendingRegistryRequest = Request;
-    RegistryStatus = TEXT("正在发布已审核 Release；不会修改或重新签名本地制品。");
+    bRegistryChainCancelled = false;
+    StartRefreshProjectRequest(
+        TEXT("正在刷新云 Project、协作者和最新 100 条不可变版本。"));
+    return FReply::Handled();
+}
+
+FReply SAkUGCWorkLibraryPanel::SetRegistryMember()
+{
+    if (PendingRegistryRequest.IsValid()
+        || RegistryProjectAccessRole != TEXT("owner"))
+    {
+        return FReply::Handled();
+    }
+    FString Error;
+    FGuid ProjectId;
+    FString ProjectName;
+    if (!CurrentProjectIdentity(ProjectId, ProjectName, Error)
+        || RegistryProject.ProjectId != ProjectId)
+    {
+        RegistryStatus = Error.IsEmpty()
+            ? TEXT("请先刷新当前云 Project。")
+            : Error;
+        return FReply::Handled();
+    }
+    const FString Subject = RegistryMemberSubject;
+    const FString Role = RegistryMemberRole.TrimStartAndEnd().ToLower();
+    const FAkUGCEditorHttpRequestPtr Request =
+        FAkUGCReleaseRegistryClient::StartSetProjectMember(
+            RegistryBaseUrl,
+            RegistryToken,
+            ProjectId,
+            Subject,
+            Role,
+            RegistryRequestTimeoutSeconds,
+            Error);
+    RegistryRequestProjectId = ProjectId;
+    RegistryRequestProjectName = ProjectName;
+    RegistryRequestMemberSubject = Subject;
+    RegistryRequestMemberRole = Role;
+    PendingProjectOperation = EAkUGCProjectRegistryOperation::SetMember;
+    bRegistryChainCancelled = false;
+    StartRegistryRequest(
+        EAkUGCRegistryPanelRequest::SetMember,
+        Request,
+        Error,
+        TEXT("正在设置协作者；本地项目、作品库和签名制品不会被修改。"));
+    return FReply::Handled();
+}
+
+FReply SAkUGCWorkLibraryPanel::RemoveRegistryMember()
+{
+    if (PendingRegistryRequest.IsValid()
+        || RegistryProjectAccessRole != TEXT("owner"))
+    {
+        return FReply::Handled();
+    }
+    FString Error;
+    FGuid ProjectId;
+    FString ProjectName;
+    if (!CurrentProjectIdentity(ProjectId, ProjectName, Error)
+        || RegistryProject.ProjectId != ProjectId)
+    {
+        RegistryStatus = Error.IsEmpty()
+            ? TEXT("请先刷新当前云 Project。")
+            : Error;
+        return FReply::Handled();
+    }
+    const FString Subject = RegistryMemberSubject;
+    const FAkUGCEditorHttpRequestPtr Request =
+        FAkUGCReleaseRegistryClient::StartRemoveProjectMember(
+            RegistryBaseUrl,
+            RegistryToken,
+            ProjectId,
+            Subject,
+            RegistryRequestTimeoutSeconds,
+            Error);
+    RegistryRequestProjectId = ProjectId;
+    RegistryRequestProjectName = ProjectName;
+    RegistryRequestMemberSubject = Subject;
+    RegistryRequestMemberRole.Reset();
+    PendingProjectOperation = EAkUGCProjectRegistryOperation::RemoveMember;
+    bRegistryChainCancelled = false;
+    StartRegistryRequest(
+        EAkUGCRegistryPanelRequest::RemoveMember,
+        Request,
+        Error,
+        TEXT("正在移除协作者；本地项目、作品库和签名制品不会被修改。"));
     return FReply::Handled();
 }
 
@@ -315,8 +527,9 @@ FReply SAkUGCWorkLibraryPanel::CancelRegistryRequest()
 {
     if (PendingRegistryRequest.IsValid())
     {
+        bRegistryChainCancelled = true;
         PendingRegistryRequest->Cancel();
-        RegistryStatus = TEXT("正在取消 Registry 请求。");
+        RegistryStatus = TEXT("正在取消 Registry 请求；不会继续后续请求链。");
     }
     return FReply::Handled();
 }
@@ -330,19 +543,150 @@ void SAkUGCWorkLibraryPanel::CompleteRegistryRequest(
         return;
     }
     PendingRegistryRequest.Reset();
+    if (bRegistryChainCancelled || Result.bCancelled)
+    {
+        PendingRegistryRequestKind = EAkUGCRegistryPanelRequest::None;
+        RegistryStatus =
+            TEXT("Registry 请求已取消；后续请求链已停止，请刷新确认服务端状态。");
+        return;
+    }
+    switch (PendingRegistryRequestKind)
+    {
+    case EAkUGCRegistryPanelRequest::SubmitRelease:
+    case EAkUGCRegistryPanelRequest::GetRelease:
+    case EAkUGCRegistryPanelRequest::PublishRelease:
+        CompleteReleaseRegistryRequest(Result);
+        break;
+    case EAkUGCRegistryPanelRequest::EnsureProject:
+    case EAkUGCRegistryPanelRequest::CreateProject:
+    case EAkUGCRegistryPanelRequest::RefreshProject:
+    case EAkUGCRegistryPanelRequest::ListMembers:
+    case EAkUGCRegistryPanelRequest::ListVersions:
+    case EAkUGCRegistryPanelRequest::SetMember:
+    case EAkUGCRegistryPanelRequest::RemoveMember:
+        CompleteProjectRegistryRequest(Result);
+        break;
+    default:
+        RegistryStatus = TEXT("Registry 返回了未知操作结果。");
+        PendingRegistryRequestKind = EAkUGCRegistryPanelRequest::None;
+        break;
+    }
+}
+
+bool SAkUGCWorkLibraryPanel::StartRegistryRequest(
+    EAkUGCRegistryPanelRequest RequestKind,
+    const FAkUGCEditorHttpRequestPtr& Request,
+    const FString& Error,
+    const FString& PendingStatus)
+{
+    if (!Request.IsValid())
+    {
+        PendingRegistryRequestKind = EAkUGCRegistryPanelRequest::None;
+        RegistryStatus = Error.IsEmpty()
+            ? TEXT("Registry 请求未能启动。")
+            : Error;
+        return false;
+    }
+    PendingRegistryRequestKind = RequestKind;
+    PendingRegistryRequest = Request;
+    RegistryStatus = PendingStatus;
+    return true;
+}
+
+bool SAkUGCWorkLibraryPanel::CurrentProjectIdentity(
+    FGuid& OutProjectId,
+    FString& OutDisplayName,
+    FString& OutError) const
+{
+    OutProjectId.Invalidate();
+    OutDisplayName.Reset();
+    OutError.Reset();
+    if (!Subsystem.IsValid() || !Subsystem->HasOpenProject())
+    {
+        OutError = TEXT("请先打开项目。");
+        return false;
+    }
+    const FAkUGCProjectManifest& Manifest =
+        Subsystem->GetDocument().Manifest;
+    OutProjectId = Manifest.ProjectId;
+    OutDisplayName = Manifest.DisplayName;
+    if (!OutProjectId.IsValid())
+    {
+        OutError = TEXT("当前文档 Project ID 无效。");
+        return false;
+    }
+    return true;
+}
+
+bool SAkUGCWorkLibraryPanel::StartSubmitReleaseRequest()
+{
+    FString Error;
+    PendingRegistryOperation = EAkUGCReleaseRegistryOperation::Submit;
+    return StartRegistryRequest(
+        EAkUGCRegistryPanelRequest::SubmitRelease,
+        FAkUGCReleaseRegistryClient::StartSubmit(
+            RegistryBaseUrl,
+            RegistryToken,
+            RegistryRequestEntry,
+            LastPublishedSharePath,
+            RegistryRequestProjectId,
+            RegistryRequestTimeoutSeconds,
+            Error),
+        Error,
+        TEXT("云 Project 已确认；正在上传本地验签通过的不可变签名包。"));
+}
+
+bool SAkUGCWorkLibraryPanel::StartRefreshProjectRequest(
+    const FString& PendingStatus)
+{
+    FString Error;
+    FGuid ProjectId;
+    FString ProjectName;
+    if (!CurrentProjectIdentity(ProjectId, ProjectName, Error))
+    {
+        PendingRegistryRequestKind = EAkUGCRegistryPanelRequest::None;
+        RegistryStatus = Error;
+        return false;
+    }
+    if (RegistryProject.ProjectId.IsValid()
+        && RegistryProject.ProjectId != ProjectId)
+    {
+        ClearRegistryProjectView();
+    }
+    RegistryRequestProjectId = ProjectId;
+    RegistryRequestProjectName = ProjectName;
+    PendingProjectOperation = EAkUGCProjectRegistryOperation::GetProject;
+    return StartRegistryRequest(
+        EAkUGCRegistryPanelRequest::RefreshProject,
+        FAkUGCReleaseRegistryClient::StartGetProject(
+            RegistryBaseUrl,
+            RegistryToken,
+            ProjectId,
+            RegistryRequestTimeoutSeconds,
+            Error),
+        Error,
+        PendingStatus);
+}
+
+void SAkUGCWorkLibraryPanel::CompleteReleaseRegistryRequest(
+    const FAkUGCEditorHttpResult& Result)
+{
     FAkUGCReleaseRegistryResponse Response;
     FString Error;
     if (!FAkUGCReleaseRegistryClient::ParseResponse(
             PendingRegistryOperation,
             Result,
             RegistryRequestEntry,
+            RegistryRequestProjectId,
             Response,
             Error))
     {
         RegistryStatus = Error;
+        PendingRegistryRequestKind = EAkUGCRegistryPanelRequest::None;
         return;
     }
     RegistryReleaseStatus = Response.Release.Status;
+    RegistryReleaseProjectId = Response.Release.ProjectId;
     const FString Id =
         Response.Release.ReleaseId.ToString(EGuidFormats::DigitsWithHyphensLower);
     switch (PendingRegistryOperation)
@@ -370,6 +714,243 @@ void SAkUGCWorkLibraryPanel::CompleteRegistryRequest(
     default:
         RegistryStatus = TEXT("Registry 返回了未知操作结果。");
         break;
+    }
+    PendingRegistryRequestKind = EAkUGCRegistryPanelRequest::None;
+}
+
+void SAkUGCWorkLibraryPanel::CompleteProjectRegistryRequest(
+    const FAkUGCEditorHttpResult& Result)
+{
+    const EAkUGCRegistryPanelRequest CompletedKind =
+        PendingRegistryRequestKind;
+    FString Error;
+    if (CompletedKind == EAkUGCRegistryPanelRequest::EnsureProject
+        && Result.NativeCode == 0
+        && !Result.bTimedOut
+        && !Result.bTooLarge
+        && !Result.bHeadersTooLarge
+        && Result.StatusCode == 404)
+    {
+        PendingProjectOperation =
+            EAkUGCProjectRegistryOperation::CreateProject;
+        StartRegistryRequest(
+            EAkUGCRegistryPanelRequest::CreateProject,
+            FAkUGCReleaseRegistryClient::StartCreateProject(
+                RegistryBaseUrl,
+                RegistryToken,
+                RegistryRequestProjectId,
+                RegistryRequestProjectName,
+                RegistryRequestTimeoutSeconds,
+                Error),
+            Error,
+            TEXT("云 Project 不存在；正在以当前身份登记。"));
+        return;
+    }
+    if (CompletedKind == EAkUGCRegistryPanelRequest::CreateProject
+        && Result.NativeCode == 0
+        && !Result.bTimedOut
+        && !Result.bTooLarge
+        && !Result.bHeadersTooLarge
+        && Result.StatusCode == 409)
+    {
+        PendingProjectOperation =
+            EAkUGCProjectRegistryOperation::GetProject;
+        StartRegistryRequest(
+            EAkUGCRegistryPanelRequest::CreateProject,
+            FAkUGCReleaseRegistryClient::StartGetProject(
+                RegistryBaseUrl,
+                RegistryToken,
+                RegistryRequestProjectId,
+                RegistryRequestTimeoutSeconds,
+                Error),
+            Error,
+            TEXT("Project 登记发生并发冲突；正在重新读取权限后决定是否上传。"));
+        return;
+    }
+
+    FAkUGCProjectRegistryResponse Response;
+    if (!FAkUGCReleaseRegistryClient::ParseProjectResponse(
+            PendingProjectOperation,
+            Result,
+            RegistryRequestProjectId,
+            Response,
+            Error))
+    {
+        RegistryStatus = Error;
+        PendingRegistryRequestKind = EAkUGCRegistryPanelRequest::None;
+        return;
+    }
+
+    switch (CompletedKind)
+    {
+    case EAkUGCRegistryPanelRequest::EnsureProject:
+    case EAkUGCRegistryPanelRequest::CreateProject:
+        if (CompletedKind == EAkUGCRegistryPanelRequest::CreateProject
+            && PendingProjectOperation
+                == EAkUGCProjectRegistryOperation::CreateProject
+            && Response.Project.DisplayName != RegistryRequestProjectName)
+        {
+            RegistryStatus =
+                TEXT("Registry 创建结果的 Project 名称与当前文档不一致。");
+            PendingRegistryRequestKind = EAkUGCRegistryPanelRequest::None;
+            return;
+        }
+        RegistryProject = Response.Project;
+        RegistryProjectAccessRole = Response.AccessRole;
+        UpdateRegistryProjectSummary();
+        if (RegistryProjectAccessRole != TEXT("owner")
+            && RegistryProjectAccessRole != TEXT("editor"))
+        {
+            RegistryStatus =
+                TEXT("当前主体只有 viewer 权限，拒绝上传签名包。");
+            PendingRegistryRequestKind = EAkUGCRegistryPanelRequest::None;
+            return;
+        }
+        StartSubmitReleaseRequest();
+        return;
+    case EAkUGCRegistryPanelRequest::RefreshProject:
+        RegistryProject = Response.Project;
+        RegistryProjectAccessRole = Response.AccessRole;
+        UpdateRegistryProjectSummary();
+        PendingProjectOperation =
+            EAkUGCProjectRegistryOperation::ListMembers;
+        StartRegistryRequest(
+            EAkUGCRegistryPanelRequest::ListMembers,
+            FAkUGCReleaseRegistryClient::StartListProjectMembers(
+                RegistryBaseUrl,
+                RegistryToken,
+                RegistryRequestProjectId,
+                RegistryRequestTimeoutSeconds,
+                Error),
+            Error,
+            TEXT("云 Project 已刷新；正在读取协作者。"));
+        return;
+    case EAkUGCRegistryPanelRequest::ListMembers:
+        if (!Response.Members.ContainsByPredicate(
+                [this](const FAkUGCRegistryMemberView& Member)
+                {
+                    return Member.Role == TEXT("owner")
+                        && Member.Subject == RegistryProject.OwnerSubject;
+                }))
+        {
+            RegistryStatus =
+                TEXT("Registry 协作者列表中的 Owner 与 Project 不一致。");
+            PendingRegistryRequestKind = EAkUGCRegistryPanelRequest::None;
+            return;
+        }
+        RegistryMembers = MoveTemp(Response.Members);
+        UpdateRegistryProjectSummary();
+        PendingProjectOperation =
+            EAkUGCProjectRegistryOperation::ListVersions;
+        StartRegistryRequest(
+            EAkUGCRegistryPanelRequest::ListVersions,
+            FAkUGCReleaseRegistryClient::StartListProjectVersions(
+                RegistryBaseUrl,
+                RegistryToken,
+                RegistryRequestProjectId,
+                FAkUGCReleaseRegistryClient::MaxVersionsPerPage,
+                RegistryRequestTimeoutSeconds,
+                Error),
+            Error,
+            TEXT("协作者已刷新；正在读取最新 100 条不可变版本。"));
+        return;
+    case EAkUGCRegistryPanelRequest::ListVersions:
+        RegistryVersions = MoveTemp(Response.Versions);
+        RegistryVersionsNextCursor = MoveTemp(Response.NextCursor);
+        UpdateRegistryProjectSummary();
+        RegistryStatus =
+            RegistryVersionsNextCursor.IsEmpty()
+                ? TEXT("云 Project、协作者和版本历史已刷新。")
+                : TEXT("云 Project 已刷新；版本历史超过 100 条，当前仅显示最新 100 条。");
+        PendingRegistryRequestKind = EAkUGCRegistryPanelRequest::None;
+        return;
+    case EAkUGCRegistryPanelRequest::SetMember:
+        if (Response.Member.Subject != RegistryRequestMemberSubject
+            || Response.Member.Role != RegistryRequestMemberRole)
+        {
+            RegistryStatus =
+                TEXT("Registry 设置协作者响应与请求目标不一致。");
+            PendingRegistryRequestKind = EAkUGCRegistryPanelRequest::None;
+            return;
+        }
+        RegistryProject = Response.Project;
+        RegistryProjectAccessRole = Response.AccessRole;
+        RegistryStatus = Response.bChanged
+            ? TEXT("协作者权限已更新；正在刷新云 Project。")
+            : TEXT("协作者权限未变化；正在刷新云 Project。");
+        StartRefreshProjectRequest(RegistryStatus);
+        return;
+    case EAkUGCRegistryPanelRequest::RemoveMember:
+        RegistryProject = Response.Project;
+        RegistryProjectAccessRole = Response.AccessRole;
+        RegistryStatus = Response.bChanged
+            ? TEXT("协作者已移除；正在刷新云 Project。")
+            : TEXT("协作者不存在；正在刷新云 Project。");
+        StartRefreshProjectRequest(RegistryStatus);
+        return;
+    default:
+        RegistryStatus = TEXT("Registry 返回了未知 Project 操作结果。");
+        PendingRegistryRequestKind = EAkUGCRegistryPanelRequest::None;
+        return;
+    }
+}
+
+void SAkUGCWorkLibraryPanel::ClearRegistryProjectView()
+{
+    RegistryProject = {};
+    RegistryProjectAccessRole.Reset();
+    RegistryMembers.Reset();
+    RegistryVersions.Reset();
+    RegistryVersionsNextCursor.Reset();
+    RegistryProjectSummary.Reset();
+    RegistryMembersSummary.Reset();
+    RegistryVersionsSummary.Reset();
+}
+
+void SAkUGCWorkLibraryPanel::UpdateRegistryProjectSummary()
+{
+    if (!RegistryProject.ProjectId.IsValid())
+    {
+        RegistryProjectSummary.Reset();
+    }
+    else
+    {
+        RegistryProjectSummary = FString::Printf(
+            TEXT("云 Project：%s\nID：%s\nOwner：%s；当前权限：%s；修订：%lld"),
+            *RegistryProject.DisplayName,
+            *RegistryProject.ProjectId.ToString(
+                EGuidFormats::DigitsWithHyphensLower),
+            *RegistryProject.OwnerSubject,
+            *RegistryProjectAccessRole,
+            static_cast<long long>(RegistryProject.Revision));
+    }
+
+    RegistryMembersSummary = FString::Printf(
+        TEXT("协作者（%d）"),
+        RegistryMembers.Num());
+    for (const FAkUGCRegistryMemberView& Member : RegistryMembers)
+    {
+        RegistryMembersSummary += FString::Printf(
+            TEXT("\n%s：%s"),
+            *Member.Subject,
+            *Member.Role);
+    }
+
+    RegistryVersionsSummary = FString::Printf(
+        TEXT("不可变版本（当前页 %d%s）"),
+        RegistryVersions.Num(),
+        RegistryVersionsNextCursor.IsEmpty()
+            ? TEXT("")
+            : TEXT("，还有更早版本，已截断"));
+    for (const FAkUGCReleaseRegistryView& Version : RegistryVersions)
+    {
+        RegistryVersionsSummary += FString::Printf(
+            TEXT("\nR%lld  %s  %s  提交者 %s  %s"),
+            static_cast<long long>(Version.Revision),
+            *Version.ReleaseId.ToString(EGuidFormats::DigitsWithHyphensLower),
+            *Version.Status,
+            *Version.SubmittedBySubject,
+            *Version.SubmittedAt);
     }
 }
 

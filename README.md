@@ -4,7 +4,7 @@ AkStudio 的 Unreal Engine UGC 创作与运行平台。
 
 ## 当前阶段
 
-Phase 2：Phase 0 与 Phase 1 的 Win64 本机技术闭环已完成；Phase 1 真人及独立物理设备外部门禁延期，不记为通过。发布身份保护与恢复、输入预算、沙箱副作用配额、不可误报的自动化最终判定、Go + PostgreSQL Release Registry 不可变分发闭环、Creator Studio/Packaged Player 接入，以及 P20.1 云项目、不可变版本和 Owner/Editor/Viewer 协作者权限基础已经完成；下一步接入 Creator Studio 项目与协作者产品流程。
+Phase 2：Phase 0 与 Phase 1 的 Win64 本机技术闭环已完成；Phase 1 真人及独立物理设备外部门禁延期，不记为通过。发布身份保护与恢复、输入预算、沙箱副作用配额、不可误报的自动化最终判定、Go + PostgreSQL Release Registry 不可变分发闭环、Creator Studio/Packaged Player 接入、P20.1 云项目权限基础，以及 P20.2 Creator Studio 项目登记、协作者管理和不可变版本历史已经完成；下一步定义私人/公开作品页与发布可见性边界。
 
 首个垂直切片为“三波合作塔防”。首期只使用官方 Prefab，不开放玩家 C++、插件、任意 Blueprint、任意 UObject 反射或外部网络访问。
 

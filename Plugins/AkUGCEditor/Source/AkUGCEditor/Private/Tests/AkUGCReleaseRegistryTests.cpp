@@ -15,6 +15,15 @@
 
 namespace AkUGCReleaseRegistryTest
 {
+	FGuid ExpectedProjectId()
+	{
+		FGuid ProjectId;
+		FGuid::Parse(
+			TEXT("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
+			ProjectId);
+		return ProjectId;
+	}
+
 	FAkUGCWorkEntry ExpectedEntry()
 	{
 		FAkUGCWorkEntry Entry;
@@ -48,6 +57,34 @@ namespace AkUGCReleaseRegistryTest
 			*FString::ChrN(64, TEXT('b')),
 			*FString::ChrN(64, TEXT('c')),
 			Status);
+	}
+
+	FString ProjectJson(int64 Revision = 1)
+	{
+		return FString::Printf(
+			TEXT("{")
+			TEXT("\"projectId\":\"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\",")
+			TEXT("\"displayName\":\"Creator Project\",")
+			TEXT("\"ownerSubject\":\"creator-a\",")
+			TEXT("\"revision\":%lld,")
+			TEXT("\"createdAt\":\"2026-10-15T06:00:00Z\",")
+			TEXT("\"updatedAt\":\"2026-10-15T06:01:00Z\"")
+			TEXT("}"),
+			static_cast<long long>(Revision));
+	}
+
+	FString MemberJson(const TCHAR* Subject, const TCHAR* Role)
+	{
+		return FString::Printf(
+			TEXT("{")
+			TEXT("\"projectId\":\"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\",")
+			TEXT("\"subject\":\"%s\",")
+			TEXT("\"role\":\"%s\",")
+			TEXT("\"addedAt\":\"2026-10-15T06:00:00Z\",")
+			TEXT("\"updatedAt\":\"2026-10-15T06:01:00Z\"")
+			TEXT("}"),
+			Subject,
+			Role);
 	}
 
 	FAkUGCEditorHttpResult Result(int32 StatusCode, const FString& Json)
@@ -123,6 +160,26 @@ bool FAkUGCReleaseRegistryConfigurationTest::RunTest(const FString& Parameters)
 		FAkUGCReleaseRegistryClient::ValidateBearerToken(
 			TEXT("creator-令牌"),
 			Error));
+	TestTrue(
+		TEXT("UTF-8 project display name is accepted"),
+		FAkUGCReleaseRegistryClient::ValidateProjectDisplayName(
+			TEXT("塔防创作项目"),
+			Error));
+	TestFalse(
+		TEXT("Project display name with surrounding whitespace is rejected"),
+		FAkUGCReleaseRegistryClient::ValidateProjectDisplayName(
+			TEXT(" Creator Project"),
+			Error));
+	TestTrue(
+		TEXT("Safe collaborator subject is accepted"),
+		FAkUGCReleaseRegistryClient::ValidateMemberSubject(
+			TEXT("team.editor-1"),
+			Error));
+	TestFalse(
+		TEXT("Collaborator subject containing a slash is rejected"),
+		FAkUGCReleaseRegistryClient::ValidateMemberSubject(
+			TEXT("team/editor"),
+			Error));
 	return true;
 }
 
@@ -148,6 +205,7 @@ bool FAkUGCReleaseRegistryResponseTest::RunTest(const FString& Parameters)
 			EAkUGCReleaseRegistryOperation::Submit,
 			Result(201, Submitted),
 			Expected,
+			ExpectedProjectId(),
 			Response,
 			Error));
 	TestTrue(TEXT("Created flag is preserved"), Response.bCreated);
@@ -170,6 +228,7 @@ bool FAkUGCReleaseRegistryResponseTest::RunTest(const FString& Parameters)
 			EAkUGCReleaseRegistryOperation::Get,
 			Result(200, Approved),
 			Expected,
+			ExpectedProjectId(),
 			Response,
 			Error));
 	TestEqual(
@@ -187,6 +246,7 @@ bool FAkUGCReleaseRegistryResponseTest::RunTest(const FString& Parameters)
 			EAkUGCReleaseRegistryOperation::Publish,
 			Result(200, Published),
 			Expected,
+			ExpectedProjectId(),
 			Response,
 			Error));
 	TestTrue(TEXT("Changed flag is preserved"), Response.bChanged);
@@ -203,6 +263,7 @@ bool FAkUGCReleaseRegistryResponseTest::RunTest(const FString& Parameters)
 			EAkUGCReleaseRegistryOperation::Get,
 			Result(200, Duplicate),
 			Expected,
+			ExpectedProjectId(),
 			Response,
 			Error));
 
@@ -216,6 +277,7 @@ bool FAkUGCReleaseRegistryResponseTest::RunTest(const FString& Parameters)
 			EAkUGCReleaseRegistryOperation::Get,
 			Result(200, Unknown),
 			Expected,
+			ExpectedProjectId(),
 			Response,
 			Error));
 
@@ -232,6 +294,7 @@ bool FAkUGCReleaseRegistryResponseTest::RunTest(const FString& Parameters)
 				200,
 				TEXT("{\"release\":") + WrongKeyRelease + TEXT("}")),
 			Expected,
+			ExpectedProjectId(),
 			Response,
 			Error));
 
@@ -243,6 +306,7 @@ bool FAkUGCReleaseRegistryResponseTest::RunTest(const FString& Parameters)
 			EAkUGCReleaseRegistryOperation::Get,
 			TooLarge,
 			Expected,
+			ExpectedProjectId(),
 			Response,
 			Error));
 
@@ -254,6 +318,7 @@ bool FAkUGCReleaseRegistryResponseTest::RunTest(const FString& Parameters)
 			EAkUGCReleaseRegistryOperation::Get,
 			Cancelled,
 			Expected,
+			ExpectedProjectId(),
 			Response,
 			Error));
 
@@ -266,6 +331,7 @@ bool FAkUGCReleaseRegistryResponseTest::RunTest(const FString& Parameters)
 			EAkUGCReleaseRegistryOperation::Get,
 			InvalidUtf8,
 			Expected,
+			ExpectedProjectId(),
 			Response,
 			Error));
 
@@ -275,6 +341,166 @@ bool FAkUGCReleaseRegistryResponseTest::RunTest(const FString& Parameters)
 			EAkUGCReleaseRegistryOperation::Get,
 			Result(404, TEXT("{}")),
 			Expected,
+			ExpectedProjectId(),
+			Response,
+			Error));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAkUGCProjectRegistryResponseTest,
+	"AkUGC.Editor.ReleaseRegistry.ProjectStrictResponseParsing",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCProjectRegistryResponseTest::RunTest(const FString& Parameters)
+{
+	using namespace AkUGCReleaseRegistryTest;
+	FAkUGCProjectRegistryResponse Response;
+	FString Error;
+	const FGuid ProjectId = ExpectedProjectId();
+
+	TestTrue(
+		TEXT("Project response preserves current access role"),
+		FAkUGCReleaseRegistryClient::ParseProjectResponse(
+			EAkUGCProjectRegistryOperation::GetProject,
+			Result(
+				200,
+				TEXT("{\"accessRole\":\"editor\",\"project\":")
+					+ ProjectJson()
+					+ TEXT("}")),
+			ProjectId,
+			Response,
+			Error));
+	TestEqual(
+		TEXT("Project access role is editor"),
+		Response.AccessRole,
+		FString(TEXT("editor")));
+	TestEqual(
+		TEXT("Project ID remains bound to the current document"),
+		Response.Project.ProjectId,
+		ProjectId);
+
+	TestTrue(
+		TEXT("Member list response parses"),
+		FAkUGCReleaseRegistryClient::ParseProjectResponse(
+			EAkUGCProjectRegistryOperation::ListMembers,
+			Result(
+				200,
+				TEXT("{\"members\":[")
+					+ MemberJson(TEXT("creator-a"), TEXT("owner"))
+					+ TEXT(",")
+					+ MemberJson(TEXT("editor-a"), TEXT("editor"))
+					+ TEXT(",")
+					+ MemberJson(TEXT("viewer-a"), TEXT("viewer"))
+					+ TEXT("]}")),
+			ProjectId,
+			Response,
+			Error));
+	TestEqual(
+		TEXT("Owner and both collaborators are preserved"),
+		Response.Members.Num(),
+		3);
+	TestFalse(
+		TEXT("Member list without exactly one owner is rejected"),
+		FAkUGCReleaseRegistryClient::ParseProjectResponse(
+			EAkUGCProjectRegistryOperation::ListMembers,
+			Result(
+				200,
+				TEXT("{\"members\":[")
+					+ MemberJson(TEXT("editor-a"), TEXT("editor"))
+					+ TEXT("]}")),
+			ProjectId,
+			Response,
+			Error));
+
+	TestTrue(
+		TEXT("Version list response parses with truncation cursor"),
+		FAkUGCReleaseRegistryClient::ParseProjectResponse(
+			EAkUGCProjectRegistryOperation::ListVersions,
+			Result(
+				200,
+				TEXT("{\"versions\":[")
+					+ ReleaseJson(TEXT("published"))
+					+ TEXT("],\"nextCursor\":")
+					+ TEXT("\"11111111-2222-3333-4444-555555555555\"}")),
+			ProjectId,
+			Response,
+			Error));
+	TestEqual(
+		TEXT("One immutable version is preserved"),
+		Response.Versions.Num(),
+		1);
+	TestFalse(
+		TEXT("Version cursor is not silently discarded"),
+		Response.NextCursor.IsEmpty());
+
+	TestFalse(
+		TEXT("Unknown Project response field is rejected"),
+		FAkUGCReleaseRegistryClient::ParseProjectResponse(
+			EAkUGCProjectRegistryOperation::GetProject,
+			Result(
+				200,
+				TEXT("{\"accessRole\":\"owner\",\"project\":")
+					+ ProjectJson()
+					+ TEXT(",\"serverTrusted\":true}")),
+			ProjectId,
+			Response,
+			Error));
+
+	FString WrongProject = ProjectJson();
+	WrongProject.ReplaceInline(
+		TEXT("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
+		TEXT("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeef"),
+		ESearchCase::CaseSensitive);
+	TestFalse(
+		TEXT("Project response for another document is rejected"),
+		FAkUGCReleaseRegistryClient::ParseProjectResponse(
+			EAkUGCProjectRegistryOperation::GetProject,
+			Result(
+				200,
+				TEXT("{\"accessRole\":\"owner\",\"project\":")
+					+ WrongProject
+					+ TEXT("}")),
+			ProjectId,
+			Response,
+			Error));
+
+	TestFalse(
+		TEXT("Duplicate collaborator subject is rejected"),
+		FAkUGCReleaseRegistryClient::ParseProjectResponse(
+			EAkUGCProjectRegistryOperation::ListMembers,
+			Result(
+				200,
+				TEXT("{\"members\":[")
+					+ MemberJson(TEXT("viewer-a"), TEXT("viewer"))
+					+ TEXT(",")
+					+ MemberJson(TEXT("viewer-a"), TEXT("editor"))
+					+ TEXT("]}")),
+			ProjectId,
+			Response,
+			Error));
+
+	TestFalse(
+		TEXT("Malformed version cursor is rejected"),
+		FAkUGCReleaseRegistryClient::ParseProjectResponse(
+			EAkUGCProjectRegistryOperation::ListVersions,
+			Result(
+				200,
+				TEXT("{\"versions\":[],\"nextCursor\":\"not-a-guid\"}")),
+			ProjectId,
+			Response,
+			Error));
+	TestFalse(
+		TEXT("Version cursor not bound to the last item is rejected"),
+		FAkUGCReleaseRegistryClient::ParseProjectResponse(
+			EAkUGCProjectRegistryOperation::ListVersions,
+			Result(
+				200,
+				TEXT("{\"versions\":[")
+					+ ReleaseJson(TEXT("published"))
+					+ TEXT("],\"nextCursor\":")
+					+ TEXT("\"11111111-2222-3333-4444-555555555556\"}")),
+			ProjectId,
 			Response,
 			Error));
 	return true;
@@ -312,6 +538,29 @@ struct FAkUGCReleaseRegistryPanelTestAccess
 		Panel.PublishToRegistry();
 	}
 
+	static void RefreshProject(SAkUGCWorkLibraryPanel& Panel)
+	{
+		Panel.RefreshRegistryProject();
+	}
+
+	static void SetMember(
+		SAkUGCWorkLibraryPanel& Panel,
+		const FString& Subject,
+		const FString& Role)
+	{
+		Panel.RegistryMemberSubject = Subject;
+		Panel.RegistryMemberRole = Role;
+		Panel.SetRegistryMember();
+	}
+
+	static void RemoveMember(
+		SAkUGCWorkLibraryPanel& Panel,
+		const FString& Subject)
+	{
+		Panel.RegistryMemberSubject = Subject;
+		Panel.RemoveRegistryMember();
+	}
+
 	static void Poll(SAkUGCWorkLibraryPanel& Panel)
 	{
 		Panel.Tick(FGeometry(), FPlatformTime::Seconds(), 0.0f);
@@ -332,17 +581,38 @@ struct FAkUGCReleaseRegistryPanelTestAccess
 		return Panel.RegistryStatus;
 	}
 
+	static const FString& ProjectAccessRole(
+		const SAkUGCWorkLibraryPanel& Panel)
+	{
+		return Panel.RegistryProjectAccessRole;
+	}
+
+	static int32 MemberCount(const SAkUGCWorkLibraryPanel& Panel)
+	{
+		return Panel.RegistryMembers.Num();
+	}
+
+	static int32 VersionCount(const SAkUGCWorkLibraryPanel& Panel)
+	{
+		return Panel.RegistryVersions.Num();
+	}
+
 	static bool CheckCancellation(SAkUGCWorkLibraryPanel& Panel)
 	{
 		const FAkUGCEditorHttpRequestPtr Request =
 			MakeShared<FAkUGCEditorHttpRequest, ESPMode::ThreadSafe>();
 		Panel.PendingRegistryRequest = Request;
+		Panel.PendingRegistryRequestKind =
+			EAkUGCRegistryPanelRequest::EnsureProject;
 		Panel.CancelRegistryRequest();
-		const bool bCancelled =
-			Request->IsCancelled()
-			&& Panel.RegistryStatus.Contains(TEXT("正在取消"));
-		Panel.PendingRegistryRequest.Reset();
-		return bCancelled;
+		FAkUGCEditorHttpResult Result;
+		Result.bCancelled = true;
+		Panel.CompleteRegistryRequest(Request, MoveTemp(Result));
+		return Request->IsCancelled()
+			&& !Panel.PendingRegistryRequest.IsValid()
+			&& Panel.PendingRegistryRequestKind
+				== EAkUGCRegistryPanelRequest::None
+			&& Panel.RegistryStatus.Contains(TEXT("后续请求链已停止"));
 	}
 };
 
@@ -404,12 +674,68 @@ namespace AkUGCReleaseRegistryHttpTest
 				{
 					return Fail(TEXT("Registry refresh did not return approved."));
 				}
+				FAkUGCReleaseRegistryPanelTestAccess::RefreshProject(*Panel);
+				if (!FAkUGCReleaseRegistryPanelTestAccess::Pending(*Panel))
+				{
+					return Fail(TEXT("Cloud Project refresh did not start."));
+				}
+				Stage = 2;
+				return false;
+			}
+			if (Stage == 2)
+			{
+				if (FAkUGCReleaseRegistryPanelTestAccess::ProjectAccessRole(*Panel)
+						!= TEXT("owner")
+					|| FAkUGCReleaseRegistryPanelTestAccess::MemberCount(*Panel)
+						!= 1
+					|| FAkUGCReleaseRegistryPanelTestAccess::VersionCount(*Panel)
+						!= 1)
+				{
+					return Fail(
+						TEXT("Cloud Project, member, or version refresh mismatch."));
+				}
+				FAkUGCReleaseRegistryPanelTestAccess::SetMember(
+					*Panel,
+					TEXT("editor-b"),
+					TEXT("editor"));
+				if (!FAkUGCReleaseRegistryPanelTestAccess::Pending(*Panel))
+				{
+					return Fail(TEXT("Set collaborator did not start."));
+				}
+				Stage = 3;
+				return false;
+			}
+			if (Stage == 3)
+			{
+				if (FAkUGCReleaseRegistryPanelTestAccess::MemberCount(*Panel)
+					!= 2)
+				{
+					return Fail(TEXT("Collaborator was not reflected after set."));
+				}
+				FAkUGCReleaseRegistryPanelTestAccess::RemoveMember(
+					*Panel,
+					TEXT("editor-b"));
+				if (!FAkUGCReleaseRegistryPanelTestAccess::Pending(*Panel))
+				{
+					return Fail(TEXT("Remove collaborator did not start."));
+				}
+				Stage = 4;
+				return false;
+			}
+			if (Stage == 4)
+			{
+				if (FAkUGCReleaseRegistryPanelTestAccess::MemberCount(*Panel)
+					!= 1)
+				{
+					return Fail(
+						TEXT("Collaborator was not removed after refresh."));
+				}
 				FAkUGCReleaseRegistryPanelTestAccess::Publish(*Panel);
 				if (!FAkUGCReleaseRegistryPanelTestAccess::Pending(*Panel))
 				{
 					return Fail(TEXT("Registry publish did not start."));
 				}
-				Stage = 2;
+				Stage = 5;
 				return false;
 			}
 			if (FAkUGCReleaseRegistryPanelTestAccess::ReleaseStatus(*Panel)
@@ -428,7 +754,7 @@ namespace AkUGCReleaseRegistryHttpTest
 			UE_LOG(
 				LogTemp,
 				Display,
-				TEXT("[AkUGCReleaseRegistryHTTP] Passed Operations=3 LoopbackOnly=1"));
+				TEXT("[AkUGCReleaseRegistryHTTP] Passed Operations=16 LoopbackOnly=1"));
 			Cleanup();
 			return true;
 		}
