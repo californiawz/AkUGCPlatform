@@ -264,6 +264,7 @@ def main():
     release_id = str(uuid.UUID(release_digits)).lower()
 
     pack = json.loads(artifact.decode("utf-8-sig"))
+    project_id = str(uuid.UUID(pack["manifest"]["projectId"])).lower()
     pack["document"]["manifest"]["displayName"] = "Tampered after signing"
     tampered_path = output / "tampered.akugc"
     tampered_path.write_text(
@@ -274,6 +275,9 @@ def main():
 
     tokens = {
         "creator": secrets.token_urlsafe(32),
+        "editor": secrets.token_urlsafe(32),
+        "viewer": secrets.token_urlsafe(32),
+        "outsider": secrets.token_urlsafe(32),
         "reviewer": secrets.token_urlsafe(32),
         "player": secrets.token_urlsafe(32),
     }
@@ -284,6 +288,24 @@ def main():
                 "tokenSha256": hashlib.sha256(tokens["creator"].encode()).hexdigest(),
                 "roles": ["creator", "publisher"],
                 "publisherKeys": [public_key],
+            },
+            {
+                "subject": "creator-editor",
+                "tokenSha256": hashlib.sha256(tokens["editor"].encode()).hexdigest(),
+                "roles": ["creator", "publisher"],
+                "publisherKeys": [public_key],
+            },
+            {
+                "subject": "project-viewer",
+                "tokenSha256": hashlib.sha256(tokens["viewer"].encode()).hexdigest(),
+                "roles": ["player"],
+                "publisherKeys": [],
+            },
+            {
+                "subject": "project-outsider",
+                "tokenSha256": hashlib.sha256(tokens["outsider"].encode()).hexdigest(),
+                "roles": ["player"],
+                "publisherKeys": [],
             },
             {
                 "subject": "reviewer",
@@ -380,6 +402,80 @@ def main():
         )
         wait_for_health(base, server)
 
+        project_path = f"/v1/projects/{project_id}"
+        project_headers = {
+            "Content-Type": "application/json",
+            "Idempotency-Key": "registry-create-project-v1",
+        }
+        project_body = json_body(
+            {
+                "projectId": project_id,
+                "displayName": "Release Registry verification",
+            }
+        )
+        status, _, raw = request(
+            base,
+            "POST",
+            "/v1/projects",
+            tokens["creator"],
+            project_body,
+            project_headers,
+        )
+        if status != 201:
+            raise RuntimeError(f"Project creation returned {status}: {raw!r}")
+        created_project = json.loads(raw)
+        if created_project["project"]["ownerSubject"] != "creator-a":
+            raise RuntimeError("Project owner binding mismatch")
+        status, _, raw = request(
+            base,
+            "POST",
+            "/v1/projects",
+            tokens["creator"],
+            project_body,
+            project_headers,
+        )
+        if status != 200 or json.loads(raw)["created"]:
+            raise RuntimeError(f"Project idempotent retry returned {status}: {raw!r}")
+        for subject, role in (
+            ("creator-editor", "editor"),
+            ("project-viewer", "viewer"),
+        ):
+            status, _, raw = request(
+                base,
+                "PUT",
+                f"{project_path}/members/{subject}",
+                tokens["creator"],
+                json_body({"role": role}),
+                {"Content-Type": "application/json"},
+            )
+            if status != 200 or not json.loads(raw)["changed"]:
+                raise RuntimeError(
+                    f"Project member {subject} creation returned {status}: {raw!r}"
+                )
+        status, _, _ = request(
+            base,
+            "GET",
+            project_path,
+            tokens["outsider"],
+        )
+        if status != 404:
+            raise RuntimeError(f"Outsider project lookup returned {status}")
+        status, _, raw = request(
+            base,
+            "GET",
+            project_path + "/members",
+            tokens["viewer"],
+        )
+        members = json.loads(raw)["members"] if status == 200 else []
+        if [(member["subject"], member["role"]) for member in members] != [
+            ("creator-a", "owner"),
+            ("creator-editor", "editor"),
+            ("project-viewer", "viewer"),
+        ]:
+            raise RuntimeError(
+                f"Project member listing mismatch: status={status} members={members!r}"
+            )
+
         submit_headers = {
             "Content-Type": "application/vnd.akugc+json",
             "Idempotency-Key": "registry-concurrent-submit-v1",
@@ -391,7 +487,7 @@ def main():
                         base,
                         "POST",
                         "/v1/releases",
-                        tokens["creator"],
+                        tokens["editor"],
                         artifact,
                         submit_headers,
                     ),
@@ -401,6 +497,52 @@ def main():
         statuses = [value[0] for value in submissions]
         if statuses.count(201) != 1 or statuses.count(200) != 7:
             raise RuntimeError(f"Concurrent retry verdict mismatch: {statuses}")
+        release_responses = [
+            json.loads(value[2])["release"] for value in submissions
+        ]
+        if any(
+            release["ownerSubject"] != "creator-a"
+            or release["submittedBySubject"] != "creator-editor"
+            for release in release_responses
+        ):
+            raise RuntimeError("Collaborator release attribution mismatch")
+        status, _, raw = request(
+            base,
+            "GET",
+            project_path + "/versions?limit=1",
+            tokens["viewer"],
+        )
+        versions = json.loads(raw)["versions"] if status == 200 else []
+        if (
+            len(versions) != 1
+            or versions[0]["releaseId"] != release_id
+            or "artifact" in versions[0]
+        ):
+            raise RuntimeError(
+                f"Project version listing mismatch: status={status} versions={versions!r}"
+            )
+        status, _, raw = request(
+            base,
+            "DELETE",
+            project_path + "/members/creator-editor",
+            tokens["creator"],
+            b"",
+        )
+        if status != 200 or not json.loads(raw)["changed"]:
+            raise RuntimeError(f"Editor removal returned {status}: {raw!r}")
+        status, _, _ = request(
+            base,
+            "POST",
+            "/v1/releases",
+            tokens["editor"],
+            artifact,
+            {
+                "Content-Type": "application/vnd.akugc+json",
+                "Idempotency-Key": "registry-removed-editor-v1",
+            },
+        )
+        if status != 403:
+            raise RuntimeError(f"Removed editor upload returned {status}")
 
         release_path = f"/v1/releases/{release_id}"
         status, _, _ = request(
@@ -697,8 +839,16 @@ def main():
         result = {
             "passed": True,
             "release_id": release_id,
+            "project_id": project_id,
             "artifact_sha256": expected_sha,
             "concurrent_submit_statuses": sorted(statuses),
+            "project_creation_idempotent": True,
+            "project_owner_bound": True,
+            "collaborator_submitter_attributed": True,
+            "project_member_listing_verified": True,
+            "project_version_listing_bounded": True,
+            "outsider_project_hidden": True,
+            "removed_editor_upload_rejected": True,
             "unauthorized_upload_rejected": True,
             "tampered_upload_rejected": True,
             "release_id_collision_rejected": True,

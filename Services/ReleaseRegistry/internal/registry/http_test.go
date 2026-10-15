@@ -12,6 +12,7 @@ import (
 func TestHTTPLifecycleAndPublishedOnlyDownload(t *testing.T) {
 	artifact, _, publicKey := signedArtifact(t, "71111111-2222-3333-4444-555555555555")
 	handler := newTestHTTPHandler(t, publicKey)
+	createHTTPTestProject(t, handler)
 
 	unauthenticated := performRequest(handler, http.MethodPost, "/v1/releases", artifact, "", map[string]string{
 		"Content-Type":    "application/vnd.akugc+json",
@@ -102,6 +103,7 @@ func TestHTTPLifecycleAndPublishedOnlyDownload(t *testing.T) {
 func TestHTTPRejectsDuplicateControlFields(t *testing.T) {
 	artifact, _, publicKey := signedArtifact(t, "81111111-2222-3333-4444-555555555555")
 	handler := newTestHTTPHandler(t, publicKey)
+	createHTTPTestProject(t, handler)
 	submitted := performRequest(handler, http.MethodPost, "/v1/releases", artifact, "creator-token", map[string]string{
 		"Content-Type":    "application/vnd.akugc+json",
 		"Idempotency-Key": "http-submit-81111111",
@@ -133,6 +135,162 @@ func TestHTTPRejectsDuplicateControlFields(t *testing.T) {
 	}
 }
 
+func TestHTTPProjectCollaboratorsAndVersionListing(t *testing.T) {
+	artifact, _, publicKey := signedArtifact(t, "82111111-2222-3333-4444-555555555555")
+	handler := newTestHTTPHandler(t, publicKey)
+	projectPath := "/v1/projects/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	createHTTPTestProject(t, handler)
+
+	for subject, role := range map[string]string{
+		"creator-editor": "editor",
+		"project-viewer": "viewer",
+	} {
+		response := performRequest(
+			handler,
+			http.MethodPut,
+			projectPath+"/members/"+subject,
+			[]byte(`{"role":"`+role+`"}`),
+			"creator-token",
+			map[string]string{"Content-Type": "application/json"},
+		)
+		if response.Code != http.StatusOK {
+			t.Fatalf("set %s status = %d body=%s", role, response.Code, response.Body.String())
+		}
+	}
+
+	viewed := performRequest(handler, http.MethodGet, projectPath, nil, "viewer-token", nil)
+	if viewed.Code != http.StatusOK {
+		t.Fatalf("viewer project status = %d body=%s", viewed.Code, viewed.Body.String())
+	}
+	hidden := performRequest(handler, http.MethodGet, projectPath, nil, "outsider-token", nil)
+	if hidden.Code != http.StatusNotFound {
+		t.Fatalf("outsider project status = %d body=%s", hidden.Code, hidden.Body.String())
+	}
+
+	submitted := performRequest(
+		handler,
+		http.MethodPost,
+		"/v1/releases",
+		artifact,
+		"editor-token",
+		map[string]string{
+			"Content-Type":    "application/vnd.akugc+json",
+			"Idempotency-Key": "editor-http-submit-82111111",
+		},
+	)
+	if submitted.Code != http.StatusCreated {
+		t.Fatalf("editor submit status = %d body=%s", submitted.Code, submitted.Body.String())
+	}
+	var submission struct {
+		Release Release `json:"release"`
+	}
+	decodeResponse(t, submitted, &submission)
+	if submission.Release.OwnerSubject != "creator-a" ||
+		submission.Release.SubmittedBySubject != "creator-editor" {
+		t.Fatalf("submission attribution mismatch: %+v", submission.Release)
+	}
+
+	releasePath := "/v1/releases/82111111-2222-3333-4444-555555555555"
+	memberReview := performRequest(
+		handler,
+		http.MethodPost,
+		releasePath+"/review",
+		[]byte(`{"decision":"approved","reason":""}`),
+		"editor-token",
+		map[string]string{"Content-Type": "application/json"},
+	)
+	if memberReview.Code != http.StatusForbidden {
+		t.Fatalf("member review status = %d body=%s", memberReview.Code, memberReview.Body.String())
+	}
+	reviewed := performRequest(
+		handler,
+		http.MethodPost,
+		releasePath+"/review",
+		[]byte(`{"decision":"approved","reason":"independent"}`),
+		"reviewer-token",
+		map[string]string{"Content-Type": "application/json"},
+	)
+	if reviewed.Code != http.StatusOK {
+		t.Fatalf("independent review status = %d body=%s", reviewed.Code, reviewed.Body.String())
+	}
+	editorPublish := performRequest(
+		handler,
+		http.MethodPost,
+		releasePath+"/publish",
+		nil,
+		"editor-token",
+		nil,
+	)
+	if editorPublish.Code != http.StatusForbidden {
+		t.Fatalf("editor publish status = %d body=%s", editorPublish.Code, editorPublish.Body.String())
+	}
+
+	versions := performRequest(
+		handler,
+		http.MethodGet,
+		projectPath+"/versions?limit=1",
+		nil,
+		"viewer-token",
+		nil,
+	)
+	if versions.Code != http.StatusOK {
+		t.Fatalf("version list status = %d body=%s", versions.Code, versions.Body.String())
+	}
+	var page ProjectVersionPage
+	decodeResponse(t, versions, &page)
+	if len(page.Releases) != 1 || page.Releases[0].Artifact != nil {
+		t.Fatalf("version page mismatch: %+v", page)
+	}
+	badQuery := performRequest(
+		handler,
+		http.MethodGet,
+		projectPath+"/versions?unknown=1",
+		nil,
+		"viewer-token",
+		nil,
+	)
+	if badQuery.Code != http.StatusBadRequest {
+		t.Fatalf("unknown query status = %d body=%s", badQuery.Code, badQuery.Body.String())
+	}
+
+	removed := performRequest(
+		handler,
+		http.MethodDelete,
+		projectPath+"/members/creator-editor",
+		nil,
+		"creator-token",
+		nil,
+	)
+	if removed.Code != http.StatusOK {
+		t.Fatalf("remove editor status = %d body=%s", removed.Code, removed.Body.String())
+	}
+	removedSubmit := performRequest(
+		handler,
+		http.MethodPost,
+		"/v1/releases",
+		artifact,
+		"editor-token",
+		map[string]string{
+			"Content-Type":    "application/vnd.akugc+json",
+			"Idempotency-Key": "removed-http-submit-82111111",
+		},
+	)
+	if removedSubmit.Code != http.StatusForbidden {
+		t.Fatalf("removed editor submit status = %d body=%s", removedSubmit.Code, removedSubmit.Body.String())
+	}
+	removeOwner := performRequest(
+		handler,
+		http.MethodDelete,
+		projectPath+"/members/creator-a",
+		nil,
+		"creator-token",
+		nil,
+	)
+	if removeOwner.Code != http.StatusConflict {
+		t.Fatalf("remove owner status = %d body=%s", removeOwner.Code, removeOwner.Body.String())
+	}
+}
+
 func newTestHTTPHandler(t *testing.T, publicKey string) http.Handler {
 	t.Helper()
 	authenticator, err := NewStaticAuthenticator(AuthConfig{
@@ -153,6 +311,22 @@ func newTestHTTPHandler(t *testing.T, publicKey string) http.Handler {
 				TokenSHA256: TokenSHA256("player-token"),
 				Roles:       []Role{RolePlayer},
 			},
+			{
+				Subject:       "creator-editor",
+				TokenSHA256:   TokenSHA256("editor-token"),
+				Roles:         []Role{RoleCreator, RoleReviewer, RolePublisher},
+				PublisherKeys: []string{publicKey},
+			},
+			{
+				Subject:     "project-viewer",
+				TokenSHA256: TokenSHA256("viewer-token"),
+				Roles:       []Role{RolePlayer},
+			},
+			{
+				Subject:     "project-outsider",
+				TokenSHA256: TokenSHA256("outsider-token"),
+				Roles:       []Role{RolePlayer},
+			},
 		},
 	})
 	if err != nil {
@@ -162,6 +336,24 @@ func newTestHTTPHandler(t *testing.T, publicKey string) http.Handler {
 		NewService(NewMemoryStore(), acceptingVerifier{}, nil),
 		authenticator,
 	)
+}
+
+func createHTTPTestProject(t *testing.T, handler http.Handler) {
+	t.Helper()
+	response := performRequest(
+		handler,
+		http.MethodPost,
+		"/v1/projects",
+		[]byte(`{"projectId":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","displayName":"HTTP fixture"}`),
+		"creator-token",
+		map[string]string{
+			"Content-Type":    "application/json",
+			"Idempotency-Key": "create-http-project-v1",
+		},
+	)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create project status = %d body=%s", response.Code, response.Body.String())
+	}
 }
 
 func performRequest(

@@ -177,6 +177,7 @@ namespace AkUGCReleaseRegistryClientPrivate
 					TEXT("projectId"),
 					TEXT("schemaVersion"),
 					TEXT("ownerSubject"),
+					TEXT("submittedBySubject"),
 					TEXT("publisherPublicKey"),
 					TEXT("contentHash"),
 					TEXT("artifactSha256"),
@@ -201,6 +202,7 @@ namespace AkUGCReleaseRegistryClientPrivate
 		FString ReleaseId;
 		FString ProjectId;
 		FString Owner;
+		FString SubmittedBy;
 		FString PublicKey;
 		FString ContentHash;
 		FString ArtifactSha256;
@@ -214,6 +216,7 @@ namespace AkUGCReleaseRegistryClientPrivate
 			|| !Object->TryGetStringField(TEXT("projectId"), ProjectId)
 			|| !Object->TryGetNumberField(TEXT("schemaVersion"), SchemaVersion)
 			|| !Object->TryGetStringField(TEXT("ownerSubject"), Owner)
+			|| !Object->TryGetStringField(TEXT("submittedBySubject"), SubmittedBy)
 			|| !Object->TryGetStringField(TEXT("publisherPublicKey"), PublicKey)
 			|| !Object->TryGetStringField(TEXT("contentHash"), ContentHash)
 			|| !Object->TryGetStringField(TEXT("artifactSha256"), ArtifactSha256)
@@ -258,6 +261,8 @@ namespace AkUGCReleaseRegistryClientPrivate
 			|| !ParsedProjectId.IsValid()
 			|| Owner.IsEmpty()
 			|| Owner.Len() > 128
+			|| SubmittedBy.IsEmpty()
+			|| SubmittedBy.Len() > 128
 			|| PublicKey != Expected.TrustedPublicKey
 			|| ContentHash != Expected.ContentHash
 			|| !IsLowerHex(PublicKey, 64)
@@ -291,6 +296,7 @@ namespace AkUGCReleaseRegistryClientPrivate
 		OutRelease.ReleaseId = Expected.ReleaseId;
 		OutRelease.Status = Status;
 		OutRelease.OwnerSubject = Owner;
+		OutRelease.SubmittedBySubject = SubmittedBy;
 		OutRelease.PublisherPublicKey = PublicKey;
 		OutRelease.ContentHash = ContentHash;
 		OutRelease.ArtifactSha256 = ArtifactSha256;

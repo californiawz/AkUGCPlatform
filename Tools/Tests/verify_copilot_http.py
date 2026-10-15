@@ -1032,6 +1032,7 @@ def _run_verification(args, root, output, user_dir):
                 "projectId": registry_release["project_id"],
                 "schemaVersion": registry_release["schema_version"],
                 "ownerSubject": "creator-a",
+                "submittedBySubject": "creator-a",
                 "publisherPublicKey": registry_release["public_key"],
                 "contentHash": registry_release["content_hash"],
                 "artifactSha256": registry_release["artifact_sha256"],

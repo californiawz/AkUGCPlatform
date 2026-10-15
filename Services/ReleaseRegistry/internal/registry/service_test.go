@@ -55,6 +55,7 @@ func TestReleaseLifecyclePermissionsAndImmutability(t *testing.T) {
 	}
 	reviewer := Principal{Subject: "reviewer", Roles: []Role{RoleReviewer}}
 	player := Principal{Subject: "player-b", Roles: []Role{RolePlayer}}
+	createServiceTestProject(t, service, creator)
 
 	release, created, err := service.Submit(
 		context.Background(),
@@ -151,6 +152,7 @@ func TestConcurrentSubmissionRetryCreatesOneRelease(t *testing.T) {
 		Roles:         []Role{RoleCreator},
 		PublisherKeys: []string{publicKey},
 	}
+	createServiceTestProject(t, service, creator)
 
 	var createdCount atomic.Int32
 	var wait sync.WaitGroup
@@ -196,6 +198,7 @@ func TestIdempotencyKeyCannotBindDifferentArtifact(t *testing.T) {
 		Roles:         []Role{RoleCreator},
 		PublisherKeys: []string{publicKey},
 	}
+	createServiceTestProject(t, service, creator)
 	if _, _, err := service.Submit(
 		context.Background(), creator, "same-key-different-v1", first,
 	); err != nil {
@@ -206,4 +209,220 @@ func TestIdempotencyKeyCannotBindDifferentArtifact(t *testing.T) {
 	); !errors.Is(err, ErrConflict) {
 		t.Fatalf("different artifact reused idempotency key: %v", err)
 	}
+}
+
+func TestProjectCollaborationAndVersionPermissions(t *testing.T) {
+	store := NewMemoryStore()
+	now := time.Date(2026, 10, 15, 13, 0, 0, 0, time.UTC)
+	service := NewService(store, acceptingVerifier{}, func() time.Time {
+		now = now.Add(time.Second)
+		return now
+	})
+	first, _, publicKey := signedArtifact(t, "d1111111-2222-3333-4444-555555555555")
+	second, _, _ := signedArtifact(t, "e1111111-2222-3333-4444-555555555555")
+	owner := Principal{
+		Subject:       "creator-a",
+		Roles:         []Role{RoleCreator, RolePublisher},
+		PublisherKeys: []string{publicKey},
+	}
+	editor := Principal{
+		Subject:       "creator-editor",
+		Roles:         []Role{RoleCreator, RolePublisher, RoleReviewer},
+		PublisherKeys: []string{publicKey},
+	}
+	viewer := Principal{Subject: "project-viewer"}
+	outsider := Principal{Subject: "project-outsider"}
+	reviewer := Principal{Subject: "independent-reviewer", Roles: []Role{RoleReviewer}}
+
+	project, created, err := service.CreateProject(
+		context.Background(),
+		owner,
+		"create-project-collaboration-v1",
+		"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+		"Collaboration fixture",
+	)
+	if err != nil || !created || project.OwnerSubject != owner.Subject {
+		t.Fatalf("create project failed: created=%v project=%+v err=%v", created, project, err)
+	}
+	retried, created, err := service.CreateProject(
+		context.Background(),
+		owner,
+		"create-project-collaboration-v1",
+		project.ProjectID,
+		project.DisplayName,
+	)
+	if err != nil || created || retried != project {
+		t.Fatalf("project retry failed: created=%v project=%+v err=%v", created, retried, err)
+	}
+	if _, _, err := service.CreateProject(
+		context.Background(),
+		owner,
+		"create-project-collaboration-v1",
+		project.ProjectID,
+		"Different name",
+	); !errors.Is(err, ErrConflict) {
+		t.Fatalf("project idempotency conflict was not rejected: %v", err)
+	}
+	if _, _, _, err := service.SetProjectMember(
+		context.Background(),
+		owner,
+		project.ProjectID,
+		editor.Subject,
+		ProjectRoleEditor,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := service.SetProjectMember(
+		context.Background(),
+		owner,
+		project.ProjectID,
+		viewer.Subject,
+		ProjectRoleViewer,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := service.SetProjectMember(
+		context.Background(),
+		editor,
+		project.ProjectID,
+		outsider.Subject,
+		ProjectRoleViewer,
+	); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("non-owner member mutation should be hidden: %v", err)
+	}
+
+	firstRelease, created, err := service.Submit(
+		context.Background(),
+		editor,
+		"editor-submit-first-v1",
+		first,
+	)
+	if err != nil || !created {
+		t.Fatalf("editor submit failed: created=%v release=%+v err=%v", created, firstRelease, err)
+	}
+	if firstRelease.OwnerSubject != owner.Subject ||
+		firstRelease.SubmittedBySubject != editor.Subject {
+		t.Fatalf("release ownership attribution mismatch: %+v", firstRelease)
+	}
+	if _, _, err := service.Review(
+		context.Background(),
+		editor,
+		firstRelease.ReleaseID,
+		StatusApproved,
+		"",
+	); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("project member self-review should be forbidden: %v", err)
+	}
+	viewerReviewer := viewer
+	viewerReviewer.Roles = []Role{RoleReviewer}
+	if _, _, err := service.Review(
+		context.Background(),
+		viewerReviewer,
+		firstRelease.ReleaseID,
+		StatusApproved,
+		"",
+	); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("project viewer review should be forbidden: %v", err)
+	}
+	if _, _, err := service.Review(
+		context.Background(),
+		reviewer,
+		firstRelease.ReleaseID,
+		StatusApproved,
+		"",
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := service.Publish(
+		context.Background(),
+		editor,
+		firstRelease.ReleaseID,
+	); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("editor publish should be forbidden: %v", err)
+	}
+	if _, _, err := service.Publish(
+		context.Background(),
+		owner,
+		firstRelease.ReleaseID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Get(context.Background(), viewer, firstRelease.ReleaseID); err != nil {
+		t.Fatalf("viewer could not read project release: %v", err)
+	}
+	if _, err := service.Get(context.Background(), outsider, firstRelease.ReleaseID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("outsider release lookup was not hidden: %v", err)
+	}
+
+	secondRelease, created, err := service.Submit(
+		context.Background(),
+		editor,
+		"editor-submit-second-v1",
+		second,
+	)
+	if err != nil || !created {
+		t.Fatalf("second editor submit failed: created=%v release=%+v err=%v", created, secondRelease, err)
+	}
+	page, err := service.ListProjectVersions(
+		context.Background(),
+		viewer,
+		project.ProjectID,
+		"",
+		1,
+	)
+	if err != nil || len(page.Releases) != 1 || page.NextCursor == "" {
+		t.Fatalf("first version page mismatch: page=%+v err=%v", page, err)
+	}
+	nextPage, err := service.ListProjectVersions(
+		context.Background(),
+		viewer,
+		project.ProjectID,
+		page.NextCursor,
+		1,
+	)
+	if err != nil || len(nextPage.Releases) != 1 || nextPage.NextCursor != "" ||
+		nextPage.Releases[0].ReleaseID == page.Releases[0].ReleaseID {
+		t.Fatalf("second version page mismatch: page=%+v err=%v", nextPage, err)
+	}
+
+	if _, changed, err := service.RemoveProjectMember(
+		context.Background(),
+		owner,
+		project.ProjectID,
+		editor.Subject,
+	); err != nil || !changed {
+		t.Fatalf("remove editor failed: changed=%v err=%v", changed, err)
+	}
+	third, _, _ := signedArtifact(t, "f1111111-2222-3333-4444-555555555555")
+	if _, _, err := service.Submit(
+		context.Background(),
+		editor,
+		"removed-editor-submit-v1",
+		third,
+	); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("removed editor submit should be forbidden: %v", err)
+	}
+	if _, _, err := service.RemoveProjectMember(
+		context.Background(),
+		owner,
+		project.ProjectID,
+		owner.Subject,
+	); !errors.Is(err, ErrConflict) {
+		t.Fatalf("project owner removal should conflict: %v", err)
+	}
+}
+
+func createServiceTestProject(t *testing.T, service *Service, owner Principal) Project {
+	t.Helper()
+	project, created, err := service.CreateProject(
+		context.Background(),
+		owner,
+		"create-project-fixture-v1",
+		"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+		"Registry test project",
+	)
+	if err != nil || !created {
+		t.Fatalf("create fixture project failed: created=%v project=%+v err=%v", created, project, err)
+	}
+	return project
 }

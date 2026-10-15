@@ -1,7 +1,7 @@
 # Release Registry v1 契约
 
-> 状态：P19 首个本地闭环；2026-10-15。
-> 范围：不可变 `.akugc` Release 的提交、审核、发布、撤回和下载。
+> 状态：P19 最小分发闭环与 P20.1 云项目权限基础；2026-10-15。
+> 范围：云项目、协作者、不可变 `.akugc` 版本的提交、审核、发布、撤回和下载。
 
 ## 信任边界
 
@@ -15,7 +15,8 @@
 ## Release 不变量
 
 - `releaseId` 是全局主键；规范形式为小写带连字符 UUID。
-- `projectId`、Schema、Owner、PublisherPublicKey、ContentHash、ArtifactSHA256、ArtifactSize、Artifact bytes 和 SubmittedAt 创建后不可修改。
+- `projectId`、Schema、Owner、实际提交者、PublisherPublicKey、ContentHash、ArtifactSHA256、ArtifactSize、Artifact bytes 和 SubmittedAt 创建后不可修改。
+- `ownerSubject` 永远取项目 Owner，`submittedBySubject` 记录首次创建该版本的实际 Owner 或 Editor。相同制品由另一名授权协作者重试不会改写首次提交者。
 - PostgreSQL 约束与触发器共同保护不可变字段；服务层不能用状态更新覆盖内容字段。
 - 同一 Owner、同一 ReleaseId、同一完整制品重复提交返回现有记录，不重置状态。
 - 同一 ReleaseId 的任一不可变字段或制品摘要不同，返回 `409 conflict`，不修改已有记录。
@@ -58,6 +59,7 @@
 - 静态 token 阶段仅允许 loopback HTTP；Base URL、Creator token 和请求状态只存在于面板内存，不写入项目、配置或作品库。
 - 上传使用 `akugc-release-<ReleaseIdDigits>` 作为稳定幂等键。重复点击或重启后的相同包由 Registry 返回现有 Release，不创建新版本。
 - submit/get/publish 响应最多 64 KiB，必须是规范 UTF-8、无重复和未知字段的契约 JSON；返回的 ReleaseId、公钥及 ContentHash 必须与本地签名记录一致。
+- P20.1 响应新增必需的 `submittedBySubject`；Creator 严格解析器同步校验该字段，避免真实 Registry 与本地协议夹具漂移。
 - Registry 元数据只用于显示状态和启用发布操作。客户端不能把响应里的 `publisherPublicKey` 当作信任根，也不能修改、重新签名或覆盖本地制品。
 - Reviewer 操作不进入 Creator 面板；Creator 只有在刷新得到 `approved` 后才能发起 publish。撤回和公钥轮换链登记留在后续切片。
 - 取消只终止客户端等待，不能回滚可能已经到达服务端的提交或发布；取消后必须刷新状态确认最终结果。
@@ -72,6 +74,47 @@
 - 选择作品时 `PrepareLibraryWork` 会从本地记录再次验签；只有准备成功后 `StartSolo` 才能建立 Session。401/403/404、重定向、超限、摘要错误、篡改制品和错误信任根都不得写入目标 Release 或启动 Session。
 - 当前产品切片提供 `FetchRegistryWork` / `CancelRegistryWork` 运行时入口；自动化通过仅对 Player 子进程可见的环境变量把本机 Alpha 凭据注入该入口，避免凭据出现在 Unreal 命令行元数据。玩家账号登录、凭据安全存储与远端 TLS 地址属于正式 IdP 切片，不能沿用静态 token 方案上线公网。
 
+## P20.1 云项目、版本与协作者
+
+### 项目不变量
+
+- `projectId` 由现有 Portable Project 创建，使用与签名 Manifest 相同的非零规范 UUID；服务端不能另发一个与 Document 脱节的项目 ID。
+- 创建项目需要全局 `creator` 角色和 16–128 位安全 ASCII `Idempotency-Key`。同一 Owner、键、ProjectId 和 DisplayName 重试返回现有项目；同键不同元数据或同 ProjectId 不同 Owner 返回 `409`。
+- `projectId`、DisplayName、唯一 Owner 和 CreatedAt 在 P20.1 创建后不可修改；协作者变化只增加 Project Revision。改名与所有权转移需要后续独立契约，不能通过直接更新数据库模拟。
+- PostgreSQL 启动迁移会为 P19 已存在且 Owner 唯一的项目回填 Project；同一 ProjectId 已出现多个 Owner 时迁移失败关闭，不能猜测所有者。
+
+### 项目角色
+
+- Owner：创建者且唯一。可管理协作者；同时具有全局 `publisher` 时可发布或撤回项目版本。
+- Editor：可读取项目和版本，并在同时具有全局 `creator`、且签名公钥登记给自身身份时提交新版本；不能发布、撤回或管理成员。
+- Viewer：只能读取项目、成员和版本元数据；不能提交、审核、发布、撤回或读取未发布制品字节。
+- 项目角色存储在 Registry，不由静态 token 中的全局角色替代。移除 Editor 后，即使其 Bearer token 仍有效，提交事务也必须拒绝。
+- Reviewer 必须独立于项目；Owner、Editor 或 Viewer 即使同时具有全局 `reviewer` 角色，也不能审核该项目。
+
+### 项目 HTTP v1
+
+- `POST /v1/projects`
+  - Bearer：Creator；`Content-Type: application/json`。
+  - Body：`{"projectId":"<uuid>","displayName":"<1..128 UTF-8 bytes>"}`。
+  - 新建返回 `201`；精确幂等重试返回 `200`。
+- `GET /v1/projects/{projectId}`
+  - 仅 Owner、Editor 或 Viewer；项目外主体统一返回 `404`。
+- `GET /v1/projects/{projectId}/members`
+  - 仅项目成员；返回 Owner 及按 Subject 排序的协作者，不返回 token 或发布私钥配置。
+- `PUT /v1/projects/{projectId}/members/{subject}`
+  - 仅 Owner；Body 精确为 `{"role":"editor|viewer"}`。相同角色重试不增加 Revision。
+- `DELETE /v1/projects/{projectId}/members/{subject}`
+  - 仅 Owner；重复删除幂等，Owner 自身不可删除。
+- `GET /v1/projects/{projectId}/versions?limit=1..100&cursor={releaseId}`
+  - 仅项目成员；按 SubmittedAt、ReleaseId 稳定倒序返回不含制品字节的 Release 元数据。Cursor 必须属于同一项目，未知、重复或额外查询参数均拒绝。
+
+### 提交与并发绑定
+
+- `POST /v1/releases` 在深度验包前先确认 Manifest ProjectId 已登记，且主体是 Owner 或 Editor；验包后在同一提交事务内再次检查，避免成员移除与提交之间的检查时使用竞态。
+- PostgreSQL 提交事务对 Project 行持有共享锁；成员增删对同一 Project 行持有排他锁。因此提交要么在移除前完整授权并落库，要么在移除后明确拒绝，不存在越权中间状态。
+- Release 幂等命名空间继续绑定项目 Owner，使 Owner 与 Editor 对同一稳定键和制品只产生一个版本；Editor 不能通过成为首次提交者获得发布或撤回权限。
+- Project 创建使用 Owner + Idempotency-Key 事务级 advisory lock；成员变化和 Project Revision 在单一事务内更新，并追加不可变成员审计事件。
+
 ## 并发判定
 
 - 提交事务先按 `Owner + Idempotency-Key` 获取事务级 advisory lock，再检查幂等记录、插入或比对 Release，最后写入幂等绑定。
@@ -83,5 +126,6 @@
 
 - P19 v1 将小于 16 MiB 的制品保存在 PostgreSQL `bytea`，便于先证明事务与不可变语义；对象存储拆分在 Registry 契约稳定后进行，迁移时 ArtifactSHA256 和不可变语义不得改变。
 - Publisher 公钥当前由本地认证配置绑定；P18.1 的双签名轮换链登记 API 是后续 P19 切片，不能通过修改现有 Release 的公钥来模拟轮换。
-- P19.2 已接入 Creator Studio，P19.3 已接入 Packaged Player；Reviewer UI、撤回 UI、私人/公开可见性、项目协作者、构建任务、DS 固定版本和资产包上传不属于本切片。
-- 四台真实物理设备验收按当前决策延期；本阶段使用本机隔离 Creator、Reviewer、Player 和 PostgreSQL 进程验证。
+- P19.2 已接入 Creator Studio，P19.3 已接入 Packaged Player；P20.1 先完成 Registry 项目/成员/版本基础与本机协议验收，Creator Studio 的项目和协作者产品界面留给下一切片。
+- Reviewer UI、撤回 UI、私人/公开可见性、正式 IdP、构建任务、DS 固定版本和资产包上传不属于本切片。
+- 四台真实物理设备验收按当前决策延期；本阶段使用本机隔离 Owner、Editor、Viewer、Reviewer、Player 和 PostgreSQL 进程验证。

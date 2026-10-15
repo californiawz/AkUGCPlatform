@@ -223,4 +223,33 @@
 - 本切片只接入单人 Player。Dedicated Server 固定 Release 获取、会话版本锁定和回滚仍未实现，不能把 Player 本地库当作 DS 发布控制面。
 - 四台真实物理设备验收继续延期；本轮证据是同机独立 token、目录、进程和恶意 loopback 夹具，不计作实体设备通过。
 
+### P20.1：云项目、不可变版本与协作者权限基础
+
+**目标**：在已稳定的 Release Registry 上建立 Project 控制面，让一个签名 Project 拥有唯一 Owner、受控 Editor/Viewer 协作者和有界不可变版本历史；先证明服务端权限、不变量和并发语义，再接 Creator Studio 项目界面。
+
+**实现**：
+
+- 新增 Project、ProjectMember、项目创建幂等记录和成员审计事件。ProjectId 与 Portable Project 及签名 Manifest 使用同一非零规范 UUID；DisplayName、Owner 和创建时间在本切片不可修改，成员变化才增加 Project Revision。
+- Owner 可幂等添加、修改和移除 Editor/Viewer，但不能删除或降级自身。项目外主体读取项目统一返回 404；成员列表不暴露 token 或发布密钥配置。
+- Release 提交必须先证明 Project 已登记，且调用者同时具备全局 Creator、登记签名公钥和项目 Owner/Editor 权限。服务在深度验包前快速拒绝，并在 PostgreSQL 提交事务内再次锁定 Project 检查，避免成员移除与上传之间的检查时使用竞态。
+- Release 的 `ownerSubject` 固定为 Project Owner，新增不可变 `submittedBySubject` 记录实际首次提交者。Editor 不能因提交版本获得发布或撤回权；Owner、Editor、Viewer 即使同时具有 Reviewer 角色也不能审核本项目。
+- 新增严格的项目创建、读取、成员增删和版本列表 HTTP API。版本按 SubmittedAt 与 ReleaseId 稳定倒序，`limit` 限制为 1–100，Cursor 必须属于同一项目；响应只含 Release 元数据，不加载或返回制品字节。
+- PostgreSQL migration 会为 Owner 唯一的 P19 历史 Release 回填 Project，并增加 Project 外键、提交者字段、项目/Release 不可变触发器及 Owner 成员冲突触发器；同一历史 Project 已出现多个 Owner 时失败关闭。
+- `verify_release_registry.py` 在真实 PostgreSQL 流程中增加项目幂等登记、Editor/Viewer 授权、项目外隐藏、Editor 并发提交归属、版本查询和移除后上传拒绝，同时保留 P19 的篡改、ID 冲突、审核、发布、下载、本地验签、撤回与 Packaged Player 门禁。
+
+**已验证（2026-10-15）**：
+
+- Go 单元、HTTP、内存并发和真实 PostgreSQL 隔离 Schema 测试通过，`go vet ./...` 通过；Project 创建并发只产生一次创建，成员变化、Release 状态和不可变触发器保持事务一致。
+- Python 回归 120/120；AkUGCPlatformEditor Win64 Development 编译成功；Editor `AkUGC` 完整自动化 139/139，Copilot/Creator Registry HTTP 与 TLS 协议夹具 42/42 保持通过。
+- 真实 PostgreSQL + Registry + Packaged Player 最终闭环通过：8 路 Editor 重试得到一个 `201` 和七个 `200`，Release Owner 固定为 Project Owner、实际提交者为 Editor；移除 Editor 后旧 token 上传返回 `403`，Viewer 有界版本查询和项目外 `404` 通过。
+- P19 Player 门禁未回退：未发布、错误 token、错误独立公钥、传输篡改、Header 超限、重定向和撤回后下载均拒绝；正常版本完成本地验签、入库、准备、开局和胜利结算。
+- 完整证据位于本机 `Saved/ReleaseRegistryVerification/P20_1_Final1/result.json`；Editor 与共享协议回归证据位于 `Saved/P20_1_Copilot_Final1/result.json`。
+
+**边界**：
+
+- P20.1 只完成 Registry 基础与本机协议编排；Creator Studio 尚无项目创建、成员管理和版本历史界面，现有 Creator 上传前需由编排或后续产品入口登记同一 ProjectId。
+- 静态 Bearer、loopback HTTP 与本机角色隔离仍不是公网身份系统；邀请接受、组织、所有权转移、密钥轮换登记和 TLS/IdP 留给后续切片。
+- 私人/公开作品页、构建任务与对象存储、DS 固定版本/回滚、运营观测和 Asset Pack 均未进入本切片。
+- 四台真实物理设备验收继续按当前决策延期，不计入 P20.1 通过证据。
+
 玩家 Asset Pack 白名单试点放在 Release Registry 稳定之后，避免同时扩大网络、内容与沙箱攻击面。

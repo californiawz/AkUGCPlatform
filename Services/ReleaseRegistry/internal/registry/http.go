@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 const maxControlBodyBytes = 4096
@@ -26,6 +28,12 @@ func NewHTTPHandler(service *Service, auth Authenticator) http.Handler {
 		mux:     http.NewServeMux(),
 	}
 	handler.mux.HandleFunc("GET /healthz", handler.health)
+	handler.mux.HandleFunc("POST /v1/projects", handler.createProject)
+	handler.mux.HandleFunc("GET /v1/projects/{projectID}", handler.getProject)
+	handler.mux.HandleFunc("GET /v1/projects/{projectID}/members", handler.listProjectMembers)
+	handler.mux.HandleFunc("PUT /v1/projects/{projectID}/members/{subject}", handler.setProjectMember)
+	handler.mux.HandleFunc("DELETE /v1/projects/{projectID}/members/{subject}", handler.removeProjectMember)
+	handler.mux.HandleFunc("GET /v1/projects/{projectID}/versions", handler.listProjectVersions)
 	handler.mux.HandleFunc("POST /v1/releases", handler.submit)
 	handler.mux.HandleFunc("GET /v1/releases/{releaseID}", handler.get)
 	handler.mux.HandleFunc("POST /v1/releases/{releaseID}/review", handler.review)
@@ -45,6 +53,193 @@ func (h *HTTPHandler) health(response http.ResponseWriter, _ *http.Request) {
 	writeJSON(response, http.StatusOK, map[string]any{
 		"status": "ok",
 	})
+}
+
+type createProjectRequest struct {
+	ProjectID   string `json:"projectId"`
+	DisplayName string `json:"displayName"`
+}
+
+func (h *HTTPHandler) createProject(response http.ResponseWriter, request *http.Request) {
+	principal, ok := h.authenticate(response, request)
+	if !ok {
+		return
+	}
+	if err := requireJSONContentType(request); err != nil {
+		writeAPIError(response, err)
+		return
+	}
+	var body createProjectRequest
+	if err := decodeControlBody(response, request, &body, "projectId", "displayName"); err != nil {
+		writeAPIError(response, err)
+		return
+	}
+	project, created, err := h.service.CreateProject(
+		request.Context(),
+		principal,
+		request.Header.Get("Idempotency-Key"),
+		body.ProjectID,
+		body.DisplayName,
+	)
+	if err != nil {
+		writeAPIError(response, err)
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	response.Header().Set("Location", "/v1/projects/"+project.ProjectID)
+	writeJSON(response, status, map[string]any{
+		"created": created,
+		"project": project,
+	})
+}
+
+func (h *HTTPHandler) getProject(response http.ResponseWriter, request *http.Request) {
+	principal, ok := h.authenticate(response, request)
+	if !ok {
+		return
+	}
+	if err := requireNoQuery(request); err != nil {
+		writeAPIError(response, err)
+		return
+	}
+	project, role, err := h.service.GetProject(
+		request.Context(),
+		principal,
+		request.PathValue("projectID"),
+	)
+	if err != nil {
+		writeAPIError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]any{
+		"accessRole": role,
+		"project":    project,
+	})
+}
+
+func (h *HTTPHandler) listProjectMembers(response http.ResponseWriter, request *http.Request) {
+	principal, ok := h.authenticate(response, request)
+	if !ok {
+		return
+	}
+	if err := requireNoQuery(request); err != nil {
+		writeAPIError(response, err)
+		return
+	}
+	members, err := h.service.ListProjectMembers(
+		request.Context(),
+		principal,
+		request.PathValue("projectID"),
+	)
+	if err != nil {
+		writeAPIError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"members": members})
+}
+
+type setProjectMemberRequest struct {
+	Role ProjectRole `json:"role"`
+}
+
+func (h *HTTPHandler) setProjectMember(response http.ResponseWriter, request *http.Request) {
+	principal, ok := h.authenticate(response, request)
+	if !ok {
+		return
+	}
+	if err := requireNoQuery(request); err != nil {
+		writeAPIError(response, err)
+		return
+	}
+	if err := requireJSONContentType(request); err != nil {
+		writeAPIError(response, err)
+		return
+	}
+	var body setProjectMemberRequest
+	if err := decodeControlBody(response, request, &body, "role"); err != nil {
+		writeAPIError(response, err)
+		return
+	}
+	member, project, changed, err := h.service.SetProjectMember(
+		request.Context(),
+		principal,
+		request.PathValue("projectID"),
+		request.PathValue("subject"),
+		body.Role,
+	)
+	if err != nil {
+		writeAPIError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]any{
+		"changed": changed,
+		"member":  member,
+		"project": project,
+	})
+}
+
+func (h *HTTPHandler) removeProjectMember(response http.ResponseWriter, request *http.Request) {
+	principal, ok := h.authenticate(response, request)
+	if !ok {
+		return
+	}
+	if err := requireNoQuery(request); err != nil {
+		writeAPIError(response, err)
+		return
+	}
+	if err := requireEmptyBody(response, request); err != nil {
+		writeAPIError(response, err)
+		return
+	}
+	project, changed, err := h.service.RemoveProjectMember(
+		request.Context(),
+		principal,
+		request.PathValue("projectID"),
+		request.PathValue("subject"),
+	)
+	if err != nil {
+		writeAPIError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]any{
+		"changed": changed,
+		"project": project,
+	})
+}
+
+func (h *HTTPHandler) listProjectVersions(response http.ResponseWriter, request *http.Request) {
+	principal, ok := h.authenticate(response, request)
+	if !ok {
+		return
+	}
+	values, err := parseVersionQuery(request)
+	if err != nil {
+		writeAPIError(response, err)
+		return
+	}
+	limit := 20
+	if rawLimit := values.Get("limit"); rawLimit != "" {
+		limit, err = strconv.Atoi(rawLimit)
+		if err != nil {
+			writeAPIError(response, fmt.Errorf("%w: version limit must be an integer", ErrInvalidInput))
+			return
+		}
+	}
+	page, err := h.service.ListProjectVersions(
+		request.Context(),
+		principal,
+		request.PathValue("projectID"),
+		values.Get("cursor"),
+		limit,
+	)
+	if err != nil {
+		writeAPIError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, page)
 }
 
 func (h *HTTPHandler) submit(response http.ResponseWriter, request *http.Request) {
@@ -226,6 +421,9 @@ func decodeControlBody(
 	if err != nil {
 		return err
 	}
+	if !utf8.Valid(raw) {
+		return fmt.Errorf("%w: request body is not valid UTF-8", ErrInvalidInput)
+	}
 	if err := validateJSONShape(raw); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidInput, err)
 	}
@@ -241,6 +439,39 @@ func decodeControlBody(
 		return fmt.Errorf("%w: trailing JSON body", ErrInvalidInput)
 	}
 	return nil
+}
+
+func requireJSONContentType(request *http.Request) error {
+	if request.Header.Get("Content-Type") != "application/json" {
+		return fmt.Errorf("%w: Content-Type must be application/json", ErrInvalidInput)
+	}
+	return nil
+}
+
+func requireNoQuery(request *http.Request) error {
+	if request.URL.RawQuery != "" {
+		return fmt.Errorf("%w: query parameters are not supported", ErrInvalidInput)
+	}
+	return nil
+}
+
+func parseVersionQuery(request *http.Request) (url.Values, error) {
+	values, err := url.ParseQuery(request.URL.RawQuery)
+	if err != nil {
+		return nil, fmt.Errorf("%w: invalid query parameters", ErrInvalidInput)
+	}
+	for name, entries := range values {
+		if name != "cursor" && name != "limit" {
+			return nil, fmt.Errorf("%w: unknown query parameter %q", ErrInvalidInput, name)
+		}
+		if len(entries) != 1 {
+			return nil, fmt.Errorf("%w: query parameter %q must occur once", ErrInvalidInput, name)
+		}
+		if entries[0] == "" {
+			return nil, fmt.Errorf("%w: query parameter %q cannot be empty", ErrInvalidInput, name)
+		}
+	}
+	return values, nil
 }
 
 func requireEmptyBody(response http.ResponseWriter, request *http.Request) error {
@@ -286,7 +517,7 @@ func writeAPIError(response http.ResponseWriter, err error) {
 	case errors.Is(err, ErrInvalidInput):
 		status, code, message = http.StatusBadRequest, "invalid_input", err.Error()
 	case errors.Is(err, ErrNotFound):
-		status, code, message = http.StatusNotFound, "not_found", "release was not found"
+		status, code, message = http.StatusNotFound, "not_found", "resource was not found"
 	case errors.Is(err, ErrConflict):
 		status, code, message = http.StatusConflict, "conflict", err.Error()
 	case errors.Is(err, ErrUnavailable):

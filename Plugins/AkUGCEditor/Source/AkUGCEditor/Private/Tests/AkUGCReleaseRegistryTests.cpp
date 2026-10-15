@@ -34,6 +34,7 @@ namespace AkUGCReleaseRegistryTest
 			TEXT("\"projectId\":\"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\",")
 			TEXT("\"schemaVersion\":6,")
 			TEXT("\"ownerSubject\":\"creator-a\",")
+			TEXT("\"submittedBySubject\":\"creator-a\",")
 			TEXT("\"publisherPublicKey\":\"%s\",")
 			TEXT("\"contentHash\":\"%s\",")
 			TEXT("\"artifactSha256\":\"%s\",")
@@ -154,6 +155,10 @@ bool FAkUGCReleaseRegistryResponseTest::RunTest(const FString& Parameters)
 		TEXT("Submitted status is preserved"),
 		Response.Release.Status,
 		FString(TEXT("submitted")));
+	TestEqual(
+		TEXT("Actual submitter is preserved"),
+		Response.Release.SubmittedBySubject,
+		FString(TEXT("creator-a")));
 
 	const FString Approved =
 		TEXT("{\"release\":")

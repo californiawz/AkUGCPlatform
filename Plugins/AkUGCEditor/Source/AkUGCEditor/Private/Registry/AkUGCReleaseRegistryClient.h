@@ -16,6 +16,7 @@ struct FAkUGCReleaseRegistryView
 	FGuid ReleaseId;
 	FString Status;
 	FString OwnerSubject;
+	FString SubmittedBySubject;
 	FString PublisherPublicKey;
 	FString ContentHash;
 	FString ArtifactSha256;

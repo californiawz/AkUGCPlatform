@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/sync/singleflight"
 )
@@ -24,6 +26,164 @@ func NewService(store Store, verifier PackVerifier, now func() time.Time) *Servi
 		now = func() time.Time { return time.Now().UTC() }
 	}
 	return &Service{store: store, verifier: verifier, now: now}
+}
+
+func (s *Service) CreateProject(
+	ctx context.Context,
+	principal Principal,
+	idempotencyKey string,
+	projectID string,
+	displayName string,
+) (Project, bool, error) {
+	if principal.Subject == "" {
+		return Project{}, false, ErrUnauthenticated
+	}
+	if !principal.HasRole(RoleCreator) {
+		return Project{}, false, ErrForbidden
+	}
+	if !idempotencyKeyPattern.MatchString(idempotencyKey) {
+		return Project{}, false, fmt.Errorf("%w: Idempotency-Key must be 16..128 safe ASCII characters", ErrInvalidInput)
+	}
+	canonicalID, err := canonicalUUID(projectID, true)
+	if err != nil {
+		return Project{}, false, fmt.Errorf("%w: invalid project ID", ErrInvalidInput)
+	}
+	if err := validateProjectDisplayName(displayName); err != nil {
+		return Project{}, false, err
+	}
+	return s.store.CreateProject(ctx, ProjectCreation{
+		ProjectID:      canonicalID,
+		DisplayName:    displayName,
+		OwnerSubject:   principal.Subject,
+		IdempotencyKey: idempotencyKey,
+		CreatedAt:      s.now(),
+	})
+}
+
+func (s *Service) GetProject(
+	ctx context.Context,
+	principal Principal,
+	projectID string,
+) (Project, ProjectRole, error) {
+	if principal.Subject == "" {
+		return Project{}, "", ErrUnauthenticated
+	}
+	canonicalID, err := canonicalUUID(projectID, true)
+	if err != nil {
+		return Project{}, "", fmt.Errorf("%w: invalid project ID", ErrInvalidInput)
+	}
+	role, member, err := s.store.GetProjectRole(ctx, canonicalID, principal.Subject)
+	if err != nil {
+		return Project{}, "", err
+	}
+	if !member {
+		return Project{}, "", ErrNotFound
+	}
+	project, err := s.store.GetProject(ctx, canonicalID)
+	return project, role, err
+}
+
+func (s *Service) ListProjectMembers(
+	ctx context.Context,
+	principal Principal,
+	projectID string,
+) ([]ProjectMember, error) {
+	project, _, err := s.GetProject(ctx, principal, projectID)
+	if err != nil {
+		return nil, err
+	}
+	return s.store.ListProjectMembers(ctx, project.ProjectID)
+}
+
+func (s *Service) SetProjectMember(
+	ctx context.Context,
+	principal Principal,
+	projectID string,
+	subject string,
+	role ProjectRole,
+) (ProjectMember, Project, bool, error) {
+	if principal.Subject == "" {
+		return ProjectMember{}, Project{}, false, ErrUnauthenticated
+	}
+	canonicalID, err := canonicalUUID(projectID, true)
+	if err != nil {
+		return ProjectMember{}, Project{}, false, fmt.Errorf("%w: invalid project ID", ErrInvalidInput)
+	}
+	if !subjectPattern.MatchString(subject) {
+		return ProjectMember{}, Project{}, false, fmt.Errorf("%w: invalid member subject", ErrInvalidInput)
+	}
+	if !role.ValidMemberRole() {
+		return ProjectMember{}, Project{}, false, fmt.Errorf("%w: member role must be editor or viewer", ErrInvalidInput)
+	}
+	currentRole, member, err := s.store.GetProjectRole(ctx, canonicalID, principal.Subject)
+	if err != nil {
+		return ProjectMember{}, Project{}, false, err
+	}
+	if !member || currentRole != ProjectRoleOwner {
+		return ProjectMember{}, Project{}, false, ErrNotFound
+	}
+	return s.store.SetProjectMember(ctx, ProjectMemberChange{
+		ProjectID: canonicalID,
+		Actor:     principal.Subject,
+		Subject:   subject,
+		Role:      role,
+		ChangedAt: s.now(),
+	})
+}
+
+func (s *Service) RemoveProjectMember(
+	ctx context.Context,
+	principal Principal,
+	projectID string,
+	subject string,
+) (Project, bool, error) {
+	if principal.Subject == "" {
+		return Project{}, false, ErrUnauthenticated
+	}
+	canonicalID, err := canonicalUUID(projectID, true)
+	if err != nil {
+		return Project{}, false, fmt.Errorf("%w: invalid project ID", ErrInvalidInput)
+	}
+	if !subjectPattern.MatchString(subject) {
+		return Project{}, false, fmt.Errorf("%w: invalid member subject", ErrInvalidInput)
+	}
+	currentRole, member, err := s.store.GetProjectRole(ctx, canonicalID, principal.Subject)
+	if err != nil {
+		return Project{}, false, err
+	}
+	if !member || currentRole != ProjectRoleOwner {
+		return Project{}, false, ErrNotFound
+	}
+	return s.store.RemoveProjectMember(ctx, ProjectMemberRemoval{
+		ProjectID: canonicalID,
+		Actor:     principal.Subject,
+		Subject:   subject,
+		ChangedAt: s.now(),
+	})
+}
+
+func (s *Service) ListProjectVersions(
+	ctx context.Context,
+	principal Principal,
+	projectID string,
+	cursor string,
+	limit int,
+) (ProjectVersionPage, error) {
+	project, _, err := s.GetProject(ctx, principal, projectID)
+	if err != nil {
+		return ProjectVersionPage{}, err
+	}
+	canonicalCursor := ""
+	if cursor != "" {
+		canonicalCursor, err = canonicalUUID(cursor, true)
+		if err != nil {
+			return ProjectVersionPage{}, fmt.Errorf("%w: invalid version cursor", ErrInvalidInput)
+		}
+	}
+	if limit < 1 || limit > 100 {
+		return ProjectVersionPage{}, fmt.Errorf("%w: version limit must be 1..100", ErrInvalidInput)
+	}
+	return s.store.ListProjectVersions(ctx, project.ProjectID, canonicalCursor, limit)
 }
 
 func (s *Service) Submit(
@@ -48,6 +208,17 @@ func (s *Service) Submit(
 	if !principal.AllowsPublisherKey(envelope.PublisherPublicKey) {
 		return Release{}, false, fmt.Errorf("%w: publisher key is not registered to this creator", ErrForbidden)
 	}
+	projectRole, member, err := s.store.GetProjectRole(
+		ctx,
+		envelope.ProjectID,
+		principal.Subject,
+	)
+	if err != nil {
+		return Release{}, false, err
+	}
+	if !member || (projectRole != ProjectRoleOwner && projectRole != ProjectRoleEditor) {
+		return Release{}, false, fmt.Errorf("%w: creator cannot submit to this project", ErrForbidden)
+	}
 	if s.verifier == nil {
 		return Release{}, false, fmt.Errorf("%w: pack verifier is not configured", ErrUnavailable)
 	}
@@ -66,11 +237,11 @@ func (s *Service) Submit(
 		return Release{}, false, fmt.Errorf("%w: verifier metadata mismatch", ErrInvalidInput)
 	}
 	return s.store.Submit(ctx, Submission{
-		OwnerSubject:   principal.Subject,
-		IdempotencyKey: idempotencyKey,
-		Metadata:       metadata,
-		Artifact:       append([]byte(nil), artifact...),
-		SubmittedAt:    s.now(),
+		SubmitterSubject: principal.Subject,
+		IdempotencyKey:   idempotencyKey,
+		Metadata:         metadata,
+		Artifact:         append([]byte(nil), artifact...),
+		SubmittedAt:      s.now(),
 	})
 }
 
@@ -104,6 +275,15 @@ func (s *Service) Review(
 	}
 	if current.OwnerSubject == principal.Subject {
 		return Release{}, false, fmt.Errorf("%w: creator cannot review their own release", ErrForbidden)
+	}
+	if _, member, projectErr := s.store.GetProjectRole(
+		ctx,
+		current.ProjectID,
+		principal.Subject,
+	); projectErr != nil {
+		return Release{}, false, projectErr
+	} else if member {
+		return Release{}, false, fmt.Errorf("%w: project members cannot review their project", ErrForbidden)
 	}
 	return s.store.Transition(ctx, TransitionRequest{
 		ReleaseID: canonicalID,
@@ -205,6 +385,16 @@ func (s *Service) Get(
 		release.Artifact = nil
 		return release, nil
 	}
+	if _, member, projectErr := s.store.GetProjectRole(
+		ctx,
+		release.ProjectID,
+		principal.Subject,
+	); projectErr != nil {
+		return Release{}, projectErr
+	} else if member {
+		release.Artifact = nil
+		return release, nil
+	}
 	return Release{}, ErrNotFound
 }
 
@@ -231,4 +421,22 @@ func (s *Service) Download(
 		return Release{}, ErrNotFound
 	}
 	return release, nil
+}
+
+func validateProjectDisplayName(value string) error {
+	if !utf8.ValidString(value) {
+		return fmt.Errorf("%w: project display name must be valid UTF-8", ErrInvalidInput)
+	}
+	if len([]byte(value)) < 1 || len([]byte(value)) > 128 {
+		return fmt.Errorf("%w: project display name must be 1..128 UTF-8 bytes", ErrInvalidInput)
+	}
+	if strings.TrimSpace(value) != value {
+		return fmt.Errorf("%w: project display name cannot have leading or trailing whitespace", ErrInvalidInput)
+	}
+	for _, character := range value {
+		if unicode.IsControl(character) {
+			return fmt.Errorf("%w: project display name cannot contain control characters", ErrInvalidInput)
+		}
+	}
+	return nil
 }

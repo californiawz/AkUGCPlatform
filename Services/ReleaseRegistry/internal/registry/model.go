@@ -73,11 +73,69 @@ type PackMetadata struct {
 	ArtifactSize       int64
 }
 
+type ProjectRole string
+
+const (
+	ProjectRoleOwner  ProjectRole = "owner"
+	ProjectRoleEditor ProjectRole = "editor"
+	ProjectRoleViewer ProjectRole = "viewer"
+)
+
+func (r ProjectRole) ValidMemberRole() bool {
+	return r == ProjectRoleEditor || r == ProjectRoleViewer
+}
+
+type Project struct {
+	ProjectID    string    `json:"projectId"`
+	DisplayName  string    `json:"displayName"`
+	OwnerSubject string    `json:"ownerSubject"`
+	Revision     int64     `json:"revision"`
+	CreatedAt    time.Time `json:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt"`
+}
+
+type ProjectMember struct {
+	ProjectID string      `json:"projectId"`
+	Subject   string      `json:"subject"`
+	Role      ProjectRole `json:"role"`
+	AddedAt   time.Time   `json:"addedAt"`
+	UpdatedAt time.Time   `json:"updatedAt"`
+}
+
+type ProjectCreation struct {
+	ProjectID      string
+	DisplayName    string
+	OwnerSubject   string
+	IdempotencyKey string
+	CreatedAt      time.Time
+}
+
+type ProjectMemberChange struct {
+	ProjectID string
+	Actor     string
+	Subject   string
+	Role      ProjectRole
+	ChangedAt time.Time
+}
+
+type ProjectMemberRemoval struct {
+	ProjectID string
+	Actor     string
+	Subject   string
+	ChangedAt time.Time
+}
+
+type ProjectVersionPage struct {
+	Releases   []Release `json:"versions"`
+	NextCursor string    `json:"nextCursor,omitempty"`
+}
+
 type Release struct {
 	ReleaseID          string     `json:"releaseId"`
 	ProjectID          string     `json:"projectId"`
 	SchemaVersion      int32      `json:"schemaVersion"`
 	OwnerSubject       string     `json:"ownerSubject"`
+	SubmittedBySubject string     `json:"submittedBySubject"`
 	PublisherPublicKey string     `json:"publisherPublicKey"`
 	ContentHash        string     `json:"contentHash"`
 	ArtifactSHA256     string     `json:"artifactSha256"`
@@ -99,11 +157,11 @@ func (r Release) clone() Release {
 }
 
 type Submission struct {
-	OwnerSubject   string
-	IdempotencyKey string
-	Metadata       PackMetadata
-	Artifact       []byte
-	SubmittedAt    time.Time
+	SubmitterSubject string
+	IdempotencyKey   string
+	Metadata         PackMetadata
+	Artifact         []byte
+	SubmittedAt      time.Time
 }
 
 type Transition struct {

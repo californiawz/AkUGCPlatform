@@ -22,12 +22,18 @@ func TestPostgresImmutableLifecycleAndConcurrentRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	project := createPostgresTestProject(
+		t,
+		store,
+		metadata.ProjectID,
+		time.Date(2026, 10, 15, 9, 59, 0, 0, time.UTC),
+	)
 	submission := Submission{
-		OwnerSubject:   "creator-a",
-		IdempotencyKey: "postgres-concurrent-91111111",
-		Metadata:       metadata,
-		Artifact:       artifact,
-		SubmittedAt:    time.Date(2026, 10, 15, 10, 0, 0, 0, time.UTC),
+		SubmitterSubject: "creator-a",
+		IdempotencyKey:   "postgres-concurrent-91111111",
+		Metadata:         metadata,
+		Artifact:         artifact,
+		SubmittedAt:      time.Date(2026, 10, 15, 10, 0, 0, 0, time.UTC),
 	}
 
 	var created atomic.Int32
@@ -44,6 +50,10 @@ func TestPostgresImmutableLifecycleAndConcurrentRetry(t *testing.T) {
 			}
 			if release.PublisherPublicKey != publicKey {
 				failures <- fmt.Errorf("publisher key mismatch")
+			}
+			if release.OwnerSubject != project.OwnerSubject ||
+				release.SubmittedBySubject != "creator-a" {
+				failures <- fmt.Errorf("release attribution mismatch")
 			}
 			if wasCreated {
 				created.Add(1)
@@ -101,14 +111,15 @@ func TestPostgresRejectsIDAndIdempotencyConflicts(t *testing.T) {
 	firstMetadata, _ := InspectAndVerifyEnvelope(first)
 	secondMetadata, _ := InspectAndVerifyEnvelope(second)
 	at := time.Date(2026, 10, 15, 11, 0, 0, 0, time.UTC)
+	createPostgresTestProject(t, store, firstMetadata.ProjectID, at.Add(-time.Minute))
 	if _, _, err := store.Submit(context.Background(), Submission{
-		OwnerSubject: "creator-a", IdempotencyKey: "postgres-conflict-key",
+		SubmitterSubject: "creator-a", IdempotencyKey: "postgres-conflict-key",
 		Metadata: firstMetadata, Artifact: first, SubmittedAt: at,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := store.Submit(context.Background(), Submission{
-		OwnerSubject: "creator-a", IdempotencyKey: "postgres-conflict-key",
+		SubmitterSubject: "creator-a", IdempotencyKey: "postgres-conflict-key",
 		Metadata: secondMetadata, Artifact: second, SubmittedAt: at,
 	}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("idempotency conflict was not rejected: %v", err)
@@ -120,7 +131,7 @@ func TestPostgresRejectsIDAndIdempotencyConflicts(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, _, err := store.Submit(context.Background(), Submission{
-		OwnerSubject: "creator-a", IdempotencyKey: "postgres-release-collision",
+		SubmitterSubject: "creator-a", IdempotencyKey: "postgres-release-collision",
 		Metadata: collisionMetadata, Artifact: collision, SubmittedAt: at,
 	}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("release ID conflict was not rejected: %v", err)
@@ -135,8 +146,9 @@ func TestPostgresConcurrentReviewHasSingleWinner(t *testing.T) {
 		t.Fatal(err)
 	}
 	at := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	createPostgresTestProject(t, store, metadata.ProjectID, at.Add(-time.Minute))
 	if _, _, err := store.Submit(context.Background(), Submission{
-		OwnerSubject: "creator-a", IdempotencyKey: "postgres-review-race",
+		SubmitterSubject: "creator-a", IdempotencyKey: "postgres-review-race",
 		Metadata: metadata, Artifact: artifact, SubmittedAt: at,
 	}); err != nil {
 		t.Fatal(err)
@@ -174,7 +186,244 @@ func TestPostgresConcurrentReviewHasSingleWinner(t *testing.T) {
 	}
 }
 
+func TestPostgresProjectMembershipAndVersionPaging(t *testing.T) {
+	store, pool := postgresTestStore(t)
+	at := time.Date(2026, 10, 15, 13, 0, 0, 0, time.UTC)
+	creation := ProjectCreation{
+		ProjectID:      "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+		DisplayName:    "PostgreSQL collaboration",
+		OwnerSubject:   "creator-a",
+		IdempotencyKey: "postgres-project-concurrent-v1",
+		CreatedAt:      at,
+	}
+	var created atomic.Int32
+	failures := make(chan error, 12)
+	var wait sync.WaitGroup
+	for index := 0; index < 12; index++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			project, wasCreated, err := store.CreateProject(context.Background(), creation)
+			if err != nil {
+				failures <- err
+				return
+			}
+			if project.OwnerSubject != creation.OwnerSubject {
+				failures <- fmt.Errorf("project owner mismatch")
+			}
+			if wasCreated {
+				created.Add(1)
+			}
+		}()
+	}
+	wait.Wait()
+	close(failures)
+	for err := range failures {
+		t.Errorf("concurrent project creation: %v", err)
+	}
+	if created.Load() != 1 {
+		t.Fatalf("project created count = %d", created.Load())
+	}
+
+	member, project, changed, err := store.SetProjectMember(
+		context.Background(),
+		ProjectMemberChange{
+			ProjectID: creation.ProjectID,
+			Actor:     creation.OwnerSubject,
+			Subject:   "creator-editor",
+			Role:      ProjectRoleEditor,
+			ChangedAt: at.Add(time.Minute),
+		},
+	)
+	if err != nil || !changed || member.Role != ProjectRoleEditor || project.Revision != 2 {
+		t.Fatalf("set editor failed: member=%+v project=%+v changed=%v err=%v", member, project, changed, err)
+	}
+	artifact, _, _ := signedArtifact(t, "d2111111-2222-3333-4444-555555555555")
+	metadata, err := InspectAndVerifyEnvelope(artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release, wasCreated, err := store.Submit(context.Background(), Submission{
+		SubmitterSubject: "creator-editor",
+		IdempotencyKey:   "postgres-editor-submit-v1",
+		Metadata:         metadata,
+		Artifact:         artifact,
+		SubmittedAt:      at.Add(2 * time.Minute),
+	})
+	if err != nil || !wasCreated ||
+		release.OwnerSubject != creation.OwnerSubject ||
+		release.SubmittedBySubject != "creator-editor" {
+		t.Fatalf("editor submit failed: created=%v release=%+v err=%v", wasCreated, release, err)
+	}
+	page, err := store.ListProjectVersions(
+		context.Background(),
+		creation.ProjectID,
+		"",
+		1,
+	)
+	if err != nil || len(page.Releases) != 1 || page.Releases[0].Artifact != nil {
+		t.Fatalf("version page mismatch: page=%+v err=%v", page, err)
+	}
+
+	project, changed, err = store.RemoveProjectMember(
+		context.Background(),
+		ProjectMemberRemoval{
+			ProjectID: creation.ProjectID,
+			Actor:     creation.OwnerSubject,
+			Subject:   "creator-editor",
+			ChangedAt: at.Add(3 * time.Minute),
+		},
+	)
+	if err != nil || !changed || project.Revision != 3 {
+		t.Fatalf("remove editor failed: project=%+v changed=%v err=%v", project, changed, err)
+	}
+	second, _, _ := signedArtifact(t, "e2111111-2222-3333-4444-555555555555")
+	secondMetadata, _ := InspectAndVerifyEnvelope(second)
+	if _, _, err := store.Submit(context.Background(), Submission{
+		SubmitterSubject: "creator-editor",
+		IdempotencyKey:   "postgres-removed-editor-v1",
+		Metadata:         secondMetadata,
+		Artifact:         second,
+		SubmittedAt:      at.Add(4 * time.Minute),
+	}); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("removed editor submit should be forbidden: %v", err)
+	}
+
+	if _, err := pool.Exec(
+		context.Background(),
+		`UPDATE projects SET owner_subject = 'attacker'
+		 WHERE project_id = $1::uuid`,
+		creation.ProjectID,
+	); err == nil {
+		t.Fatal("database allowed immutable project owner update")
+	}
+	if _, err := pool.Exec(
+		context.Background(),
+		`UPDATE releases SET submitted_by_subject = 'attacker'
+		 WHERE release_id = $1::uuid`,
+		release.ReleaseID,
+	); err == nil {
+		t.Fatal("database allowed immutable submitter update")
+	}
+}
+
+func TestPostgresMigrationBackfillsLegacyProjectOwnership(t *testing.T) {
+	pool := postgresTestPool(t, false)
+	applyLegacyMigration(t, pool)
+	artifact, _, _ := signedArtifact(t, "f2111111-2222-3333-4444-555555555555")
+	metadata, err := InspectAndVerifyEnvelope(artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 10, 15, 14, 0, 0, 0, time.UTC)
+	insertLegacyRelease(t, pool, metadata, artifact, "legacy-owner", at)
+	if err := migrations.Apply(context.Background(), pool); err != nil {
+		t.Fatal(err)
+	}
+	var owner string
+	var submitter string
+	if err := pool.QueryRow(
+		context.Background(),
+		`SELECT projects.owner_subject, releases.submitted_by_subject
+		 FROM projects
+		 JOIN releases USING (project_id)
+		 WHERE releases.release_id = $1::uuid`,
+		metadata.ReleaseID,
+	).Scan(&owner, &submitter); err != nil {
+		t.Fatal(err)
+	}
+	if owner != "legacy-owner" || submitter != "legacy-owner" {
+		t.Fatalf("legacy ownership backfill mismatch: owner=%q submitter=%q", owner, submitter)
+	}
+}
+
+func TestPostgresMigrationRejectsConflictingLegacyOwners(t *testing.T) {
+	pool := postgresTestPool(t, false)
+	applyLegacyMigration(t, pool)
+	first, _, _ := signedArtifact(t, "f3111111-2222-3333-4444-555555555555")
+	second, _, _ := signedArtifact(t, "f4111111-2222-3333-4444-555555555555")
+	firstMetadata, _ := InspectAndVerifyEnvelope(first)
+	secondMetadata, _ := InspectAndVerifyEnvelope(second)
+	at := time.Date(2026, 10, 15, 15, 0, 0, 0, time.UTC)
+	insertLegacyRelease(t, pool, firstMetadata, first, "legacy-owner-a", at)
+	insertLegacyRelease(t, pool, secondMetadata, second, "legacy-owner-b", at.Add(time.Second))
+	if err := migrations.Apply(context.Background(), pool); err == nil {
+		t.Fatal("migration accepted one legacy project with multiple owners")
+	}
+}
+
+func applyLegacyMigration(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	raw, err := os.ReadFile("../../migrations/001_initial.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(context.Background(), string(raw)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func insertLegacyRelease(
+	t *testing.T,
+	pool *pgxpool.Pool,
+	metadata PackMetadata,
+	artifact []byte,
+	owner string,
+	at time.Time,
+) {
+	t.Helper()
+	if _, err := pool.Exec(
+		context.Background(),
+		`INSERT INTO releases (
+			release_id, project_id, schema_version, owner_subject,
+			publisher_public_key, content_hash, artifact_sha256, artifact_size,
+			artifact, status, revision, submitted_at, updated_at
+		) VALUES (
+			$1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8,
+			$9, 'submitted', 1, $10, $10
+		)`,
+		metadata.ReleaseID,
+		metadata.ProjectID,
+		metadata.SchemaVersion,
+		owner,
+		metadata.PublisherPublicKey,
+		metadata.ContentHash,
+		metadata.ArtifactSHA256,
+		metadata.ArtifactSize,
+		artifact,
+		at,
+	); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func createPostgresTestProject(
+	t *testing.T,
+	store *PostgresStore,
+	projectID string,
+	at time.Time,
+) Project {
+	t.Helper()
+	project, created, err := store.CreateProject(context.Background(), ProjectCreation{
+		ProjectID:      projectID,
+		DisplayName:    "PostgreSQL test project",
+		OwnerSubject:   "creator-a",
+		IdempotencyKey: "postgres-create-project-v1",
+		CreatedAt:      at,
+	})
+	if err != nil || !created {
+		t.Fatalf("create PostgreSQL project failed: created=%v project=%+v err=%v", created, project, err)
+	}
+	return project
+}
+
 func postgresTestStore(t *testing.T) (*PostgresStore, *pgxpool.Pool) {
+	t.Helper()
+	pool := postgresTestPool(t, true)
+	return NewPostgresStore(pool), pool
+}
+
+func postgresTestPool(t *testing.T, applyMigrations bool) *pgxpool.Pool {
 	t.Helper()
 	databaseURL := os.Getenv("AKUGC_TEST_DATABASE_URL")
 	if databaseURL == "" {
@@ -203,8 +452,10 @@ func postgresTestStore(t *testing.T) (*PostgresStore, *pgxpool.Pool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := migrations.Apply(ctx, pool); err != nil {
-		t.Fatal(err)
+	if applyMigrations {
+		if err := migrations.Apply(ctx, pool); err != nil {
+			t.Fatal(err)
+		}
 	}
 	t.Cleanup(func() {
 		pool.Close()
@@ -213,5 +464,5 @@ func postgresTestStore(t *testing.T) (*PostgresStore, *pgxpool.Pool) {
 		_, _ = admin.Exec(cleanupContext, `DROP SCHEMA `+identifier+` CASCADE`)
 		admin.Close()
 	})
-	return NewPostgresStore(pool), pool
+	return pool
 }

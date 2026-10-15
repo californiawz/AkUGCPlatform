@@ -1,6 +1,8 @@
 # AkUGC Release Registry
 
-P19 的 Go + PostgreSQL 最小发布控制面。协议与安全边界见 `Docs/Phase2/ReleaseRegistryContract.md`。
+P19/P20 的 Go + PostgreSQL 发布控制面。当前支持不可变 Release，以及云项目、
+不可变版本列表和 Owner/Editor/Viewer 协作者权限。协议与安全边界见
+`Docs/Phase2/ReleaseRegistryContract.md`。
 
 ## 运行
 
@@ -50,6 +52,28 @@ Token 明文只交给调用方，配置文件保存其 SHA-256 小写 hex：
 静态 token 认证仅用于本地 Alpha 闭环，不可直接暴露到公网；服务会拒绝将
 `AKUGC_REGISTRY_ADDR` 绑定到非 loopback 地址。
 
+## P20.1 项目流程
+
+已签名包中的 `manifest.projectId` 必须先由 Creator Owner 登记；Registry 不允许
+任意 Creator 向未登记项目或无权限项目提交版本。
+
+```text
+POST   /v1/projects
+GET    /v1/projects/{projectId}
+GET    /v1/projects/{projectId}/members
+PUT    /v1/projects/{projectId}/members/{subject}
+DELETE /v1/projects/{projectId}/members/{subject}
+GET    /v1/projects/{projectId}/versions?limit=20&cursor={releaseId}
+```
+
+- 创建项目需要 `creator` 平台角色、严格 JSON 和 16–128 位 `Idempotency-Key`。
+- Owner 不可转移或删除；Owner 可幂等添加、改为 `editor|viewer` 或移除协作者。
+- Editor 还必须具有 `creator` 平台角色，且包签名公钥登记在自身静态身份上，才能提交。
+- Viewer 可读取项目、成员和有界版本元数据，但不能提交、审核、发布或下载未发布制品。
+- Release 的 `ownerSubject` 永远绑定项目 Owner，`submittedBySubject` 记录实际提交者；
+  项目成员不能审核本项目，只有 Owner + `publisher` 可发布或撤回。
+- 项目外主体查询项目返回 `404`；成员移除在提交事务中再次检查，旧 token 不会绕过 ACL。
+
 ## 测试
 
 ```powershell
@@ -60,7 +84,10 @@ $env:AKUGC_TEST_DATABASE_URL = "postgres://postgres@127.0.0.1:55432/postgres?ssl
 go test -count=1 ./...
 ```
 
-测试默认覆盖内存并发、鉴权 HTTP 生命周期、Manifest 签名兼容、不可变 ID 冲突和已撤回下载拒绝；设置数据库 URL 后额外创建隔离 Schema，验证真实事务、并发幂等、状态锁与数据库不可变触发器。
+测试默认覆盖项目与 Release 的内存并发、协作者 ACL、鉴权 HTTP 生命周期、
+有界版本分页、Manifest 签名兼容、不可变 ID 冲突和已撤回下载拒绝；设置数据库
+URL 后额外创建隔离 Schema，验证真实事务、成员变更锁、并发幂等、状态锁、外键
+与数据库不可变触发器。
 
 ## 本机端到端验收
 
@@ -73,6 +100,7 @@ python Tools/Tests/verify_release_registry.py `
 ```
 
 驱动会创建并清理临时 PostgreSQL，启动 Registry，使用隔离的 Creator、Reviewer、
-Player token 完成并发提交、审核、发布、下载和撤回；下载制品随后由
+Editor、Viewer 和 Player token 完成项目登记、协作者授权与移除、并发提交、审核、
+发布、版本查询、下载和撤回；下载制品随后由
 `AkUGCPackTool -ValidateWork` 与 Packaged Client 再次本地验签并完成一局。该流程是
 单机角色隔离，不代表四台物理设备验收。
