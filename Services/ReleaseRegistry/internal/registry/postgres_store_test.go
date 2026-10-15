@@ -1,7 +1,6 @@
 package registry
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -33,7 +32,6 @@ func TestPostgresImmutableLifecycleAndConcurrentRetry(t *testing.T) {
 		SubmitterSubject: "creator-a",
 		IdempotencyKey:   "postgres-concurrent-91111111",
 		Metadata:         metadata,
-		Artifact:         artifact,
 		SubmittedAt:      time.Date(2026, 10, 15, 10, 0, 0, 0, time.UTC),
 	}
 
@@ -44,10 +42,13 @@ func TestPostgresImmutableLifecycleAndConcurrentRetry(t *testing.T) {
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
-			release, wasCreated, err := store.Submit(context.Background(), submission)
+			release, build, wasCreated, err := store.Submit(context.Background(), submission)
 			if err != nil {
 				failures <- err
 				return
+			}
+			if build.ReleaseID != release.ReleaseID {
+				failures <- fmt.Errorf("build release mismatch")
 			}
 			if release.PublisherPublicKey != publicKey {
 				failures <- fmt.Errorf("publisher key mismatch")
@@ -69,6 +70,15 @@ func TestPostgresImmutableLifecycleAndConcurrentRetry(t *testing.T) {
 	if created.Load() != 1 {
 		t.Fatalf("created count = %d", created.Load())
 	}
+	var artifactIsNull bool
+	if err := pool.QueryRow(
+		context.Background(),
+		`SELECT artifact IS NULL FROM releases WHERE release_id = $1::uuid`,
+		metadata.ReleaseID,
+	).Scan(&artifactIsNull); err != nil || !artifactIsNull {
+		t.Fatalf("new release retained bytea: isNull=%v err=%v", artifactIsNull, err)
+	}
+	succeedPostgresBuild(t, store, metadata, submission.SubmittedAt)
 
 	approved, changed, err := store.Transition(context.Background(), TransitionRequest{
 		ReleaseID: metadata.ReleaseID,
@@ -91,7 +101,7 @@ func TestPostgresImmutableLifecycleAndConcurrentRetry(t *testing.T) {
 	}
 	latest, err := store.GetLatestPublishedRelease(context.Background(), metadata.ProjectID)
 	if err != nil || latest.ReleaseID != metadata.ReleaseID ||
-		!bytes.Equal(latest.Artifact, artifact) {
+		latest.Artifact != nil {
 		t.Fatalf("latest published release mismatch: release=%+v err=%v", latest, err)
 	}
 
@@ -118,15 +128,15 @@ func TestPostgresRejectsIDAndIdempotencyConflicts(t *testing.T) {
 	secondMetadata, _ := InspectAndVerifyEnvelope(second)
 	at := time.Date(2026, 10, 15, 11, 0, 0, 0, time.UTC)
 	createPostgresTestProject(t, store, firstMetadata.ProjectID, at.Add(-time.Minute))
-	if _, _, err := store.Submit(context.Background(), Submission{
+	if _, _, _, err := store.Submit(context.Background(), Submission{
 		SubmitterSubject: "creator-a", IdempotencyKey: "postgres-conflict-key",
-		Metadata: firstMetadata, Artifact: first, SubmittedAt: at,
+		Metadata: firstMetadata, SubmittedAt: at,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.Submit(context.Background(), Submission{
+	if _, _, _, err := store.Submit(context.Background(), Submission{
 		SubmitterSubject: "creator-a", IdempotencyKey: "postgres-conflict-key",
-		Metadata: secondMetadata, Artifact: second, SubmittedAt: at,
+		Metadata: secondMetadata, SubmittedAt: at,
 	}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("idempotency conflict was not rejected: %v", err)
 	}
@@ -136,9 +146,9 @@ func TestPostgresRejectsIDAndIdempotencyConflicts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.Submit(context.Background(), Submission{
+	if _, _, _, err := store.Submit(context.Background(), Submission{
 		SubmitterSubject: "creator-a", IdempotencyKey: "postgres-release-collision",
-		Metadata: collisionMetadata, Artifact: collision, SubmittedAt: at,
+		Metadata: collisionMetadata, SubmittedAt: at,
 	}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("release ID conflict was not rejected: %v", err)
 	}
@@ -153,12 +163,13 @@ func TestPostgresConcurrentReviewHasSingleWinner(t *testing.T) {
 	}
 	at := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
 	createPostgresTestProject(t, store, metadata.ProjectID, at.Add(-time.Minute))
-	if _, _, err := store.Submit(context.Background(), Submission{
+	if _, _, _, err := store.Submit(context.Background(), Submission{
 		SubmitterSubject: "creator-a", IdempotencyKey: "postgres-review-race",
-		Metadata: metadata, Artifact: artifact, SubmittedAt: at,
+		Metadata: metadata, SubmittedAt: at,
 	}); err != nil {
 		t.Fatal(err)
 	}
+	succeedPostgresBuild(t, store, metadata, at)
 
 	results := make(chan error, 2)
 	for _, target := range []Status{StatusApproved, StatusRejected} {
@@ -253,11 +264,10 @@ func TestPostgresProjectMembershipAndVersionPaging(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	release, wasCreated, err := store.Submit(context.Background(), Submission{
+	release, _, wasCreated, err := store.Submit(context.Background(), Submission{
 		SubmitterSubject: "creator-editor",
 		IdempotencyKey:   "postgres-editor-submit-v1",
 		Metadata:         metadata,
-		Artifact:         artifact,
 		SubmittedAt:      at.Add(2 * time.Minute),
 	})
 	if err != nil || !wasCreated ||
@@ -338,11 +348,10 @@ func TestPostgresProjectMembershipAndVersionPaging(t *testing.T) {
 	}
 	second, _, _ := signedArtifact(t, "e2111111-2222-3333-4444-555555555555")
 	secondMetadata, _ := InspectAndVerifyEnvelope(second)
-	if _, _, err := store.Submit(context.Background(), Submission{
+	if _, _, _, err := store.Submit(context.Background(), Submission{
 		SubmitterSubject: "creator-editor",
 		IdempotencyKey:   "postgres-removed-editor-v1",
 		Metadata:         secondMetadata,
-		Artifact:         second,
 		SubmittedAt:      at.Add(4 * time.Minute),
 	}); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("removed editor submit should be forbidden: %v", err)
@@ -422,6 +431,201 @@ func TestPostgresMigrationRejectsConflictingLegacyOwners(t *testing.T) {
 	}
 }
 
+func TestPostgresLateBuildCompletionCannotOverwriteReclaimedLease(t *testing.T) {
+	store, _ := postgresTestStore(t)
+	artifact, _, _ := signedArtifact(t, "16111111-2222-3333-4444-555555555556")
+	metadata, err := InspectAndVerifyEnvelope(artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 10, 15, 22, 30, 0, 0, time.UTC)
+	createPostgresTestProject(t, store, metadata.ProjectID, at.Add(-time.Minute))
+	if _, _, _, err := store.Submit(context.Background(), Submission{
+		SubmitterSubject: "creator-a",
+		IdempotencyKey:   "postgres-late-build-16111111",
+		Metadata:         metadata,
+		SubmittedAt:      at,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ClaimBuild(context.Background(), ClaimBuildRequest{
+		Worker:        "worker-a",
+		At:            at.Add(time.Second),
+		LeaseDuration: time.Minute,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reclaimed, err := store.ClaimBuild(context.Background(), ClaimBuildRequest{
+		Worker:        "worker-b",
+		At:            at.Add(time.Minute + time.Second),
+		LeaseDuration: time.Minute,
+	})
+	if err != nil || reclaimed.Attempt != 2 {
+		t.Fatalf("reclaimed PostgreSQL build: build=%+v err=%v", reclaimed, err)
+	}
+	if _, changed, err := store.CompleteBuild(context.Background(), CompleteBuildRequest{
+		ReleaseID:            metadata.ReleaseID,
+		Worker:               "worker-a",
+		Succeeded:            true,
+		OutputArtifactSHA256: metadata.ArtifactSHA256,
+		OutputArtifactSize:   metadata.ArtifactSize,
+		At:                   at.Add(time.Minute + 2*time.Second),
+	}); err == nil || !errors.Is(err, ErrConflict) || changed {
+		t.Fatalf("late PostgreSQL completion: changed=%v err=%v", changed, err)
+	}
+	completed, changed, err := store.CompleteBuild(context.Background(), CompleteBuildRequest{
+		ReleaseID:            metadata.ReleaseID,
+		Worker:               "worker-b",
+		Succeeded:            true,
+		OutputArtifactSHA256: metadata.ArtifactSHA256,
+		OutputArtifactSize:   metadata.ArtifactSize,
+		At:                   at.Add(time.Minute + 3*time.Second),
+	})
+	if err != nil || !changed || completed.Status != BuildStatusSucceeded || completed.Attempt != 2 {
+		t.Fatalf("current PostgreSQL lease completion: changed=%v build=%+v err=%v", changed, completed, err)
+	}
+}
+
+func TestPostgresLegacyArtifactMigrationIsVerifiedAndIdempotent(t *testing.T) {
+	pool := postgresTestPool(t, false)
+	applyLegacyMigration(t, pool)
+	artifact, _, _ := signedArtifact(t, "f5111111-2222-3333-4444-555555555555")
+	metadata, err := InspectAndVerifyEnvelope(artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 10, 15, 16, 0, 0, 0, time.UTC)
+	insertLegacyRelease(t, pool, metadata, artifact, "legacy-owner", at)
+	if err := migrations.Apply(context.Background(), pool); err != nil {
+		t.Fatal(err)
+	}
+	store := NewPostgresStore(pool)
+	artifacts := NewMemoryArtifactStore()
+	migrated, err := store.MigrateLegacyArtifacts(
+		context.Background(),
+		artifacts,
+		func() time.Time { return at.Add(time.Minute) },
+	)
+	if err != nil || migrated != 1 {
+		t.Fatalf("legacy migration: migrated=%d err=%v", migrated, err)
+	}
+	loaded, err := artifacts.Get(context.Background(), metadata.ArtifactSHA256)
+	if err != nil || string(loaded) != string(artifact) {
+		t.Fatalf("migrated CAS object mismatch: size=%d err=%v", len(loaded), err)
+	}
+	var cleared bool
+	var auditCount int
+	if err := pool.QueryRow(
+		context.Background(),
+		`SELECT artifact IS NULL FROM releases WHERE release_id = $1::uuid`,
+		metadata.ReleaseID,
+	).Scan(&cleared); err != nil || !cleared {
+		t.Fatalf("legacy bytea was not cleared: cleared=%v err=%v", cleared, err)
+	}
+	if err := pool.QueryRow(
+		context.Background(),
+		`SELECT count(*) FROM artifact_migration_events
+		 WHERE release_id = $1::uuid`,
+		metadata.ReleaseID,
+	).Scan(&auditCount); err != nil || auditCount != 1 {
+		t.Fatalf("artifact migration audit count=%d err=%v", auditCount, err)
+	}
+	build, err := store.GetBuild(context.Background(), metadata.ReleaseID)
+	if err != nil ||
+		build.Status != BuildStatusSucceeded ||
+		build.OutputArtifactSHA256 != metadata.ArtifactSHA256 ||
+		build.OutputArtifactSize != metadata.ArtifactSize {
+		t.Fatalf("legacy build backfill mismatch: build=%+v err=%v", build, err)
+	}
+	migrated, err = store.MigrateLegacyArtifacts(context.Background(), artifacts, nil)
+	if err != nil || migrated != 0 {
+		t.Fatalf("idempotent migration: migrated=%d err=%v", migrated, err)
+	}
+	if _, err := pool.Exec(
+		context.Background(),
+		`UPDATE releases SET artifact = $2
+		 WHERE release_id = $1::uuid`,
+		metadata.ReleaseID,
+		artifact,
+	); err == nil {
+		t.Fatal("immutable trigger allowed NULL artifact to be restored")
+	}
+}
+
+func TestPostgresLegacyArtifactMigrationNeverClearsUnverifiedBytes(t *testing.T) {
+	pool := postgresTestPool(t, false)
+	applyLegacyMigration(t, pool)
+	artifact, _, _ := signedArtifact(t, "f6111111-2222-3333-4444-555555555555")
+	metadata, err := InspectAndVerifyEnvelope(artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	corrupt := append([]byte(nil), artifact...)
+	corrupt[len(corrupt)/2] ^= 1
+	at := time.Date(2026, 10, 15, 17, 0, 0, 0, time.UTC)
+	insertLegacyRelease(t, pool, metadata, corrupt, "legacy-owner", at)
+	if err := migrations.Apply(context.Background(), pool); err != nil {
+		t.Fatal(err)
+	}
+	store := NewPostgresStore(pool)
+	if _, err := store.MigrateLegacyArtifacts(
+		context.Background(),
+		NewMemoryArtifactStore(),
+		nil,
+	); !errors.Is(err, ErrArtifactCorrupt) {
+		t.Fatalf("corrupt migration error = %v", err)
+	}
+	var retained bool
+	if err := pool.QueryRow(
+		context.Background(),
+		`SELECT artifact IS NOT NULL FROM releases WHERE release_id = $1::uuid`,
+		metadata.ReleaseID,
+	).Scan(&retained); err != nil || !retained {
+		t.Fatalf("corrupt bytea was cleared: retained=%v err=%v", retained, err)
+	}
+}
+
+func TestPostgresLegacyArtifactMigrationRequiresReadAfterWrite(t *testing.T) {
+	pool := postgresTestPool(t, false)
+	applyLegacyMigration(t, pool)
+	artifact, _, _ := signedArtifact(t, "f7111111-2222-3333-4444-555555555555")
+	metadata, err := InspectAndVerifyEnvelope(artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 10, 15, 18, 0, 0, 0, time.UTC)
+	insertLegacyRelease(t, pool, metadata, artifact, "legacy-owner", at)
+	if err := migrations.Apply(context.Background(), pool); err != nil {
+		t.Fatal(err)
+	}
+	store := NewPostgresStore(pool)
+	if _, err := store.MigrateLegacyArtifacts(
+		context.Background(),
+		writeOnlyArtifactStore{},
+		nil,
+	); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("unverified migration error = %v", err)
+	}
+	var retained bool
+	if err := pool.QueryRow(
+		context.Background(),
+		`SELECT artifact IS NOT NULL FROM releases WHERE release_id = $1::uuid`,
+		metadata.ReleaseID,
+	).Scan(&retained); err != nil || !retained {
+		t.Fatalf("unverified bytea was cleared: retained=%v err=%v", retained, err)
+	}
+}
+
+type writeOnlyArtifactStore struct{}
+
+func (writeOnlyArtifactStore) Put(context.Context, string, []byte) error {
+	return nil
+}
+
+func (writeOnlyArtifactStore) Get(context.Context, string) ([]byte, error) {
+	return nil, ErrUnavailable
+}
+
 func applyLegacyMigration(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	raw, err := os.ReadFile("../../migrations/001_initial.sql")
@@ -485,6 +689,37 @@ func createPostgresTestProject(
 		t.Fatalf("create PostgreSQL project failed: created=%v project=%+v err=%v", created, project, err)
 	}
 	return project
+}
+
+func succeedPostgresBuild(
+	t *testing.T,
+	store *PostgresStore,
+	metadata PackMetadata,
+	at time.Time,
+) {
+	t.Helper()
+	build, err := store.ClaimBuild(context.Background(), ClaimBuildRequest{
+		Worker:        "postgres-test-worker",
+		At:            at.Add(time.Second),
+		LeaseDuration: time.Minute,
+	})
+	if err != nil || build.ReleaseID != metadata.ReleaseID {
+		t.Fatalf("claim PostgreSQL build: build=%+v err=%v", build, err)
+	}
+	completed, changed, err := store.CompleteBuild(
+		context.Background(),
+		CompleteBuildRequest{
+			ReleaseID:            metadata.ReleaseID,
+			Worker:               "postgres-test-worker",
+			Succeeded:            true,
+			OutputArtifactSHA256: metadata.ArtifactSHA256,
+			OutputArtifactSize:   metadata.ArtifactSize,
+			At:                   at.Add(2 * time.Second),
+		},
+	)
+	if err != nil || !changed || completed.Status != BuildStatusSucceeded {
+		t.Fatalf("complete PostgreSQL build: changed=%v build=%+v err=%v", changed, completed, err)
+	}
 }
 
 func postgresTestStore(t *testing.T) (*PostgresStore, *pgxpool.Pool) {

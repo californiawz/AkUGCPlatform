@@ -1,8 +1,8 @@
 # AkUGC Release Registry
 
 P19/P20 的 Go + PostgreSQL 发布控制面。当前支持不可变 Release、云项目、
-Owner/Editor/Viewer 协作者权限，以及私人/公开作品页与发布可见性。协议与安全边界见
-`Docs/Phase2/ReleaseRegistryContract.md`。
+Owner/Editor/Viewer 协作者权限、私人/公开作品页，以及 P20.4 异步可信构建和
+内容寻址制品分发。协议与安全边界见 `Docs/Phase2/ReleaseRegistryContract.md`。
 
 ## 运行
 
@@ -11,6 +11,7 @@ cd Services/ReleaseRegistry
 go build -o registry.exe ./cmd/registry
 
 $env:DATABASE_URL = "postgres://akugc:password@127.0.0.1:5432/akugc?sslmode=disable"
+$env:AKUGC_ARTIFACT_ROOT = "E:/secure/akugc-artifacts"
 $env:AKUGC_REGISTRY_AUTH_CONFIG = "E:/secure/registry-auth.json"
 $env:AKUGC_VALIDATOR_EXE = "E:/AkStudio/UnrealEngine/Engine/Binaries/Win64/UnrealEditor-Cmd.exe"
 $env:AKUGC_VALIDATOR_PROJECT = "E:/AkStudio/AkUGCPlatform/AkUGCPlatform.uproject"
@@ -18,7 +19,7 @@ $env:AKUGC_REGISTRY_ADDR = "127.0.0.1:8088"
 .\registry.exe
 ```
 
-服务启动时自动应用内嵌的幂等 PostgreSQL migration。没有 `DATABASE_URL` 时拒绝启动；仅本地测试可显式设置 `AKUGC_REGISTRY_MEMORY=1` 使用易失内存仓储。
+服务启动时自动应用内嵌的幂等 PostgreSQL migration。没有 `DATABASE_URL` 时拒绝启动；仅本地测试可显式设置 `AKUGC_REGISTRY_MEMORY=1` 使用易失内存仓储。PostgreSQL 模式还必须设置 `AKUGC_ARTIFACT_ROOT`，启动时会把历史 `bytea` 验证后迁入该内容寻址目录，并拉起两个构建 Worker。深度验证仍调用 `AKUGC_VALIDATOR_EXE`，服务端不改写、不重编码、不代签 `.akugc`。
 
 ## 本地认证配置
 
@@ -83,6 +84,13 @@ GET    /v1/works/{projectId}
 - public Project 的最新 published 版本可由任意已认证 Player 通过作品页读取并下载；private Project 只允许项目成员 Player。
 - 未发布、已撤回、private 项目外读取和下载统一返回 `404`。作品页与下载响应中的公钥和摘要不能替代 Player 独立信任公钥及本地验签。
 
+## P20.4 异步构建与制品仓储
+
+- `POST /v1/releases` 只返回 `created` 与 `release`。构建状态通过 `GET /v1/releases/{releaseId}/build` 读取，可重试失败通过 `POST /v1/releases/{releaseId}/build/retry` 重新排队。
+- 构建状态只有 `queued|running|succeeded|failed`。审核、发布、作品页和下载都要求当前构建已经 `succeeded`。
+- 制品按 SHA-256 存在 `AKUGC_ARTIFACT_ROOT/sha256/<前两位>/<摘要>.akugc`。下载仍走原 Release 端点，读取时重新核对摘要和大小；对象被篡改时返回 `503`。
+- 验证拒绝不可重试。验证器或制品暂时不可用可以显式重试。崩溃租约最多自动回收三次。
+
 ## 测试
 
 ```powershell
@@ -94,9 +102,10 @@ go test -count=1 ./...
 ```
 
 测试默认覆盖项目与 Release 的内存并发、协作者 ACL、可见性并发幂等、私人/公开
-作品页、鉴权 HTTP 生命周期、有界版本分页、Manifest 签名兼容、不可变 ID 冲突
-和已撤回下载拒绝；设置数据库 URL 后额外创建隔离 Schema，验证真实事务、成员与
-可见性行锁、审计、迁移默认值、状态锁、外键与数据库不可变触发器。
+作品页、鉴权 HTTP 生命周期、有界版本分页、Manifest 签名兼容、不可变 ID 冲突、
+已撤回下载拒绝、内容寻址读写与篡改检测、构建租约回收和迟到完成拒绝；设置数据库
+URL 后额外创建隔离 Schema，验证真实事务、成员与可见性行锁、审计、迁移默认值、
+历史 bytea 验证迁移、构建租约、状态锁、外键与数据库不可变触发器。
 
 ## 本机端到端验收
 
@@ -108,8 +117,8 @@ python Tools/Tests/verify_release_registry.py `
   --postgres-bin "C:/Program Files/PostgreSQL/16/bin"
 ```
 
-驱动会创建并清理临时 PostgreSQL，启动 Registry，使用隔离的 Creator、Reviewer、
-Editor、Viewer 和 Player token 完成项目登记、协作者授权与移除、并发提交、审核、
-发布、私人/公开切换、作品页查询、下载和撤回；下载制品随后由
-`AkUGCPackTool -ValidateWork` 与 Packaged Client 再次本地验签并完成一局。该流程是
-单机角色隔离，不代表四台物理设备验收。
+驱动会创建并清理临时 PostgreSQL 与内容寻址目录，启动 Registry 和构建 Worker，
+使用隔离的 Creator、Reviewer、Editor、Viewer 和 Player token 完成项目登记、
+协作者授权与移除、并发提交、异步构建、审核、发布、私人/公开切换、作品页查询、
+下载和撤回；下载制品随后由 `AkUGCPackTool -ValidateWork` 与 Packaged Client
+再次本地验签并完成一局。该流程是单机角色隔离，不代表四台物理设备验收。

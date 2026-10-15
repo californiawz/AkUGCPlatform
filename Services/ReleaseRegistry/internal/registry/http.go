@@ -38,6 +38,8 @@ func NewHTTPHandler(service *Service, auth Authenticator) http.Handler {
 	handler.mux.HandleFunc("GET /v1/works/{projectID}", handler.getWorkPage)
 	handler.mux.HandleFunc("POST /v1/releases", handler.submit)
 	handler.mux.HandleFunc("GET /v1/releases/{releaseID}", handler.get)
+	handler.mux.HandleFunc("GET /v1/releases/{releaseID}/build", handler.getBuild)
+	handler.mux.HandleFunc("POST /v1/releases/{releaseID}/build/retry", handler.retryBuild)
 	handler.mux.HandleFunc("POST /v1/releases/{releaseID}/review", handler.review)
 	handler.mux.HandleFunc("POST /v1/releases/{releaseID}/publish", handler.publish)
 	handler.mux.HandleFunc("POST /v1/releases/{releaseID}/revoke", handler.revoke)
@@ -317,7 +319,7 @@ func (h *HTTPHandler) submit(response http.ResponseWriter, request *http.Request
 		writeAPIError(response, err)
 		return
 	}
-	release, created, err := h.service.Submit(
+	release, _, created, err := h.service.Submit(
 		request.Context(),
 		principal,
 		request.Header.Get("Idempotency-Key"),
@@ -349,6 +351,55 @@ func (h *HTTPHandler) get(response http.ResponseWriter, request *http.Request) {
 		return
 	}
 	writeJSON(response, http.StatusOK, map[string]any{"release": release})
+}
+
+func (h *HTTPHandler) getBuild(response http.ResponseWriter, request *http.Request) {
+	principal, ok := h.authenticate(response, request)
+	if !ok {
+		return
+	}
+	if err := requireNoQuery(request); err != nil {
+		writeAPIError(response, err)
+		return
+	}
+	build, err := h.service.GetBuild(
+		request.Context(),
+		principal,
+		request.PathValue("releaseID"),
+	)
+	if err != nil {
+		writeAPIError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"build": build})
+}
+
+func (h *HTTPHandler) retryBuild(response http.ResponseWriter, request *http.Request) {
+	principal, ok := h.authenticate(response, request)
+	if !ok {
+		return
+	}
+	if err := requireNoQuery(request); err != nil {
+		writeAPIError(response, err)
+		return
+	}
+	if err := requireEmptyBody(response, request); err != nil {
+		writeAPIError(response, err)
+		return
+	}
+	build, changed, err := h.service.RetryBuild(
+		request.Context(),
+		principal,
+		request.PathValue("releaseID"),
+	)
+	if err != nil {
+		writeAPIError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]any{
+		"changed": changed,
+		"build":   build,
+	})
 }
 
 type reviewRequest struct {

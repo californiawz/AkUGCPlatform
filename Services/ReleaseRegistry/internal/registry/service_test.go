@@ -45,7 +45,9 @@ func (v *countingVerifier) Verify(
 func TestReleaseLifecyclePermissionsAndImmutability(t *testing.T) {
 	artifact, _, publicKey := signedArtifact(t, "31111111-2222-3333-4444-555555555555")
 	now := time.Date(2026, 10, 15, 8, 0, 0, 0, time.UTC)
-	service := NewService(NewMemoryStore(), acceptingVerifier{}, func() time.Time {
+	store := NewMemoryStore()
+	artifacts := NewMemoryArtifactStore()
+	service := NewService(store, artifacts, func() time.Time {
 		now = now.Add(time.Second)
 		return now
 	})
@@ -61,28 +63,31 @@ func TestReleaseLifecyclePermissionsAndImmutability(t *testing.T) {
 		t.Fatalf("new project visibility = %q", project.Visibility)
 	}
 
-	release, created, err := service.Submit(
+	release, build, created, err := service.Submit(
 		context.Background(),
 		creator,
 		"submit-31111111-v1",
 		artifact,
 	)
-	if err != nil || !created || release.Status != StatusSubmitted {
-		t.Fatalf("submit failed: created=%v release=%+v err=%v", created, release, err)
+	if err != nil || !created || release.Status != StatusSubmitted ||
+		build.Status != BuildStatusQueued {
+		t.Fatalf("submit failed: created=%v release=%+v build=%+v err=%v", created, release, build, err)
 	}
-	retried, created, err := service.Submit(
+	retried, retriedBuild, created, err := service.Submit(
 		context.Background(),
 		creator,
 		"submit-31111111-v1",
 		artifact,
 	)
-	if err != nil || created || retried.ReleaseID != release.ReleaseID {
-		t.Fatalf("idempotent retry failed: created=%v release=%+v err=%v", created, retried, err)
+	if err != nil || created || retried.ReleaseID != release.ReleaseID ||
+		retriedBuild.ReleaseID != release.ReleaseID {
+		t.Fatalf("idempotent retry failed: created=%v release=%+v build=%+v err=%v", created, retried, retriedBuild, err)
 	}
 
 	if _, _, err := service.Publish(context.Background(), creator, release.ReleaseID); !errors.Is(err, ErrConflict) {
 		t.Fatalf("unapproved publish should conflict: %v", err)
 	}
+	runMemoryBuild(t, store, artifacts, acceptingVerifier{})
 	selfReviewer := creator
 	selfReviewer.Roles = append(selfReviewer.Roles, RoleReviewer)
 	if _, _, err := service.Review(
@@ -161,7 +166,7 @@ func TestReleaseLifecyclePermissionsAndImmutability(t *testing.T) {
 	}
 
 	collision := append(append([]byte(nil), artifact...), '\n')
-	if _, _, err := service.Submit(
+	if _, _, _, err := service.Submit(
 		context.Background(),
 		creator,
 		"submit-collision-v1",
@@ -189,7 +194,9 @@ func TestReleaseLifecyclePermissionsAndImmutability(t *testing.T) {
 func TestConcurrentSubmissionRetryCreatesOneRelease(t *testing.T) {
 	artifact, _, publicKey := signedArtifact(t, "41111111-2222-3333-4444-555555555555")
 	verifier := &countingVerifier{}
-	service := NewService(NewMemoryStore(), verifier, func() time.Time {
+	store := NewMemoryStore()
+	artifacts := NewMemoryArtifactStore()
+	service := NewService(store, artifacts, func() time.Time {
 		return time.Date(2026, 10, 15, 9, 0, 0, 0, time.UTC)
 	})
 	creator := Principal{
@@ -206,7 +213,7 @@ func TestConcurrentSubmissionRetryCreatesOneRelease(t *testing.T) {
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
-			_, created, err := service.Submit(
+			_, _, created, err := service.Submit(
 				context.Background(),
 				creator,
 				"concurrent-submit-41111111",
@@ -229,14 +236,18 @@ func TestConcurrentSubmissionRetryCreatesOneRelease(t *testing.T) {
 	if createdCount.Load() != 1 {
 		t.Fatalf("expected exactly one creation, got %d", createdCount.Load())
 	}
+	if verifier.calls.Load() != 0 {
+		t.Fatalf("submission performed synchronous deep validation: calls=%d", verifier.calls.Load())
+	}
+	runMemoryBuild(t, store, artifacts, verifier)
 	if verifier.calls.Load() != 1 {
-		t.Fatalf("expected one shared deep validation, got %d", verifier.calls.Load())
+		t.Fatalf("expected one asynchronous deep validation, got %d", verifier.calls.Load())
 	}
 }
 
 func TestConcurrentVisibilityRetryChangesOnce(t *testing.T) {
 	store := NewMemoryStore()
-	service := NewService(store, acceptingVerifier{}, func() time.Time {
+	service := NewService(store, NewMemoryArtifactStore(), func() time.Time {
 		return time.Date(2026, 10, 15, 10, 0, 0, 0, time.UTC)
 	})
 	owner := Principal{
@@ -291,29 +302,76 @@ func TestConcurrentVisibilityRetryChangesOnce(t *testing.T) {
 func TestIdempotencyKeyCannotBindDifferentArtifact(t *testing.T) {
 	first, _, publicKey := signedArtifact(t, "51111111-2222-3333-4444-555555555555")
 	second, _, _ := signedArtifact(t, "61111111-2222-3333-4444-555555555555")
-	service := NewService(NewMemoryStore(), acceptingVerifier{}, nil)
+	service := NewService(NewMemoryStore(), NewMemoryArtifactStore(), nil)
 	creator := Principal{
 		Subject:       "creator-a",
 		Roles:         []Role{RoleCreator},
 		PublisherKeys: []string{publicKey},
 	}
 	createServiceTestProject(t, service, creator)
-	if _, _, err := service.Submit(
+	if _, _, _, err := service.Submit(
 		context.Background(), creator, "same-key-different-v1", first,
 	); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := service.Submit(
+	if _, _, _, err := service.Submit(
 		context.Background(), creator, "same-key-different-v1", second,
 	); !errors.Is(err, ErrConflict) {
 		t.Fatalf("different artifact reused idempotency key: %v", err)
 	}
 }
 
+func TestTamperedDocumentConflictsBeforeBuild(t *testing.T) {
+	artifact, _, publicKey := signedArtifact(t, "17111111-2222-3333-4444-555555555557")
+	tampered := bytes.Replace(artifact, []byte(`"scenes":[]`), []byte(`"scenes":[{}]`), 1)
+	if bytes.Equal(tampered, artifact) {
+		t.Fatal("document tamper did not change the signed artifact")
+	}
+	original, err := InspectAndVerifyEnvelope(artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed, err := InspectAndVerifyEnvelope(tampered)
+	if err != nil ||
+		changed.ReleaseID != original.ReleaseID ||
+		changed.ContentHash != original.ContentHash ||
+		changed.ArtifactSHA256 == original.ArtifactSHA256 {
+		t.Fatalf("tampered envelope = %+v err=%v", changed, err)
+	}
+	service := NewService(NewMemoryStore(), NewMemoryArtifactStore(), nil)
+	creator := Principal{
+		Subject:       "creator-a",
+		Roles:         []Role{RoleCreator},
+		PublisherKeys: []string{publicKey},
+	}
+	createServiceTestProject(t, service, creator)
+	if _, _, _, err := service.Submit(
+		context.Background(),
+		creator,
+		"tamper-original-17111111",
+		artifact,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := service.Submit(
+		context.Background(),
+		creator,
+		"tamper-conflict-17111111",
+		tampered,
+	); !errors.Is(err, ErrConflict) {
+		t.Fatalf("tampered document was not rejected as a release conflict: %v", err)
+	}
+	stored, err := service.Get(context.Background(), creator, original.ReleaseID)
+	if err != nil || stored.ArtifactSHA256 != original.ArtifactSHA256 {
+		t.Fatalf("original release changed: release=%+v err=%v", stored, err)
+	}
+}
+
 func TestProjectCollaborationAndVersionPermissions(t *testing.T) {
 	store := NewMemoryStore()
+	artifacts := NewMemoryArtifactStore()
 	now := time.Date(2026, 10, 15, 13, 0, 0, 0, time.UTC)
-	service := NewService(store, acceptingVerifier{}, func() time.Time {
+	service := NewService(store, artifacts, func() time.Time {
 		now = now.Add(time.Second)
 		return now
 	})
@@ -390,7 +448,7 @@ func TestProjectCollaborationAndVersionPermissions(t *testing.T) {
 		t.Fatalf("non-owner member mutation should be hidden: %v", err)
 	}
 
-	firstRelease, created, err := service.Submit(
+	firstRelease, _, created, err := service.Submit(
 		context.Background(),
 		editor,
 		"editor-submit-first-v1",
@@ -403,6 +461,7 @@ func TestProjectCollaborationAndVersionPermissions(t *testing.T) {
 		firstRelease.SubmittedBySubject != editor.Subject {
 		t.Fatalf("release ownership attribution mismatch: %+v", firstRelease)
 	}
+	runMemoryBuild(t, store, artifacts, acceptingVerifier{})
 	if _, _, err := service.Review(
 		context.Background(),
 		editor,
@@ -465,7 +524,7 @@ func TestProjectCollaborationAndVersionPermissions(t *testing.T) {
 		t.Fatalf("private outsider work page was not hidden: %v", err)
 	}
 
-	secondRelease, created, err := service.Submit(
+	secondRelease, _, created, err := service.Submit(
 		context.Background(),
 		editor,
 		"editor-submit-second-v1",
@@ -505,7 +564,7 @@ func TestProjectCollaborationAndVersionPermissions(t *testing.T) {
 		t.Fatalf("remove editor failed: changed=%v err=%v", changed, err)
 	}
 	third, _, _ := signedArtifact(t, "f1111111-2222-3333-4444-555555555555")
-	if _, _, err := service.Submit(
+	if _, _, _, err := service.Submit(
 		context.Background(),
 		editor,
 		"removed-editor-submit-v1",
@@ -536,4 +595,23 @@ func createServiceTestProject(t *testing.T, service *Service, owner Principal) P
 		t.Fatalf("create fixture project failed: created=%v project=%+v err=%v", created, project, err)
 	}
 	return project
+}
+
+func runMemoryBuild(
+	t *testing.T,
+	store Store,
+	artifacts ArtifactStore,
+	verifier PackVerifier,
+) {
+	t.Helper()
+	now := time.Date(2026, 10, 15, 18, 0, 0, 0, time.UTC)
+	worker := NewBuildWorker(store, artifacts, verifier, "test-worker")
+	worker.Now = func() time.Time {
+		now = now.Add(time.Second)
+		return now
+	}
+	worked, err := worker.RunOnce(context.Background())
+	if err != nil || !worked {
+		t.Fatalf("run build: worked=%v err=%v", worked, err)
+	}
 }

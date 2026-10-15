@@ -16,6 +16,8 @@ enum class EAkUGCRegistryPanelRequest : uint8
     SubmitRelease,
     GetRelease,
     PublishRelease,
+    GetBuild,
+    RetryBuild,
     RefreshProject,
     ListMembers,
     ListVersions,
@@ -48,6 +50,7 @@ private:
     FReply Publish();
     FReply SubmitToRegistry();
     FReply RefreshRegistryStatus();
+    FReply RetryRegistryBuild();
     FReply PublishToRegistry();
     FReply RefreshRegistryProject();
     FReply SetRegistryMember();
@@ -73,12 +76,17 @@ private:
         const FString& Error,
         const FString& PendingStatus);
     bool StartSubmitReleaseRequest();
+    bool StartBuildRequest(
+        EAkUGCBuildRegistryOperation Operation,
+        const FString& PendingStatus);
     bool StartRefreshProjectRequest(const FString& PendingStatus);
     bool CurrentProjectIdentity(
         FGuid& OutProjectId,
         FString& OutDisplayName,
         FString& OutError) const;
     void CompleteReleaseRegistryRequest(
+        const FAkUGCEditorHttpResult& Result);
+    void CompleteBuildRegistryRequest(
         const FAkUGCEditorHttpResult& Result);
     void CompleteProjectRegistryRequest(
         const FAkUGCEditorHttpResult& Result);
@@ -96,7 +104,10 @@ private:
     FString RegistryToken;
     FString RegistryStatus;
     FString RegistryReleaseStatus;
+    FString RegistryReleaseArtifactSha256;
+    int64 RegistryReleaseArtifactSize = 0;
     FGuid RegistryReleaseProjectId;
+    FAkUGCBuildRegistryView RegistryBuild;
     FString RegistryProjectSummary;
     FString RegistryMembersSummary;
     FString RegistryVersionsSummary;
@@ -107,6 +118,8 @@ private:
     FAkUGCWorkEntry RegistryRequestEntry;
     FGuid RegistryRequestProjectId;
     FString RegistryRequestProjectName;
+    FString RegistryRequestArtifactSha256;
+    int64 RegistryRequestArtifactSize = 0;
     FString RegistryRequestMemberSubject;
     FString RegistryRequestMemberRole;
     FString RegistryRequestVisibility;
@@ -118,6 +131,8 @@ private:
     FAkUGCEditorHttpRequestPtr PendingRegistryRequest;
     EAkUGCReleaseRegistryOperation PendingRegistryOperation =
         EAkUGCReleaseRegistryOperation::Submit;
+    EAkUGCBuildRegistryOperation PendingBuildOperation =
+        EAkUGCBuildRegistryOperation::Get;
     EAkUGCProjectRegistryOperation PendingProjectOperation =
         EAkUGCProjectRegistryOperation::GetProject;
     EAkUGCRegistryPanelRequest PendingRegistryRequestKind =

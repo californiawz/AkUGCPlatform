@@ -72,6 +72,37 @@ def wait_for_health(base, process, timeout=45):
     raise TimeoutError("Release Registry health check timed out")
 
 
+def wait_for_build(base, token, release_id, expected_sha, expected_size, timeout=150):
+    deadline = time.monotonic() + timeout
+    path = f"/v1/releases/{release_id}/build"
+    observed = []
+    while time.monotonic() < deadline:
+        status, _, raw = request(base, "GET", path, token, timeout=5)
+        if status != 200:
+            raise RuntimeError(f"Build lookup returned {status}: {raw!r}")
+        build = json.loads(raw)["build"]
+        observed.append(build["status"])
+        if (
+            build["releaseId"] != release_id
+            or build["inputArtifactSha256"] != expected_sha
+        ):
+            raise RuntimeError(f"Build identity mismatch: {build!r}")
+        if build["status"] == "succeeded":
+            if (
+                build.get("outputArtifactSha256") != expected_sha
+                or build.get("outputArtifactSize") != expected_size
+                or build.get("retryable")
+            ):
+                raise RuntimeError(f"Build output mismatch: {build!r}")
+            return build, observed
+        if build["status"] == "failed":
+            raise RuntimeError(f"Trusted build failed: {build!r}")
+        if build["status"] not in ("queued", "running"):
+            raise RuntimeError(f"Unknown build status: {build!r}")
+        time.sleep(0.2)
+    raise TimeoutError(f"Trusted build timed out; observed={observed!r}")
+
+
 def json_body(value):
     return json.dumps(value, separators=(",", ":")).encode("utf-8")
 
@@ -375,6 +406,10 @@ def main():
     oversized_download_rejected = False
     redirect_rejected = False
     revoked_product_rejected = False
+    build_observed = []
+    build_access_control_verified = False
+    artifact_store_verified = False
+    artifact_corruption_rejected = False
     try:
         test_environment = dict(os.environ)
         test_environment["AKUGC_TEST_DATABASE_URL"] = (
@@ -391,6 +426,7 @@ def main():
         base = f"http://127.0.0.1:{port}"
         validator_temp = output / "validator-temp"
         validator_temp.mkdir()
+        artifact_root = output / "artifacts"
         environment = dict(os.environ)
         environment.update(
             {
@@ -399,6 +435,7 @@ def main():
                 "AKUGC_VALIDATOR_EXE": str(editor),
                 "AKUGC_VALIDATOR_PROJECT": str(project),
                 "AKUGC_VALIDATOR_TEMP": str(validator_temp),
+                "AKUGC_ARTIFACT_ROOT": str(artifact_root),
                 "AKUGC_REGISTRY_ADDR": f"127.0.0.1:{port}",
             }
         )
@@ -519,6 +556,46 @@ def main():
             for release in release_responses
         ):
             raise RuntimeError("Collaborator release attribution mismatch")
+        expected_sha = hashlib.sha256(artifact).hexdigest()
+        release_path = f"/v1/releases/{release_id}"
+        build, build_observed = wait_for_build(
+            base,
+            tokens["editor"],
+            release_id,
+            expected_sha,
+            len(artifact),
+        )
+        status, _, raw = request(
+            base,
+            "GET",
+            release_path + "/build",
+            tokens["reviewer"],
+        )
+        if (
+            status != 200
+            or json.loads(raw)["build"]["status"] != "succeeded"
+        ):
+            raise RuntimeError(f"Reviewer build lookup mismatch: {status} {raw!r}")
+        status, _, _ = request(
+            base,
+            "GET",
+            release_path + "/build",
+            tokens["outsider"],
+        )
+        if status != 404:
+            raise RuntimeError(f"Outsider build lookup returned {status}")
+        build_access_control_verified = True
+        artifact_object = (
+            artifact_root
+            / "sha256"
+            / expected_sha[:2]
+            / f"{expected_sha}.akugc"
+        )
+        if not artifact_object.is_file() or artifact_object.read_bytes() != artifact:
+            raise RuntimeError(
+                f"Content-addressed artifact object mismatch: {artifact_object}"
+            )
+        artifact_store_verified = True
         status, _, raw = request(
             base,
             "GET",
@@ -557,7 +634,6 @@ def main():
         if status != 403:
             raise RuntimeError(f"Removed editor upload returned {status}")
 
-        release_path = f"/v1/releases/{release_id}"
         status, _, _ = request(
             base,
             "GET",
@@ -626,7 +702,12 @@ def main():
                 "Idempotency-Key": "registry-tampered-v1",
             },
         )
-        if status != 400:
+        # Manifest signature stays valid after a document edit, so this is not an
+        # outer-envelope 400. The signed ReleaseId already identifies different
+        # bytes and must conflict before a build can replace them. Content-hash
+        # and Logic IR checks still happen asynchronously for a genuinely new
+        # ReleaseId.
+        if status != 409:
             raise RuntimeError(f"Tampered upload returned {status}")
 
         status, _, _ = request(
@@ -785,6 +866,22 @@ def main():
         if status != 200 or not json.loads(raw).get("changed"):
             raise RuntimeError(f"Public visibility restore mismatch: {raw!r}")
 
+        try:
+            artifact_object.write_bytes(artifact + b"\n")
+            status, _, _ = request(
+                base,
+                "GET",
+                release_path + "/download",
+                tokens["player"],
+            )
+            if status != 503:
+                raise RuntimeError(
+                    f"Corrupted content-addressed artifact returned {status}"
+                )
+            artifact_corruption_rejected = True
+        finally:
+            artifact_object.write_bytes(artifact)
+
         status, headers, downloaded = request(
             base,
             "GET",
@@ -793,7 +890,6 @@ def main():
         )
         if status != 200 or downloaded != artifact:
             raise RuntimeError(f"Published download mismatch: {status} {len(downloaded)}")
-        expected_sha = hashlib.sha256(artifact).hexdigest()
         if headers.get("Etag") != f'"sha256:{expected_sha}"':
             raise RuntimeError("Artifact ETag mismatch")
         download_path = output / "player-b" / f"{release_digits}.akugc"
@@ -1000,6 +1096,15 @@ def main():
             "project_id": project_id,
             "artifact_sha256": expected_sha,
             "concurrent_submit_statuses": sorted(statuses),
+            "build_statuses_observed": build_observed,
+            "trusted_build_succeeded": build["status"] == "succeeded",
+            "build_access_control_verified": build_access_control_verified,
+            "content_addressed_artifact_store": artifact_store_verified,
+            "artifact_store_corruption_rejected": artifact_corruption_rejected,
+            "build_output_preserved_exact_bytes": (
+                build["outputArtifactSha256"] == expected_sha
+                and build["outputArtifactSize"] == len(artifact)
+            ),
             "project_creation_idempotent": True,
             "project_owner_bound": True,
             "collaborator_submitter_attributed": True,

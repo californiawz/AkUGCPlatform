@@ -60,7 +60,7 @@ void SAkUGCWorkLibraryPanel::Construct(const FArguments& InArgs, UAkUGCEditorSub
         + SVerticalBox::Slot().AutoHeight().Padding(0, 8, 0, 2)
         [SNew(STextBlock).Text(FText::FromString(TEXT("Release Registry（本机 Alpha）")))]
         + SVerticalBox::Slot().AutoHeight()
-        [SNew(STextBlock).Text(FText::FromString(TEXT("上传会先确认当前云 Project，不存在时自动登记，再提交已本地验签且 Project 绑定一致的签名包。静态 token 不保存，项目元数据不会替代作品签名或 Player 本地验签。"))).AutoWrapText(true)]
+        [SNew(STextBlock).Text(FText::FromString(TEXT("上传会先确认当前云 Project，再提交已本地验签且 Project 绑定一致的签名包。服务端异步构建只深度校验并原样提升同一签名字节，不会重新 Cook、改写或代签；构建成功后才能审核发布。静态 token 不保存，服务端构建结果也不会替代 Player 本地验签。"))).AutoWrapText(true)]
         + SVerticalBox::Slot().AutoHeight().Padding(0, 2)
         [SNew(SEditableTextBox)
             .IsEnabled_Lambda([this] { return !PendingRegistryRequest.IsValid(); })
@@ -97,12 +97,26 @@ void SAkUGCWorkLibraryPanel::Construct(const FArguments& InArgs, UAkUGCEditorSub
                     })
                 .OnClicked(this, &SAkUGCWorkLibraryPanel::RefreshRegistryStatus)]
             + SHorizontalBox::Slot().AutoWidth().Padding(2)
+            [SNew(SButton).Text(FText::FromString(TEXT("重试失败构建")))
+                .IsEnabled_Lambda([this]
+                    {
+                        return !PendingRegistryRequest.IsValid()
+                            && LastPublishedEntry.IsSet()
+                            && RegistryBuild.Status == TEXT("failed")
+                            && RegistryBuild.bRetryable
+                            && !RegistryToken.IsEmpty();
+                    })
+                .OnClicked(this, &SAkUGCWorkLibraryPanel::RetryRegistryBuild)]
+            + SHorizontalBox::Slot().AutoWidth().Padding(2)
             [SNew(SButton).Text(FText::FromString(TEXT("发布已审核 Release")))
                 .IsEnabled_Lambda([this]
                     {
                         return !PendingRegistryRequest.IsValid()
                             && LastPublishedEntry.IsSet()
                             && RegistryReleaseStatus == TEXT("approved")
+                            && RegistryBuild.Status == TEXT("succeeded")
+                            && RegistryBuild.InputArtifactSha256
+                                == RegistryReleaseArtifactSha256
                             && RegistryReleaseProjectId.IsValid()
                             && Subsystem.IsValid()
                             && Subsystem->HasOpenProject()
@@ -195,6 +209,31 @@ void SAkUGCWorkLibraryPanel::Construct(const FArguments& InArgs, UAkUGCEditorSub
         ]
         + SVerticalBox::Slot().AutoHeight()
         [SNew(STextBlock).Text_Lambda([this] { return FText::FromString(RegistryStatus); }).AutoWrapText(true)]
+        + SVerticalBox::Slot().AutoHeight()
+        [SNew(STextBlock)
+            .Text_Lambda([this]
+                {
+                    if (!RegistryBuild.ReleaseId.IsValid())
+                    {
+                        return FText::GetEmpty();
+                    }
+                    FString Summary = FString::Printf(
+                        TEXT("可信构建：%s；尝试 %lld；修订 %lld"),
+                        *RegistryBuild.Status,
+                        static_cast<long long>(RegistryBuild.Attempt),
+                        static_cast<long long>(RegistryBuild.Revision));
+                    if (!RegistryBuild.ErrorCode.IsEmpty())
+                    {
+                        Summary += FString::Printf(
+                            TEXT("；错误 %s%s"),
+                            *RegistryBuild.ErrorCode,
+                            RegistryBuild.bRetryable
+                                ? TEXT("（可重试）")
+                                : TEXT("（不可重试）"));
+                    }
+                    return FText::FromString(Summary);
+                })
+            .AutoWrapText(true)]
         + SVerticalBox::Slot().AutoHeight()
         [SNew(STextBlock).Text_Lambda([this] { return FText::FromString(RegistryProjectSummary); }).AutoWrapText(true)]
         + SVerticalBox::Slot().AutoHeight()
@@ -309,7 +348,12 @@ FReply SAkUGCWorkLibraryPanel::Publish()
         LastPublishedEntry = Entry;
         LastPublishedSharePath = Path;
         RegistryReleaseStatus.Reset();
+        RegistryReleaseArtifactSha256.Reset();
+        RegistryReleaseArtifactSize = 0;
         RegistryReleaseProjectId.Invalidate();
+        RegistryBuild = {};
+        RegistryRequestArtifactSha256.Reset();
+        RegistryRequestArtifactSize = 0;
         RegistryStatus = TEXT("本地签名包已就绪；可显式上传到 Registry。");
         bConfirmedTrust = false;
         Refresh();
@@ -344,7 +388,9 @@ FReply SAkUGCWorkLibraryPanel::SubmitToRegistry()
             Entry,
             LastPublishedSharePath,
             ProjectId,
-            Error))
+            Error,
+            &RegistryRequestArtifactSha256,
+            &RegistryRequestArtifactSize))
     {
         RegistryStatus = Error;
         return FReply::Handled();
@@ -359,6 +405,7 @@ FReply SAkUGCWorkLibraryPanel::SubmitToRegistry()
     RegistryRequestEntry = Entry;
     RegistryRequestProjectId = ProjectId;
     RegistryRequestProjectName = ProjectName;
+    RegistryBuild = {};
     PendingProjectOperation = EAkUGCProjectRegistryOperation::GetProject;
     bRegistryChainCancelled = false;
     StartRegistryRequest(
@@ -384,6 +431,17 @@ FReply SAkUGCWorkLibraryPanel::RefreshRegistryStatus()
         return FReply::Handled();
     }
     const FAkUGCWorkEntry Entry = LastPublishedEntry.GetValue();
+    if (!FAkUGCReleaseRegistryClient::ValidateSubmissionArtifact(
+            Entry,
+            LastPublishedSharePath,
+            ProjectId,
+            Error,
+            &RegistryRequestArtifactSha256,
+            &RegistryRequestArtifactSize))
+    {
+        RegistryStatus = Error;
+        return FReply::Handled();
+    }
     const FAkUGCEditorHttpRequestPtr Request =
         FAkUGCReleaseRegistryClient::StartGet(
             RegistryBaseUrl,
@@ -394,6 +452,7 @@ FReply SAkUGCWorkLibraryPanel::RefreshRegistryStatus()
     RegistryRequestEntry = Entry;
     RegistryRequestProjectId = ProjectId;
     RegistryRequestProjectName = ProjectName;
+    RegistryBuild = {};
     PendingRegistryOperation = EAkUGCReleaseRegistryOperation::Get;
     bRegistryChainCancelled = false;
     StartRegistryRequest(
@@ -404,11 +463,51 @@ FReply SAkUGCWorkLibraryPanel::RefreshRegistryStatus()
     return FReply::Handled();
 }
 
+FReply SAkUGCWorkLibraryPanel::RetryRegistryBuild()
+{
+    if (PendingRegistryRequest.IsValid()
+        || !LastPublishedEntry.IsSet()
+        || RegistryBuild.Status != TEXT("failed")
+        || !RegistryBuild.bRetryable)
+    {
+        return FReply::Handled();
+    }
+    FString Error;
+    FGuid ProjectId;
+    FString ProjectName;
+    if (!CurrentProjectIdentity(ProjectId, ProjectName, Error))
+    {
+        RegistryStatus = Error;
+        return FReply::Handled();
+    }
+    const FAkUGCWorkEntry Entry = LastPublishedEntry.GetValue();
+    if (!FAkUGCReleaseRegistryClient::ValidateSubmissionArtifact(
+            Entry,
+            LastPublishedSharePath,
+            ProjectId,
+            Error,
+            &RegistryRequestArtifactSha256,
+            &RegistryRequestArtifactSize))
+    {
+        RegistryStatus = Error;
+        return FReply::Handled();
+    }
+    RegistryRequestEntry = Entry;
+    RegistryRequestProjectId = ProjectId;
+    RegistryRequestProjectName = ProjectName;
+    bRegistryChainCancelled = false;
+    StartBuildRequest(
+        EAkUGCBuildRegistryOperation::Retry,
+        TEXT("正在重新排队可重试构建；不会改写或重新签名本地制品。"));
+    return FReply::Handled();
+}
+
 FReply SAkUGCWorkLibraryPanel::PublishToRegistry()
 {
     if (PendingRegistryRequest.IsValid()
         || !LastPublishedEntry.IsSet()
-        || RegistryReleaseStatus != TEXT("approved"))
+        || RegistryReleaseStatus != TEXT("approved")
+        || RegistryBuild.Status != TEXT("succeeded"))
     {
         return FReply::Handled();
     }
@@ -431,9 +530,24 @@ FReply SAkUGCWorkLibraryPanel::PublishToRegistry()
             Entry,
             LastPublishedSharePath,
             ProjectId,
-            Error))
+            Error,
+            &RegistryRequestArtifactSha256,
+            &RegistryRequestArtifactSize))
     {
         RegistryStatus = Error;
+        return FReply::Handled();
+    }
+    if (RegistryBuild.ReleaseId != Entry.ReleaseId
+        || RegistryBuild.ProjectId != ProjectId
+        || RegistryBuild.InputArtifactSha256
+            != RegistryRequestArtifactSha256
+        || RegistryBuild.OutputArtifactSha256
+            != RegistryRequestArtifactSha256
+        || RegistryBuild.OutputArtifactSize
+            != RegistryRequestArtifactSize)
+    {
+        RegistryStatus =
+            TEXT("可信构建结果未与当前本地签名制品精确绑定，请刷新状态。");
         return FReply::Handled();
     }
     const FAkUGCEditorHttpRequestPtr Request =
@@ -629,6 +743,10 @@ void SAkUGCWorkLibraryPanel::CompleteRegistryRequest(
     case EAkUGCRegistryPanelRequest::PublishRelease:
         CompleteReleaseRegistryRequest(Result);
         break;
+    case EAkUGCRegistryPanelRequest::GetBuild:
+    case EAkUGCRegistryPanelRequest::RetryBuild:
+        CompleteBuildRegistryRequest(Result);
+        break;
     case EAkUGCRegistryPanelRequest::EnsureProject:
     case EAkUGCRegistryPanelRequest::CreateProject:
     case EAkUGCRegistryPanelRequest::RefreshProject:
@@ -709,6 +827,35 @@ bool SAkUGCWorkLibraryPanel::StartSubmitReleaseRequest()
         TEXT("云 Project 已确认；正在上传本地验签通过的不可变签名包。"));
 }
 
+bool SAkUGCWorkLibraryPanel::StartBuildRequest(
+    EAkUGCBuildRegistryOperation Operation,
+    const FString& PendingStatus)
+{
+    FString Error;
+    PendingBuildOperation = Operation;
+    const FAkUGCEditorHttpRequestPtr Request =
+        Operation == EAkUGCBuildRegistryOperation::Get
+            ? FAkUGCReleaseRegistryClient::StartGetBuild(
+                RegistryBaseUrl,
+                RegistryToken,
+                RegistryRequestEntry.ReleaseId,
+                RegistryRequestTimeoutSeconds,
+                Error)
+            : FAkUGCReleaseRegistryClient::StartRetryBuild(
+                RegistryBaseUrl,
+                RegistryToken,
+                RegistryRequestEntry.ReleaseId,
+                RegistryRequestTimeoutSeconds,
+                Error);
+    return StartRegistryRequest(
+        Operation == EAkUGCBuildRegistryOperation::Get
+            ? EAkUGCRegistryPanelRequest::GetBuild
+            : EAkUGCRegistryPanelRequest::RetryBuild,
+        Request,
+        Error,
+        PendingStatus);
+}
+
 bool SAkUGCWorkLibraryPanel::StartRefreshProjectRequest(
     const FString& PendingStatus)
 {
@@ -758,7 +905,20 @@ void SAkUGCWorkLibraryPanel::CompleteReleaseRegistryRequest(
         PendingRegistryRequestKind = EAkUGCRegistryPanelRequest::None;
         return;
     }
+    if (Response.Release.ArtifactSha256
+            != RegistryRequestArtifactSha256
+        || Response.Release.ArtifactSize
+            != RegistryRequestArtifactSize)
+    {
+        RegistryStatus =
+            TEXT("Registry Release 制品摘要或大小与本地签名字节不一致。");
+        PendingRegistryRequestKind = EAkUGCRegistryPanelRequest::None;
+        return;
+    }
     RegistryReleaseStatus = Response.Release.Status;
+    RegistryReleaseArtifactSha256 =
+        Response.Release.ArtifactSha256;
+    RegistryReleaseArtifactSize = Response.Release.ArtifactSize;
     RegistryReleaseProjectId = Response.Release.ProjectId;
     const FString Id =
         Response.Release.ReleaseId.ToString(EGuidFormats::DigitsWithHyphensLower);
@@ -766,18 +926,24 @@ void SAkUGCWorkLibraryPanel::CompleteReleaseRegistryRequest(
     {
     case EAkUGCReleaseRegistryOperation::Submit:
         RegistryStatus = FString::Printf(
-            TEXT("%s：%s\nRegistry 状态：%s。Reviewer 必须是另一主体。"),
+            TEXT("%s：%s\nRegistry 状态：%s；正在读取异步可信构建。"),
             Response.bCreated ? TEXT("Registry 已创建不可变 Release") : TEXT("Registry 幂等返回现有 Release"),
             *Id,
             *RegistryReleaseStatus);
-        break;
+        StartBuildRequest(
+            EAkUGCBuildRegistryOperation::Get,
+            RegistryStatus);
+        return;
     case EAkUGCReleaseRegistryOperation::Get:
         RegistryStatus = FString::Printf(
-            TEXT("Registry 状态已刷新：%s\n状态：%s，修订：%lld。"),
+            TEXT("Registry Release 已刷新：%s\n状态：%s，修订：%lld；正在读取可信构建。"),
             *Id,
             *RegistryReleaseStatus,
             static_cast<long long>(Response.Release.Revision));
-        break;
+        StartBuildRequest(
+            EAkUGCBuildRegistryOperation::Get,
+            RegistryStatus);
+        return;
     case EAkUGCReleaseRegistryOperation::Publish:
         RegistryStatus = FString::Printf(
             TEXT("%s：%s\nPlayer 下载后仍必须使用独立可信公钥本地验签。"),
@@ -787,6 +953,74 @@ void SAkUGCWorkLibraryPanel::CompleteReleaseRegistryRequest(
     default:
         RegistryStatus = TEXT("Registry 返回了未知操作结果。");
         break;
+    }
+    PendingRegistryRequestKind = EAkUGCRegistryPanelRequest::None;
+}
+
+void SAkUGCWorkLibraryPanel::CompleteBuildRegistryRequest(
+    const FAkUGCEditorHttpResult& Result)
+{
+    FAkUGCBuildRegistryResponse Response;
+    FString Error;
+    if (!FAkUGCReleaseRegistryClient::ParseBuildResponse(
+            PendingBuildOperation,
+            Result,
+            RegistryRequestEntry.ReleaseId,
+            RegistryRequestProjectId,
+            RegistryRequestArtifactSha256,
+            RegistryRequestArtifactSize,
+            Response,
+            Error))
+    {
+        RegistryBuild = {};
+        RegistryStatus = Error;
+        PendingRegistryRequestKind = EAkUGCRegistryPanelRequest::None;
+        return;
+    }
+    RegistryBuild = MoveTemp(Response.Build);
+    const FString Id = RegistryBuild.ReleaseId.ToString(
+        EGuidFormats::DigitsWithHyphensLower);
+    if (PendingBuildOperation == EAkUGCBuildRegistryOperation::Retry)
+    {
+        if (RegistryBuild.Status != TEXT("queued"))
+        {
+            RegistryBuild = {};
+            RegistryStatus =
+                TEXT("Registry 重试响应未将构建恢复为 queued。");
+            PendingRegistryRequestKind =
+                EAkUGCRegistryPanelRequest::None;
+            return;
+        }
+        RegistryStatus = FString::Printf(
+            TEXT("%s：%s\n构建已排队；服务端只会深度校验同一签名字节。"),
+            Response.bChanged
+                ? TEXT("可信构建已重新排队")
+                : TEXT("可信构建已经在队列中"),
+            *Id);
+    }
+    else if (RegistryBuild.Status == TEXT("succeeded"))
+    {
+        RegistryStatus = FString::Printf(
+            TEXT("可信构建成功：%s\n制品摘要与大小已绑定本地签名字节；Reviewer 仍必须是另一主体。"),
+            *Id);
+    }
+    else if (RegistryBuild.Status == TEXT("failed"))
+    {
+        RegistryStatus = FString::Printf(
+            TEXT("可信构建失败：%s\n错误：%s；%s。"),
+            *Id,
+            *RegistryBuild.ErrorCode,
+            RegistryBuild.bRetryable
+                ? TEXT("可显式重新排队")
+                : TEXT("该签名 Release 不可重试，需修复后生成新 Release"));
+    }
+    else
+    {
+        RegistryStatus = FString::Printf(
+            TEXT("可信构建状态：%s\nRelease：%s；尝试 %lld。"),
+            *RegistryBuild.Status,
+            *Id,
+            static_cast<long long>(RegistryBuild.Attempt));
     }
     PendingRegistryRequestKind = EAkUGCRegistryPanelRequest::None;
 }

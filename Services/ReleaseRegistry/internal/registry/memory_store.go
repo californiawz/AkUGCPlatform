@@ -45,6 +45,8 @@ type MemoryStore struct {
 	releases           map[string]Release
 	idempotency        map[string]idempotencyRecord
 	transitions        []Transition
+	buildJobs          map[string]BuildJob
+	buildEvents        []BuildJobEvent
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -54,6 +56,7 @@ func NewMemoryStore() *MemoryStore {
 		projectIdempotency: make(map[string]projectIdempotencyRecord),
 		releases:           make(map[string]Release),
 		idempotency:        make(map[string]idempotencyRecord),
+		buildJobs:          make(map[string]BuildJob),
 	}
 }
 
@@ -333,6 +336,10 @@ func (s *MemoryStore) GetLatestPublishedRelease(
 		if release.ProjectID != projectID || release.Status != StatusPublished {
 			continue
 		}
+		build, exists := s.buildJobs[release.ReleaseID]
+		if !exists || build.Status != BuildStatusSucceeded {
+			continue
+		}
 		if !found ||
 			release.SubmittedAt.After(latest.SubmittedAt) ||
 			(release.SubmittedAt.Equal(latest.SubmittedAt) &&
@@ -350,13 +357,13 @@ func (s *MemoryStore) GetLatestPublishedRelease(
 func (s *MemoryStore) Submit(
 	_ context.Context,
 	submission Submission,
-) (Release, bool, error) {
+) (Release, BuildJob, bool, error) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
 	project, exists := s.projects[submission.Metadata.ProjectID]
 	if !exists {
-		return Release{}, false, ErrNotFound
+		return Release{}, BuildJob{}, false, ErrNotFound
 	}
 	authorized := submission.SubmitterSubject == project.OwnerSubject
 	if !authorized {
@@ -364,30 +371,38 @@ func (s *MemoryStore) Submit(
 		authorized = memberExists && member.Role == ProjectRoleEditor
 	}
 	if !authorized {
-		return Release{}, false, ErrForbidden
+		return Release{}, BuildJob{}, false, ErrForbidden
 	}
 
 	idempotencyID := project.OwnerSubject + "\x00" + submission.IdempotencyKey
 	if previous, exists := s.idempotency[idempotencyID]; exists {
 		if previous.ArtifactSHA256 != submission.Metadata.ArtifactSHA256 {
-			return Release{}, false, fmt.Errorf("%w: idempotency key was reused with different content", ErrConflict)
+			return Release{}, BuildJob{}, false, fmt.Errorf("%w: idempotency key was reused with different content", ErrConflict)
 		}
 		release, exists := s.releases[previous.ReleaseID]
 		if !exists {
-			return Release{}, false, fmt.Errorf("%w: idempotency record is inconsistent", ErrUnavailable)
+			return Release{}, BuildJob{}, false, fmt.Errorf("%w: idempotency record is inconsistent", ErrUnavailable)
 		}
-		return release.clone(), false, nil
+		build, exists := s.buildJobs[previous.ReleaseID]
+		if !exists {
+			return Release{}, BuildJob{}, false, fmt.Errorf("%w: release build record is missing", ErrUnavailable)
+		}
+		return release.clone(), build.clone(), false, nil
 	}
 
 	if existing, exists := s.releases[submission.Metadata.ReleaseID]; exists {
 		if !sameImmutableRelease(existing, submission, project.OwnerSubject) {
-			return Release{}, false, fmt.Errorf("%w: release ID already identifies different immutable content", ErrConflict)
+			return Release{}, BuildJob{}, false, fmt.Errorf("%w: release ID already identifies different immutable content", ErrConflict)
 		}
 		s.idempotency[idempotencyID] = idempotencyRecord{
 			ArtifactSHA256: submission.Metadata.ArtifactSHA256,
 			ReleaseID:      existing.ReleaseID,
 		}
-		return existing.clone(), false, nil
+		build, exists := s.buildJobs[existing.ReleaseID]
+		if !exists {
+			return Release{}, BuildJob{}, false, fmt.Errorf("%w: release build record is missing", ErrUnavailable)
+		}
+		return existing.clone(), build.clone(), false, nil
 	}
 
 	release := Release{
@@ -404,14 +419,32 @@ func (s *MemoryStore) Submit(
 		Revision:           1,
 		SubmittedAt:        submission.SubmittedAt,
 		UpdatedAt:          submission.SubmittedAt,
-		Artifact:           append([]byte(nil), submission.Artifact...),
+	}
+	build := BuildJob{
+		ReleaseID:           release.ReleaseID,
+		ProjectID:           release.ProjectID,
+		Status:              BuildStatusQueued,
+		Attempt:             0,
+		Revision:            1,
+		InputArtifactSHA256: release.ArtifactSHA256,
+		CreatedAt:           submission.SubmittedAt,
+		UpdatedAt:           submission.SubmittedAt,
 	}
 	s.releases[release.ReleaseID] = release
+	s.buildJobs[release.ReleaseID] = build
+	s.buildEvents = append(s.buildEvents, BuildJobEvent{
+		ReleaseID: release.ReleaseID,
+		Actor:     submission.SubmitterSubject,
+		To:        BuildStatusQueued,
+		Attempt:   build.Attempt,
+		Revision:  build.Revision,
+		At:        submission.SubmittedAt,
+	})
 	s.idempotency[idempotencyID] = idempotencyRecord{
 		ArtifactSHA256: release.ArtifactSHA256,
 		ReleaseID:      release.ReleaseID,
 	}
-	return release.clone(), true, nil
+	return release.clone(), build.clone(), true, nil
 }
 
 func (s *MemoryStore) Get(_ context.Context, releaseID string) (Release, error) {
@@ -437,6 +470,12 @@ func (s *MemoryStore) Transition(
 	release, exists := s.releases[request.ReleaseID]
 	if !exists {
 		return Release{}, false, ErrNotFound
+	}
+	if transitionRequiresSucceededBuild(request.Target) {
+		build, exists := s.buildJobs[request.ReleaseID]
+		if !exists || build.Status != BuildStatusSucceeded {
+			return Release{}, false, fmt.Errorf("%w: release build has not succeeded", ErrConflict)
+		}
 	}
 	if release.Status == request.Target {
 		return release.clone(), false, nil
@@ -472,6 +511,254 @@ func (s *MemoryStore) Transition(
 		At:        request.At,
 	})
 	return release.clone(), true, nil
+}
+
+func (s *MemoryStore) GetBuild(
+	_ context.Context,
+	releaseID string,
+) (BuildJob, error) {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+	build, exists := s.buildJobs[releaseID]
+	if !exists {
+		return BuildJob{}, ErrNotFound
+	}
+	return build.clone(), nil
+}
+
+func (s *MemoryStore) ClaimBuild(
+	ctx context.Context,
+	request ClaimBuildRequest,
+) (BuildJob, error) {
+	if request.Worker == "" || request.LeaseDuration <= 0 {
+		return BuildJob{}, fmt.Errorf("%w: invalid build lease", ErrInvalidInput)
+	}
+	if err := ctx.Err(); err != nil {
+		return BuildJob{}, err
+	}
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	ids := make([]string, 0, len(s.buildJobs))
+	for releaseID := range s.buildJobs {
+		ids = append(ids, releaseID)
+	}
+	sort.Slice(ids, func(left, right int) bool {
+		leftBuild := s.buildJobs[ids[left]]
+		rightBuild := s.buildJobs[ids[right]]
+		if leftBuild.CreatedAt.Equal(rightBuild.CreatedAt) {
+			return ids[left] < ids[right]
+		}
+		return leftBuild.CreatedAt.Before(rightBuild.CreatedAt)
+	})
+
+	for _, releaseID := range ids {
+		build := s.buildJobs[releaseID]
+		expired := build.Status == BuildStatusRunning &&
+			(build.leaseDeadline == nil || !build.leaseDeadline.After(request.At))
+		if build.Status != BuildStatusQueued && !expired {
+			continue
+		}
+		if expired && build.Attempt >= MaxAutomaticBuildAttempts {
+			previous := build.Status
+			build.Status = BuildStatusFailed
+			build.Retryable = true
+			build.ErrorCode = BuildErrorLeaseExpired
+			build.Revision++
+			build.FinishedAt = timePointer(request.At)
+			build.UpdatedAt = request.At
+			build.leaseOwner = ""
+			build.leaseDeadline = nil
+			s.buildJobs[releaseID] = build
+			s.buildEvents = append(s.buildEvents, BuildJobEvent{
+				ReleaseID: releaseID,
+				Actor:     request.Worker,
+				From:      previous,
+				To:        build.Status,
+				Attempt:   build.Attempt,
+				Revision:  build.Revision,
+				ErrorCode: build.ErrorCode,
+				At:        request.At,
+			})
+			continue
+		}
+
+		previous := build.Status
+		build.Status = BuildStatusRunning
+		build.Attempt++
+		build.Revision++
+		build.Retryable = false
+		build.OutputArtifactSHA256 = ""
+		build.OutputArtifactSize = 0
+		build.ErrorCode = ""
+		build.FinishedAt = nil
+		if build.StartedAt == nil {
+			build.StartedAt = timePointer(request.At)
+		}
+		build.UpdatedAt = request.At
+		build.leaseOwner = request.Worker
+		deadline := request.At.Add(request.LeaseDuration)
+		build.leaseDeadline = &deadline
+		s.buildJobs[releaseID] = build
+		event := BuildJobEvent{
+			ReleaseID: releaseID,
+			Actor:     request.Worker,
+			From:      previous,
+			To:        build.Status,
+			Attempt:   build.Attempt,
+			Revision:  build.Revision,
+			At:        request.At,
+		}
+		if expired {
+			event.ErrorCode = BuildErrorLeaseExpired
+		}
+		s.buildEvents = append(s.buildEvents, event)
+		return build.clone(), nil
+	}
+	return BuildJob{}, ErrNoBuildAvailable
+}
+
+func (s *MemoryStore) CompleteBuild(
+	ctx context.Context,
+	request CompleteBuildRequest,
+) (BuildJob, bool, error) {
+	if request.Worker == "" {
+		return BuildJob{}, false, fmt.Errorf("%w: build worker is required", ErrInvalidInput)
+	}
+	if err := ctx.Err(); err != nil {
+		return BuildJob{}, false, err
+	}
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	build, exists := s.buildJobs[request.ReleaseID]
+	if !exists {
+		return BuildJob{}, false, ErrNotFound
+	}
+	release, exists := s.releases[request.ReleaseID]
+	if !exists {
+		return BuildJob{}, false, fmt.Errorf("%w: release build is inconsistent", ErrUnavailable)
+	}
+	if sameBuildCompletion(build, request) {
+		return build.clone(), false, nil
+	}
+	if build.Status != BuildStatusRunning ||
+		build.leaseOwner != request.Worker ||
+		build.leaseDeadline == nil ||
+		!build.leaseDeadline.After(request.At) {
+		return BuildJob{}, false, fmt.Errorf("%w: build lease is not current", ErrConflict)
+	}
+
+	previous := build.Status
+	if request.Succeeded {
+		if request.ErrorCode != "" ||
+			request.OutputArtifactSHA256 != release.ArtifactSHA256 ||
+			request.OutputArtifactSize != release.ArtifactSize {
+			return BuildJob{}, false, fmt.Errorf("%w: build output does not match immutable release metadata", ErrConflict)
+		}
+		build.Status = BuildStatusSucceeded
+		build.Retryable = false
+		build.OutputArtifactSHA256 = request.OutputArtifactSHA256
+		build.OutputArtifactSize = request.OutputArtifactSize
+		build.ErrorCode = ""
+	} else {
+		if !request.ErrorCode.Valid() ||
+			request.OutputArtifactSHA256 != "" ||
+			request.OutputArtifactSize != 0 {
+			return BuildJob{}, false, fmt.Errorf("%w: invalid failed build completion", ErrInvalidInput)
+		}
+		build.Status = BuildStatusFailed
+		build.Retryable = request.ErrorCode.IsRetryable()
+		build.OutputArtifactSHA256 = ""
+		build.OutputArtifactSize = 0
+		build.ErrorCode = request.ErrorCode
+	}
+	build.Revision++
+	build.FinishedAt = timePointer(request.At)
+	build.UpdatedAt = request.At
+	build.leaseDeadline = nil
+	s.buildJobs[build.ReleaseID] = build
+	s.buildEvents = append(s.buildEvents, BuildJobEvent{
+		ReleaseID: build.ReleaseID,
+		Actor:     request.Worker,
+		From:      previous,
+		To:        build.Status,
+		Attempt:   build.Attempt,
+		Revision:  build.Revision,
+		ErrorCode: build.ErrorCode,
+		At:        request.At,
+	})
+	return build.clone(), true, nil
+}
+
+func (s *MemoryStore) RetryBuild(
+	ctx context.Context,
+	request RetryBuildRequest,
+) (BuildJob, bool, error) {
+	if request.Actor == "" {
+		return BuildJob{}, false, fmt.Errorf("%w: retry actor is required", ErrInvalidInput)
+	}
+	if err := ctx.Err(); err != nil {
+		return BuildJob{}, false, err
+	}
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	build, exists := s.buildJobs[request.ReleaseID]
+	if !exists {
+		return BuildJob{}, false, ErrNotFound
+	}
+	if build.Status == BuildStatusQueued && build.Attempt == 0 {
+		return build.clone(), false, nil
+	}
+	if build.Status != BuildStatusFailed || !build.Retryable {
+		return BuildJob{}, false, fmt.Errorf("%w: build is not retryable", ErrConflict)
+	}
+	previous := build.Status
+	build.Status = BuildStatusQueued
+	build.Attempt = 0
+	build.Revision++
+	build.Retryable = false
+	build.OutputArtifactSHA256 = ""
+	build.OutputArtifactSize = 0
+	build.ErrorCode = ""
+	build.StartedAt = nil
+	build.FinishedAt = nil
+	build.UpdatedAt = request.At
+	build.leaseOwner = ""
+	build.leaseDeadline = nil
+	s.buildJobs[build.ReleaseID] = build
+	s.buildEvents = append(s.buildEvents, BuildJobEvent{
+		ReleaseID: build.ReleaseID,
+		Actor:     request.Actor,
+		From:      previous,
+		To:        build.Status,
+		Attempt:   build.Attempt,
+		Revision:  build.Revision,
+		At:        request.At,
+	})
+	return build.clone(), true, nil
+}
+
+func transitionRequiresSucceededBuild(target Status) bool {
+	return target == StatusApproved ||
+		target == StatusRejected ||
+		target == StatusPublished
+}
+
+func sameBuildCompletion(build BuildJob, request CompleteBuildRequest) bool {
+	if build.leaseOwner != request.Worker {
+		return false
+	}
+	if request.Succeeded {
+		return build.Status == BuildStatusSucceeded &&
+			build.OutputArtifactSHA256 == request.OutputArtifactSHA256 &&
+			build.OutputArtifactSize == request.OutputArtifactSize &&
+			request.ErrorCode == ""
+	}
+	return build.Status == BuildStatusFailed &&
+		build.ErrorCode == request.ErrorCode &&
+		build.Retryable == request.ErrorCode.IsRetryable() &&
+		request.OutputArtifactSHA256 == "" &&
+		request.OutputArtifactSize == 0
 }
 
 func sameImmutableRelease(

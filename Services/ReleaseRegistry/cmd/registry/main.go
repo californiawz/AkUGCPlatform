@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -53,10 +55,12 @@ func run() error {
 	}
 
 	var store registry.Store
+	var artifacts registry.ArtifactStore
 	var pool *pgxpool.Pool
 	if os.Getenv("AKUGC_REGISTRY_MEMORY") == "1" {
 		log.Print("Release Registry is using volatile memory storage for local simulation")
 		store = registry.NewMemoryStore()
+		artifacts = registry.NewMemoryArtifactStore()
 	} else {
 		databaseURL := os.Getenv("DATABASE_URL")
 		if databaseURL == "" {
@@ -81,11 +85,27 @@ func run() error {
 		if err := migrations.Apply(startupContext, pool); err != nil {
 			return err
 		}
-		store = registry.NewPostgresStore(pool)
+		artifactRoot := os.Getenv("AKUGC_ARTIFACT_ROOT")
+		if artifactRoot == "" {
+			return errors.New("AKUGC_ARTIFACT_ROOT is required in PostgreSQL mode")
+		}
+		artifacts, err = registry.NewLocalArtifactStore(artifactRoot)
+		if err != nil {
+			return fmt.Errorf("initialize artifact store: %w", err)
+		}
+		postgresStore := registry.NewPostgresStore(pool)
+		migrated, err := postgresStore.MigrateLegacyArtifacts(startupContext, artifacts, nil)
+		if err != nil {
+			return fmt.Errorf("migrate legacy artifacts: %w", err)
+		}
+		if migrated > 0 {
+			log.Printf("Migrated %d legacy release artifacts", migrated)
+		}
+		store = postgresStore
 	}
 
 	handler := registry.NewHTTPHandler(
-		registry.NewService(store, verifier, nil),
+		registry.NewService(store, artifacts, nil),
 		authenticator,
 	)
 	address, err := localRegistryAddress(os.Getenv("AKUGC_REGISTRY_ADDR"))
@@ -104,19 +124,54 @@ func run() error {
 
 	signals, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	go func() {
-		<-signals.Done()
-		shutdownContext, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		_ = server.Shutdown(shutdownContext)
-	}()
+	workerContext, cancelWorkers := context.WithCancel(signals)
+	defer cancelWorkers()
+	workerErrors := make(chan error, 2)
+	var workers sync.WaitGroup
+	for index := 1; index <= 2; index++ {
+		worker := registry.NewBuildWorker(
+			store,
+			artifacts,
+			verifier,
+			fmt.Sprintf("registry-worker-%d", index),
+		)
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			if err := worker.Run(workerContext); err != nil {
+				select {
+				case workerErrors <- err:
+				default:
+				}
+			}
+		}()
+	}
 
 	log.Printf("Release Registry listening on %s", address)
-	err = server.ListenAndServe()
-	if errors.Is(err, http.ErrServerClosed) {
-		return nil
+	serverErrors := make(chan error, 1)
+	go func() {
+		serverErrors <- server.ListenAndServe()
+	}()
+
+	var result error
+	select {
+	case <-signals.Done():
+	case err = <-serverErrors:
+		if !errors.Is(err, http.ErrServerClosed) {
+			result = err
+		}
+	case err = <-workerErrors:
+		result = fmt.Errorf("build worker stopped: %w", err)
 	}
-	return err
+	cancelWorkers()
+	shutdownContext, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	_ = server.Shutdown(shutdownContext)
+	cancel()
+	workers.Wait()
+	if result != nil {
+		return result
+	}
+	return nil
 }
 
 func localRegistryAddress(configured string) (string, error) {

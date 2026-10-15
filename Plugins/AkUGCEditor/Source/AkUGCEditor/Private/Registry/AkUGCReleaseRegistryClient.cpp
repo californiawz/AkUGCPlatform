@@ -5,6 +5,7 @@
 #include "Dom/JsonObject.h"
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
+#include "Pack/AkUGCLogicPackHasher.h"
 #include "Pack/AkUGCLogicPackLoader.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
@@ -540,6 +541,7 @@ namespace AkUGCReleaseRegistryClientPrivate
 				TEXT("Registry release 审核原因字段无效。"));
 		}
 		OutRelease.Revision = static_cast<int64>(Revision);
+		OutRelease.ArtifactSize = static_cast<int64>(ArtifactSize);
 		return true;
 	}
 
@@ -568,16 +570,223 @@ namespace AkUGCReleaseRegistryClientPrivate
 		}
 		return true;
 	}
+
+	bool ParseBuild(
+		const TSharedPtr<FJsonObject>& Object,
+		const FGuid& ExpectedReleaseId,
+		const FGuid& ExpectedProjectId,
+		const FString& ExpectedArtifactSha256,
+		int64 ExpectedArtifactSize,
+		FAkUGCBuildRegistryView& OutBuild,
+		FString& OutError)
+	{
+		if (!ValidateFields(
+				Object,
+				{
+					TEXT("releaseId"),
+					TEXT("projectId"),
+					TEXT("status"),
+					TEXT("attempt"),
+					TEXT("revision"),
+					TEXT("retryable"),
+					TEXT("inputArtifactSha256"),
+					TEXT("createdAt"),
+					TEXT("updatedAt")
+				},
+				{
+					TEXT("outputArtifactSha256"),
+					TEXT("outputArtifactSize"),
+					TEXT("errorCode"),
+					TEXT("startedAt"),
+					TEXT("finishedAt")
+				},
+				TEXT("Registry build"),
+				OutError))
+		{
+			return false;
+		}
+
+		FString ReleaseId;
+		FString ProjectId;
+		double Attempt = -1;
+		double Revision = -1;
+		double OutputArtifactSize = -1;
+		if (!Object->TryGetStringField(TEXT("releaseId"), ReleaseId)
+			|| !Object->TryGetStringField(TEXT("projectId"), ProjectId)
+			|| !Object->TryGetStringField(TEXT("status"), OutBuild.Status)
+			|| !Object->TryGetNumberField(TEXT("attempt"), Attempt)
+			|| !Object->TryGetNumberField(TEXT("revision"), Revision)
+			|| !Object->TryGetBoolField(
+				TEXT("retryable"),
+				OutBuild.bRetryable)
+			|| !Object->TryGetStringField(
+				TEXT("inputArtifactSha256"),
+				OutBuild.InputArtifactSha256)
+			|| !Object->TryGetStringField(
+				TEXT("createdAt"),
+				OutBuild.CreatedAt)
+			|| !Object->TryGetStringField(
+				TEXT("updatedAt"),
+				OutBuild.UpdatedAt)
+			|| !ParseCanonicalGuid(ReleaseId, OutBuild.ReleaseId)
+			|| !ParseCanonicalGuid(ProjectId, OutBuild.ProjectId)
+			|| OutBuild.ReleaseId != ExpectedReleaseId
+			|| OutBuild.ProjectId != ExpectedProjectId
+			|| OutBuild.InputArtifactSha256 != ExpectedArtifactSha256
+			|| !IsLowerHex(OutBuild.InputArtifactSha256, 64)
+			|| ExpectedArtifactSize < 1
+			|| ExpectedArtifactSize > AkUGCInputBudget::MaxLogicPackBytes
+			|| !FMath::IsFinite(Attempt)
+			|| Attempt < 0
+			|| Attempt > 3
+			|| FMath::FloorToDouble(Attempt) != Attempt
+			|| !FMath::IsFinite(Revision)
+			|| Revision < 1
+			|| Revision > MaxJsonSafeInteger
+			|| FMath::FloorToDouble(Revision) != Revision
+			|| !IsTimestamp(OutBuild.CreatedAt)
+			|| !IsTimestamp(OutBuild.UpdatedAt)
+			|| (OutBuild.Status != TEXT("queued")
+				&& OutBuild.Status != TEXT("running")
+				&& OutBuild.Status != TEXT("succeeded")
+				&& OutBuild.Status != TEXT("failed")))
+		{
+			return Fail(
+				OutError,
+				TEXT("Registry build 字段无效或与本地签名制品不一致。"));
+		}
+		OutBuild.Attempt = static_cast<int64>(Attempt);
+		OutBuild.Revision = static_cast<int64>(Revision);
+
+		const auto ReadOptionalString =
+			[&Object](const TCHAR* Name, FString& OutValue)
+			{
+				return !Object->HasField(Name)
+					|| Object->TryGetStringField(Name, OutValue);
+			};
+		if (!ReadOptionalString(
+				TEXT("outputArtifactSha256"),
+				OutBuild.OutputArtifactSha256)
+			|| !ReadOptionalString(
+				TEXT("errorCode"),
+				OutBuild.ErrorCode)
+			|| !ReadOptionalString(
+				TEXT("startedAt"),
+				OutBuild.StartedAt)
+			|| !ReadOptionalString(
+				TEXT("finishedAt"),
+				OutBuild.FinishedAt))
+		{
+			return Fail(
+				OutError,
+				TEXT("Registry build 可选字符串字段无效。"));
+		}
+		if (Object->HasField(TEXT("outputArtifactSize")))
+		{
+			if (!Object->TryGetNumberField(
+					TEXT("outputArtifactSize"),
+					OutputArtifactSize)
+				|| !FMath::IsFinite(OutputArtifactSize)
+				|| OutputArtifactSize < 1
+				|| OutputArtifactSize
+					> AkUGCInputBudget::MaxLogicPackBytes
+				|| FMath::FloorToDouble(OutputArtifactSize)
+					!= OutputArtifactSize)
+			{
+				return Fail(
+					OutError,
+					TEXT("Registry build 输出制品大小无效。"));
+			}
+			OutBuild.OutputArtifactSize =
+				static_cast<int64>(OutputArtifactSize);
+		}
+		for (const FString* Timestamp : {
+			&OutBuild.StartedAt,
+			&OutBuild.FinishedAt})
+		{
+			if (!Timestamp->IsEmpty() && !IsTimestamp(*Timestamp))
+			{
+				return Fail(
+					OutError,
+					TEXT("Registry build 可选时间字段无效。"));
+			}
+		}
+
+		const bool bHasOutputDigest =
+			!OutBuild.OutputArtifactSha256.IsEmpty();
+		const bool bHasOutputSize =
+			Object->HasField(TEXT("outputArtifactSize"));
+		const bool bHasError = !OutBuild.ErrorCode.IsEmpty();
+		const bool bValidError =
+			OutBuild.ErrorCode == TEXT("validation_rejected")
+			|| OutBuild.ErrorCode == TEXT("validator_unavailable")
+			|| OutBuild.ErrorCode == TEXT("artifact_unavailable")
+			|| OutBuild.ErrorCode == TEXT("artifact_corrupt")
+			|| OutBuild.ErrorCode == TEXT("lease_expired");
+		if ((bHasOutputDigest
+				&& !IsLowerHex(OutBuild.OutputArtifactSha256, 64))
+			|| (OutBuild.Status == TEXT("queued")
+				&& (OutBuild.Attempt != 0
+					|| OutBuild.bRetryable
+					|| bHasOutputDigest
+					|| bHasOutputSize
+					|| bHasError
+					|| !OutBuild.StartedAt.IsEmpty()
+					|| !OutBuild.FinishedAt.IsEmpty()))
+			|| (OutBuild.Status == TEXT("running")
+				&& (OutBuild.Attempt < 1
+					|| OutBuild.bRetryable
+					|| bHasOutputDigest
+					|| bHasOutputSize
+					|| bHasError
+					|| OutBuild.StartedAt.IsEmpty()
+					|| !OutBuild.FinishedAt.IsEmpty()))
+			|| (OutBuild.Status == TEXT("succeeded")
+				&& (OutBuild.Attempt < 1
+					|| OutBuild.bRetryable
+					|| OutBuild.OutputArtifactSha256
+						!= ExpectedArtifactSha256
+					|| !bHasOutputSize
+					|| OutBuild.OutputArtifactSize
+						!= ExpectedArtifactSize
+					|| bHasError
+					|| OutBuild.StartedAt.IsEmpty()
+					|| OutBuild.FinishedAt.IsEmpty()))
+			|| (OutBuild.Status == TEXT("failed")
+				&& (OutBuild.Attempt < 1
+					|| bHasOutputDigest
+					|| bHasOutputSize
+					|| !bHasError
+					|| !bValidError
+					|| OutBuild.StartedAt.IsEmpty()
+					|| OutBuild.FinishedAt.IsEmpty())))
+		{
+			return Fail(
+				OutError,
+				TEXT("Registry build 状态与输出、错误或时间字段不一致。"));
+		}
+		return true;
+	}
 }
 
 bool FAkUGCReleaseRegistryClient::ValidateSubmissionArtifact(
 	const FAkUGCWorkEntry& Entry,
 	const FString& SharePath,
 	const FGuid& ExpectedProjectId,
-	FString& OutError)
+	FString& OutError,
+	FString* OutArtifactSha256,
+	int64* OutArtifactSize)
 {
 	using namespace AkUGCReleaseRegistryClientPrivate;
 	OutError.Reset();
+	if (OutArtifactSha256)
+	{
+		OutArtifactSha256->Reset();
+	}
+	if (OutArtifactSize)
+	{
+		*OutArtifactSize = 0;
+	}
 	if (!ExpectedProjectId.IsValid()
 		|| !Entry.ReleaseId.IsValid()
 		|| !IsLowerHex(Entry.TrustedPublicKey, 64)
@@ -591,12 +800,25 @@ bool FAkUGCReleaseRegistryClient::ValidateSubmissionArtifact(
 		return false;
 	}
 	TArray<uint8> Artifact;
-	return ReadArtifact(
+	if (!ReadArtifact(
 		SharePath,
 		Entry,
 		ExpectedProjectId,
 		Artifact,
-		OutError);
+		OutError))
+	{
+		return false;
+	}
+	if (OutArtifactSha256)
+	{
+		*OutArtifactSha256 =
+			FAkUGCLogicPackHasher::Sha256Hex(Artifact);
+	}
+	if (OutArtifactSize)
+	{
+		*OutArtifactSize = Artifact.Num();
+	}
+	return true;
 }
 
 FAkUGCEditorHttpRequestPtr FAkUGCReleaseRegistryClient::StartSubmit(
@@ -690,6 +912,46 @@ FAkUGCEditorHttpRequestPtr FAkUGCReleaseRegistryClient::StartPublish(
 		ReleaseId,
 		EAkUGCEditorHttpMethod::Post,
 		TEXT("/publish"),
+		TimeoutSeconds,
+		Request,
+		OutError);
+	return Request;
+}
+
+FAkUGCEditorHttpRequestPtr FAkUGCReleaseRegistryClient::StartGetBuild(
+	const FString& BaseUrl,
+	const FString& BearerToken,
+	const FGuid& ReleaseId,
+	float TimeoutSeconds,
+	FString& OutError)
+{
+	FAkUGCEditorHttpRequestPtr Request;
+	AkUGCReleaseRegistryClientPrivate::StartCommon(
+		BaseUrl,
+		BearerToken,
+		ReleaseId,
+		EAkUGCEditorHttpMethod::Get,
+		TEXT("/build"),
+		TimeoutSeconds,
+		Request,
+		OutError);
+	return Request;
+}
+
+FAkUGCEditorHttpRequestPtr FAkUGCReleaseRegistryClient::StartRetryBuild(
+	const FString& BaseUrl,
+	const FString& BearerToken,
+	const FGuid& ReleaseId,
+	float TimeoutSeconds,
+	FString& OutError)
+{
+	FAkUGCEditorHttpRequestPtr Request;
+	AkUGCReleaseRegistryClientPrivate::StartCommon(
+		BaseUrl,
+		BearerToken,
+		ReleaseId,
+		EAkUGCEditorHttpMethod::Post,
+		TEXT("/build/retry"),
 		TimeoutSeconds,
 		Request,
 		OutError);
@@ -1080,6 +1342,160 @@ bool FAkUGCReleaseRegistryClient::ParseResponse(
 		return Fail(OutError, TEXT("Registry 发布响应未进入 published 状态。"));
 	}
 	return true;
+}
+
+bool FAkUGCReleaseRegistryClient::ParseBuildResponse(
+	EAkUGCBuildRegistryOperation Operation,
+	const FAkUGCEditorHttpResult& Transport,
+	const FGuid& ExpectedReleaseId,
+	const FGuid& ExpectedProjectId,
+	const FString& ExpectedArtifactSha256,
+	int64 ExpectedArtifactSize,
+	FAkUGCBuildRegistryResponse& OutResponse,
+	FString& OutError)
+{
+	using namespace AkUGCReleaseRegistryClientPrivate;
+	OutResponse = {};
+	OutError.Reset();
+	if (!ExpectedReleaseId.IsValid()
+		|| !ExpectedProjectId.IsValid()
+		|| !IsLowerHex(ExpectedArtifactSha256, 64)
+		|| ExpectedArtifactSize < 1
+		|| ExpectedArtifactSize > AkUGCInputBudget::MaxLogicPackBytes)
+	{
+		return Fail(
+			OutError,
+			TEXT("Registry build 本地绑定上下文无效。"));
+	}
+	if (Transport.bTooLarge)
+	{
+		return Fail(
+			OutError,
+			TEXT("Registry build 响应超过 64 KiB，已在接收时中止。"));
+	}
+	if (Transport.bHeadersTooLarge)
+	{
+		return Fail(
+			OutError,
+			TEXT("Registry build 响应 Header 超过预算。"));
+	}
+	if (Transport.bTimedOut)
+	{
+		return Fail(OutError, TEXT("Registry build 请求超时。"));
+	}
+	if (Transport.bCancelled)
+	{
+		return Fail(
+			OutError,
+			TEXT("Registry build 请求已取消；服务端状态可能已变化，请刷新确认。"));
+	}
+	if (Transport.NativeCode != 0)
+	{
+		return Fail(
+			OutError,
+			FString::Printf(
+				TEXT("Registry build 传输失败（传输码 %d）。"),
+				Transport.NativeCode));
+	}
+	if (Transport.StatusCode != 200)
+	{
+		return Fail(
+			OutError,
+			FString::Printf(
+				TEXT("Registry build 请求被拒绝（HTTP %d）。"),
+				Transport.StatusCode));
+	}
+	if (Transport.Body.IsEmpty()
+		|| Transport.Body.Num() > MaxControlResponseBytes)
+	{
+		return Fail(
+			OutError,
+			TEXT("Registry build 响应为空或超过控制面预算。"));
+	}
+
+	FString Json;
+	FFileHelper::BufferToString(
+		Json,
+		Transport.Body.GetData(),
+		Transport.Body.Num());
+	FTCHARToUTF8 RoundTrip(*Json);
+	if (RoundTrip.Length() != Transport.Body.Num()
+		|| FMemory::Memcmp(
+			RoundTrip.Get(),
+			Transport.Body.GetData(),
+			Transport.Body.Num()) != 0)
+	{
+		return Fail(
+			OutError,
+			TEXT("Registry build 响应不是规范 UTF-8 文本。"));
+	}
+	if (!AkUGCInputBudget::ValidateJson(
+			Json,
+			MaxControlResponseBytes,
+			TEXT("Registry build response"),
+			&OutError))
+	{
+		return false;
+	}
+	TSharedPtr<FJsonObject> Root;
+	if (!FJsonSerializer::Deserialize(
+			TJsonReaderFactory<>::Create(Json),
+			Root)
+		|| !Root.IsValid())
+	{
+		return Fail(
+			OutError,
+			TEXT("Registry build 响应不是 JSON 对象。"));
+	}
+
+	const TSharedPtr<FJsonObject>* BuildObject = nullptr;
+	switch (Operation)
+	{
+	case EAkUGCBuildRegistryOperation::Get:
+		if (!ValidateFields(
+				Root,
+				{TEXT("build")},
+				{},
+				TEXT("Registry get build response"),
+				OutError)
+			|| !Root->TryGetObjectField(TEXT("build"), BuildObject))
+		{
+			return Fail(
+				OutError,
+				TEXT("Registry build 状态响应字段无效。"));
+		}
+		break;
+	case EAkUGCBuildRegistryOperation::Retry:
+		if (!ValidateFields(
+				Root,
+				{TEXT("changed"), TEXT("build")},
+				{},
+				TEXT("Registry retry build response"),
+				OutError)
+			|| !Root->TryGetBoolField(
+				TEXT("changed"),
+				OutResponse.bChanged)
+			|| !Root->TryGetObjectField(TEXT("build"), BuildObject))
+		{
+			return Fail(
+				OutError,
+				TEXT("Registry build 重试响应字段无效。"));
+		}
+		break;
+	default:
+		return Fail(
+			OutError,
+			TEXT("Registry build 操作类型无效。"));
+	}
+	return BuildObject
+		&& ParseBuild(
+			*BuildObject,
+			ExpectedReleaseId,
+			ExpectedProjectId,
+			ExpectedArtifactSha256,
+			ExpectedArtifactSize,
+			OutResponse.Build,
+			OutError);
 }
 
 bool FAkUGCReleaseRegistryClient::ParseProjectResponse(

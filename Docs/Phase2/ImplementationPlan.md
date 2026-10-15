@@ -305,4 +305,32 @@
 - 本切片不引入构建任务、对象存储、DS 会话固定版本/回滚、运营观测或 Asset Pack。
 - 四台真实物理设备验收继续延期；Owner、Editor、Viewer、Reviewer、项目外 Player 与 PostgreSQL 仍在单机隔离环境验证。
 
+### P20.4：异步可信构建与内容寻址制品分发
+
+**目标**：把耗时的 Unreal 深度验包从 Release 提交请求中拆出为可审计、可恢复的异步构建任务，并将不可变 `.akugc` 从 PostgreSQL `bytea` 迁到内容寻址 ArtifactStore；不伪造逐作品 Cook，也不改变 Creator 签名字节或 Player 本地信任边界。
+
+**实现**：
+
+- 明确 `.akugc` 已是 Creator 构建和签名的最终运行制品。`POST /v1/releases` 只在请求内完成有界外层解析、Manifest Ed25519 签名、发布公钥和 Project ACL 检查，再写入内容寻址仓储，并在同一事务创建不可变 Release 与唯一 `queued` 构建任务。
+- 构建状态固定为 `queued|running|succeeded|failed`。后台 Worker 以数据库租约领取任务，从 ArtifactStore 重新核对大小与 SHA-256，再调用既有 `AkUGCPackTool -ValidateWork` 深度检查 Document、ContentHash、Logic IR 和能力白名单；成功输出必须与输入摘要、大小和 Release 元数据完全一致，服务端不重编码、不重新签名。
+- Worker 崩溃租约最多自动回收三次；验证拒绝为不可重试失败，验证器或制品依赖暂时不可用为可重试失败。Project Owner/Editor 可显式把 `failed + retryable` 恢复为 `queued`；领取、完成、失败、回收和重试都增加 Build Revision 并追加不可变审计。
+- 新增构建查询与重试接口。只有独立 Reviewer 或项目成员可查看内部构建状态，只有 Creator Owner/Editor 可重试；项目外 Player 即使作品公开也不能读取构建诊断。审核、发布、作品页选择和下载分别要求 Build `succeeded`，不能依赖前序步骤代替当前门禁。
+- 新增内存与本地文件 ArtifactStore。本地实现按 SHA-256 分层寻址，限制 1..16 MiB，使用原子写入，已有对象及每次读取都重新验证普通文件、大小和摘要；路径完全由规范摘要生成。PostgreSQL 模式显式要求 `AKUGC_ARTIFACT_ROOT`，Player 下载 URL 与响应契约保持不变，不引入对象重定向。
+- PostgreSQL `004` 迁移为历史 Release 回填 `succeeded` 构建，并允许物理 `artifact` 仅从旧字节单向清空为 NULL。启动迁移必须先把旧 `bytea` 原样写入并验证 ArtifactStore，再条件清空数据库副本并记录审计；任一步失败都保留旧字节并拒绝服务启动，崩溃重启保持幂等。
+- Creator Studio 提交或刷新 Release 后继续读取构建状态，严格绑定本地签名制品的 ReleaseId、ProjectId、ArtifactSHA256 和 ArtifactSize；显示排队、运行、成功和规范错误码，为可重试失败提供显式重新排队。只有精确绑定的成功构建与 approved Release 才启用发布。
+- Registry 端到端验收扩展异步状态轮询、构建状态权限、并发单任务、租约回收/迟到完成、可重试与终态失败、旧 `bytea` 迁移、CAS 篡改拒绝、发布门禁、Creator 真实 retry 链，以及 Player 从同一下载端点独立验签并完成一局。
+
+**已验证（2026-10-15）**：
+
+- `gofmt`、`go vet` 和 `go test -count=1 ./...` 通过。真实 PostgreSQL 16 使用临时实例 `127.0.0.1:55433` 与按测试隔离的 schema，覆盖历史 `bytea` 先验证再清空、迁移审计幂等、损坏字节保留，以及过期 Worker 不能覆盖后继租约。
+- `Tools/Tests/verify_release_registry.py` 完成本机闭环。证据位于 `Saved/P20_4_Registry_Final1/result.json`：8 路并发提交为 1 个 `201` 和 7 个 `200`；可信构建从 `running` 进入 `succeeded`，输出摘要和大小与原始签名字节一致；Reviewer 可读构建状态，项目外主体返回 404；内容寻址对象路径与字节精确匹配，人为篡改后下载返回 503；同一 ReleaseId 的文档篡改在进入构建前返回 409；Packaged Player 按作品页下载后以独立公钥本地验签并完成一局，错误 token、错误公钥、未发布、已撤回、重定向和超限下载均被拒绝。
+- 提交 HTTP 响应保持只有 `created` 与 `release`。构建状态由独立 `GET /build` 读取，避免真实 Registry 被 Creator 严格解析器拒绝。
+- 四台物理设备未参与。本轮没有重跑 Editor 全量自动化；Creator 面板协议由既有 Editor 测试覆盖，本轮真实链路验收的是 Registry、PostgreSQL、ArtifactStore 和 Packaged Player。
+
+**验收边界**：
+
+- P20.4 首个实现是本机内容寻址文件仓储接口，不等同于 S3、CDN、预签名 URL 或公网多节点部署；远端对象存储适配必须保持相同摘要、不变性和下载信任边界。
+- 构建任务不生成平台 Client/Server 包、不执行逐作品 Cook，也不承担 DS 会话编排。DS 固定 Release、会话版本锁定和回滚是下一独立切片。
+- 四台真实物理设备验收继续延期；构建 Worker、Owner、Editor、Reviewer、Player、PostgreSQL 和 ArtifactStore 仍在单机隔离环境验证。
+
 玩家 Asset Pack 白名单试点放在 Release Registry 稳定之后，避免同时扩大网络、内容与沙箱攻击面。

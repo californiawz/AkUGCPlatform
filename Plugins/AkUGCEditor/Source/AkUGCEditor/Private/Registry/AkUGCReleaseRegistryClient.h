@@ -11,6 +11,12 @@ enum class EAkUGCReleaseRegistryOperation : uint8
 	Publish
 };
 
+enum class EAkUGCBuildRegistryOperation : uint8
+{
+	Get,
+	Retry
+};
+
 enum class EAkUGCProjectRegistryOperation : uint8
 {
 	CreateProject,
@@ -33,6 +39,7 @@ struct FAkUGCReleaseRegistryView
 	FString ContentHash;
 	FString ArtifactSha256;
 	FString SubmittedAt;
+	int64 ArtifactSize = 0;
 	int64 Revision = 0;
 };
 
@@ -41,6 +48,30 @@ struct FAkUGCReleaseRegistryResponse
 	bool bCreated = false;
 	bool bChanged = false;
 	FAkUGCReleaseRegistryView Release;
+};
+
+struct FAkUGCBuildRegistryView
+{
+	FGuid ReleaseId;
+	FGuid ProjectId;
+	FString Status;
+	FString InputArtifactSha256;
+	FString OutputArtifactSha256;
+	FString ErrorCode;
+	FString CreatedAt;
+	FString StartedAt;
+	FString FinishedAt;
+	FString UpdatedAt;
+	int64 Attempt = 0;
+	int64 Revision = 0;
+	int64 OutputArtifactSize = 0;
+	bool bRetryable = false;
+};
+
+struct FAkUGCBuildRegistryResponse
+{
+	bool bChanged = false;
+	FAkUGCBuildRegistryView Build;
 };
 
 struct FAkUGCRegistryProjectView
@@ -86,7 +117,9 @@ public:
 		const FAkUGCWorkEntry& Entry,
 		const FString& SharePath,
 		const FGuid& ExpectedProjectId,
-		FString& OutError);
+		FString& OutError,
+		FString* OutArtifactSha256 = nullptr,
+		int64* OutArtifactSize = nullptr);
 
 	static FAkUGCEditorHttpRequestPtr StartSubmit(
 		const FString& BaseUrl,
@@ -105,6 +138,20 @@ public:
 		FString& OutError);
 
 	static FAkUGCEditorHttpRequestPtr StartPublish(
+		const FString& BaseUrl,
+		const FString& BearerToken,
+		const FGuid& ReleaseId,
+		float TimeoutSeconds,
+		FString& OutError);
+
+	static FAkUGCEditorHttpRequestPtr StartGetBuild(
+		const FString& BaseUrl,
+		const FString& BearerToken,
+		const FGuid& ReleaseId,
+		float TimeoutSeconds,
+		FString& OutError);
+
+	static FAkUGCEditorHttpRequestPtr StartRetryBuild(
 		const FString& BaseUrl,
 		const FString& BearerToken,
 		const FGuid& ReleaseId,
@@ -172,6 +219,16 @@ public:
 		const FAkUGCWorkEntry& ExpectedEntry,
 		const FGuid& ExpectedProjectId,
 		FAkUGCReleaseRegistryResponse& OutResponse,
+		FString& OutError);
+
+	static bool ParseBuildResponse(
+		EAkUGCBuildRegistryOperation Operation,
+		const FAkUGCEditorHttpResult& Transport,
+		const FGuid& ExpectedReleaseId,
+		const FGuid& ExpectedProjectId,
+		const FString& ExpectedArtifactSha256,
+		int64 ExpectedArtifactSize,
+		FAkUGCBuildRegistryResponse& OutResponse,
 		FString& OutError);
 
 	static bool ParseProjectResponse(

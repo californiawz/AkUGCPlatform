@@ -170,6 +170,97 @@ type Release struct {
 	Artifact           []byte     `json:"-"`
 }
 
+type BuildStatus string
+
+const (
+	BuildStatusQueued    BuildStatus = "queued"
+	BuildStatusRunning   BuildStatus = "running"
+	BuildStatusSucceeded BuildStatus = "succeeded"
+	BuildStatusFailed    BuildStatus = "failed"
+)
+
+func (s BuildStatus) Valid() bool {
+	switch s {
+	case BuildStatusQueued, BuildStatusRunning, BuildStatusSucceeded, BuildStatusFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+type BuildErrorCode string
+
+const (
+	BuildErrorValidationRejected   BuildErrorCode = "validation_rejected"
+	BuildErrorValidatorUnavailable BuildErrorCode = "validator_unavailable"
+	BuildErrorArtifactUnavailable  BuildErrorCode = "artifact_unavailable"
+	BuildErrorArtifactCorrupt      BuildErrorCode = "artifact_corrupt"
+	BuildErrorLeaseExpired         BuildErrorCode = "lease_expired"
+)
+
+func (c BuildErrorCode) Valid() bool {
+	switch c {
+	case BuildErrorValidationRejected,
+		BuildErrorValidatorUnavailable,
+		BuildErrorArtifactUnavailable,
+		BuildErrorArtifactCorrupt,
+		BuildErrorLeaseExpired:
+		return true
+	default:
+		return false
+	}
+}
+
+func (c BuildErrorCode) IsRetryable() bool {
+	return c.Valid() && c != BuildErrorValidationRejected
+}
+
+type BuildJob struct {
+	ReleaseID            string         `json:"releaseId"`
+	ProjectID            string         `json:"projectId"`
+	Status               BuildStatus    `json:"status"`
+	Attempt              int            `json:"attempt"`
+	Revision             int64          `json:"revision"`
+	Retryable            bool           `json:"retryable"`
+	InputArtifactSHA256  string         `json:"inputArtifactSha256"`
+	OutputArtifactSHA256 string         `json:"outputArtifactSha256,omitempty"`
+	OutputArtifactSize   int64          `json:"outputArtifactSize,omitempty"`
+	ErrorCode            BuildErrorCode `json:"errorCode,omitempty"`
+	CreatedAt            time.Time      `json:"createdAt"`
+	StartedAt            *time.Time     `json:"startedAt,omitempty"`
+	FinishedAt           *time.Time     `json:"finishedAt,omitempty"`
+	UpdatedAt            time.Time      `json:"updatedAt"`
+	leaseOwner           string
+	leaseDeadline        *time.Time
+}
+
+func (b BuildJob) clone() BuildJob {
+	if b.StartedAt != nil {
+		value := *b.StartedAt
+		b.StartedAt = &value
+	}
+	if b.FinishedAt != nil {
+		value := *b.FinishedAt
+		b.FinishedAt = &value
+	}
+	if b.leaseDeadline != nil {
+		value := *b.leaseDeadline
+		b.leaseDeadline = &value
+	}
+	return b
+}
+
+type BuildJobEvent struct {
+	ReleaseID string
+	Actor     string
+	From      BuildStatus
+	To        BuildStatus
+	Attempt   int
+	Revision  int64
+	ErrorCode BuildErrorCode
+	At        time.Time
+}
+
 type WorkPage struct {
 	ProjectID     string            `json:"projectId"`
 	DisplayName   string            `json:"displayName"`
@@ -188,7 +279,6 @@ type Submission struct {
 	SubmitterSubject string
 	IdempotencyKey   string
 	Metadata         PackMetadata
-	Artifact         []byte
 	SubmittedAt      time.Time
 }
 
@@ -202,10 +292,11 @@ type Transition struct {
 }
 
 var (
-	ErrUnauthenticated = errors.New("unauthenticated")
-	ErrForbidden       = errors.New("forbidden")
-	ErrInvalidInput    = errors.New("invalid input")
-	ErrNotFound        = errors.New("not found")
-	ErrConflict        = errors.New("conflict")
-	ErrUnavailable     = errors.New("unavailable")
+	ErrUnauthenticated  = errors.New("unauthenticated")
+	ErrForbidden        = errors.New("forbidden")
+	ErrInvalidInput     = errors.New("invalid input")
+	ErrNotFound         = errors.New("not found")
+	ErrConflict         = errors.New("conflict")
+	ErrUnavailable      = errors.New("unavailable")
+	ErrNoBuildAvailable = errors.New("no build available")
 )

@@ -1045,6 +1045,38 @@ def _run_verification(args, root, output, user_dir):
                 "updatedAt": f"2026-10-15T06:0{revision - 1}:00Z",
             }
 
+        def build(self):
+            status = registry_release["build_status"]
+            value = {
+                "releaseId": registry_release["release_id"],
+                "projectId": registry_release["project_id"],
+                "status": status,
+                "attempt": 0 if status == "queued" else 1,
+                "revision": registry_release["build_revision"],
+                "retryable": status == "failed",
+                "inputArtifactSha256": registry_release["artifact_sha256"],
+                "createdAt": "2026-10-15T06:00:00Z",
+                "updatedAt": "2026-10-15T06:00:02Z",
+            }
+            if status == "failed":
+                value.update(
+                    {
+                        "errorCode": "validator_unavailable",
+                        "startedAt": "2026-10-15T06:00:01Z",
+                        "finishedAt": "2026-10-15T06:00:02Z",
+                    }
+                )
+            elif status == "succeeded":
+                value.update(
+                    {
+                        "outputArtifactSha256": registry_release["artifact_sha256"],
+                        "outputArtifactSize": registry_release["artifact_size"],
+                        "startedAt": "2026-10-15T06:00:01Z",
+                        "finishedAt": "2026-10-15T06:00:02Z",
+                    }
+                )
+            return value
+
         def project(self):
             revision = registry_project["revision"]
             return {
@@ -1271,6 +1303,8 @@ def _run_verification(args, root, output, user_dir):
                         "artifact_size": len(artifact),
                         "status": "submitted",
                         "revision": 1,
+                        "build_status": "failed",
+                        "build_revision": 2,
                     }
                 )
                 if (
@@ -1288,6 +1322,26 @@ def _run_verification(args, root, output, user_dir):
             expected_path = (
                 f"/v1/releases/{registry_release.get('release_id', '')}"
             )
+            if (
+                self.command == "POST"
+                and self.path == expected_path + "/build/retry"
+                and size == 0
+            ):
+                changed = registry_release.get("build_status") == "failed"
+                if changed:
+                    registry_release["build_status"] = "queued"
+                    registry_release["build_revision"] += 1
+                self.send_json(
+                    200,
+                    {"changed": changed, "build": self.build()},
+                )
+                return
+            if self.command == "GET" and self.path == expected_path + "/build":
+                if registry_release.get("build_status") == "queued":
+                    registry_release["build_status"] = "succeeded"
+                    registry_release["build_revision"] += 2
+                self.send_json(200, {"build": self.build()})
+                return
             if self.command == "GET" and self.path == expected_path:
                 registry_release["status"] = "approved"
                 registry_release["revision"] = 2
@@ -1460,7 +1514,10 @@ def _run_verification(args, root, output, user_dir):
         ("GET", registry_project_path),
         ("POST", "/v1/projects"),
         ("POST", "/v1/releases"),
+        ("GET", registry_release_path + "/build"),
+        ("POST", registry_release_path + "/build/retry"),
         ("GET", registry_release_path),
+        ("GET", registry_release_path + "/build"),
         ("GET", registry_project_path),
         ("GET", registry_project_path + "/members"),
         ("GET", registry_project_path + "/versions?limit=100"),
@@ -1481,7 +1538,7 @@ def _run_verification(args, root, output, user_dir):
     registry_protocol_passed = (
         not args.all_tests
         or (
-            "[AkUGCReleaseRegistryHTTP] Passed Operations=20 LoopbackOnly=1 Visibility=public" in text
+            "[AkUGCReleaseRegistryHTTP] Passed Operations=23 LoopbackOnly=1 Visibility=public Build=succeeded BuildRetry=1" in text
             and [
                 (event["method"], event["path"])
                 for event in registry_events
@@ -1496,10 +1553,11 @@ def _run_verification(args, root, output, user_dir):
                 "akugc-release-"
             )
             and registry_events[2]["content_length"] > 0
-            and registry_events[7]["content_type"] == "application/json"
-            and registry_events[7]["content_length"] > 0
-            and registry_events[11]["content_length"] == 0
-            and registry_events[15]["content_length"] == 0
+            and registry_events[4]["content_length"] == 0
+            and registry_events[10]["content_type"] == "application/json"
+            and registry_events[10]["content_length"] > 0
+            and registry_events[14]["content_length"] == 0
+            and registry_events[18]["content_length"] == 0
             and all(event["authorization_valid"] for event in registry_events)
         )
     )

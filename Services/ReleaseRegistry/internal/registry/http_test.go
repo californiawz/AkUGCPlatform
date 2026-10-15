@@ -2,6 +2,7 @@ package registry
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -36,6 +37,7 @@ func TestHTTPLifecycleAndPublishedOnlyDownload(t *testing.T) {
 	if retry.Code != http.StatusOK {
 		t.Fatalf("retry status = %d body=%s", retry.Code, retry.Body.String())
 	}
+	handler.runBuild(t)
 
 	releasePath := "/v1/releases/71111111-2222-3333-4444-555555555555"
 	beforePublish := performRequest(handler, http.MethodGet, releasePath+"/download", nil, "player-token", nil)
@@ -249,6 +251,7 @@ func TestHTTPProjectCollaboratorsAndVersionListing(t *testing.T) {
 	if submitted.Code != http.StatusCreated {
 		t.Fatalf("editor submit status = %d body=%s", submitted.Code, submitted.Body.String())
 	}
+	handler.runBuild(t)
 	var submission struct {
 		Release Release `json:"release"`
 	}
@@ -359,7 +362,119 @@ func TestHTTPProjectCollaboratorsAndVersionListing(t *testing.T) {
 	}
 }
 
-func newTestHTTPHandler(t *testing.T, publicKey string) http.Handler {
+func TestHTTPBuildMetadataACLAndRetry(t *testing.T) {
+	artifact, _, publicKey := signedArtifact(t, "83111111-2222-3333-4444-555555555555")
+	handler := newTestHTTPHandler(t, publicKey)
+	createHTTPTestProject(t, handler)
+	projectPath := "/v1/projects/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	viewer := performRequest(
+		handler,
+		http.MethodPut,
+		projectPath+"/members/project-viewer",
+		[]byte(`{"role":"viewer"}`),
+		"creator-token",
+		map[string]string{"Content-Type": "application/json"},
+	)
+	if viewer.Code != http.StatusOK {
+		t.Fatalf("add viewer status = %d body=%s", viewer.Code, viewer.Body.String())
+	}
+	submitted := performRequest(
+		handler,
+		http.MethodPost,
+		"/v1/releases",
+		artifact,
+		"creator-token",
+		map[string]string{
+			"Content-Type":    "application/vnd.akugc+json",
+			"Idempotency-Key": "http-build-submit-83111111",
+		},
+	)
+	if submitted.Code != http.StatusCreated {
+		t.Fatalf("submit status = %d body=%s", submitted.Code, submitted.Body.String())
+	}
+	var submission map[string]json.RawMessage
+	decodeResponse(t, submitted, &submission)
+	if _, embedded := submission["build"]; embedded || submission["created"] == nil || submission["release"] == nil {
+		t.Fatalf("submit response must stay limited to created and release: %s", submitted.Body.String())
+	}
+	buildPath := "/v1/releases/83111111-2222-3333-4444-555555555555/build"
+	queued := performRequest(handler, http.MethodGet, buildPath, nil, "creator-token", nil)
+	if queued.Code != http.StatusOK {
+		t.Fatalf("queued build status = %d body=%s", queued.Code, queued.Body.String())
+	}
+	var queuedBuild struct {
+		Build BuildJob `json:"build"`
+	}
+	decodeResponse(t, queued, &queuedBuild)
+	if queuedBuild.Build.Status != BuildStatusQueued || queuedBuild.Build.Attempt != 0 {
+		t.Fatalf("queued build = %+v", queuedBuild.Build)
+	}
+	unavailable := packVerifierFunc(func(
+		context.Context,
+		[]byte,
+		string,
+	) (PackMetadata, error) {
+		return PackMetadata{}, ErrUnavailable
+	})
+	handler.runBuildWith(t, unavailable)
+
+	for _, token := range []string{"creator-token", "reviewer-token", "viewer-token"} {
+		response := performRequest(handler, http.MethodGet, buildPath, nil, token, nil)
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s build status = %d body=%s", token, response.Code, response.Body.String())
+		}
+	}
+	for _, token := range []string{"player-token", "outsider-token"} {
+		response := performRequest(handler, http.MethodGet, buildPath, nil, token, nil)
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("%s hidden build status = %d body=%s", token, response.Code, response.Body.String())
+		}
+	}
+	viewerRetry := performRequest(handler, http.MethodPost, buildPath+"/retry", nil, "viewer-token", nil)
+	if viewerRetry.Code != http.StatusForbidden {
+		t.Fatalf("viewer retry status = %d body=%s", viewerRetry.Code, viewerRetry.Body.String())
+	}
+	outsiderRetry := performRequest(handler, http.MethodPost, buildPath+"/retry", nil, "player-token", nil)
+	if outsiderRetry.Code != http.StatusNotFound {
+		t.Fatalf("outsider retry status = %d body=%s", outsiderRetry.Code, outsiderRetry.Body.String())
+	}
+	nonempty := performRequest(handler, http.MethodPost, buildPath+"/retry", []byte(`{}`), "creator-token", nil)
+	if nonempty.Code != http.StatusBadRequest {
+		t.Fatalf("nonempty retry status = %d body=%s", nonempty.Code, nonempty.Body.String())
+	}
+	retried := performRequest(handler, http.MethodPost, buildPath+"/retry", nil, "creator-token", nil)
+	if retried.Code != http.StatusOK {
+		t.Fatalf("owner retry status = %d body=%s", retried.Code, retried.Body.String())
+	}
+	var retryResponse struct {
+		Changed bool     `json:"changed"`
+		Build   BuildJob `json:"build"`
+	}
+	decodeResponse(t, retried, &retryResponse)
+	if !retryResponse.Changed ||
+		retryResponse.Build.Status != BuildStatusQueued ||
+		retryResponse.Build.Attempt != 0 {
+		t.Fatalf("retry response = %+v", retryResponse)
+	}
+}
+
+type testHTTPHandler struct {
+	http.Handler
+	store     *MemoryStore
+	artifacts *MemoryArtifactStore
+}
+
+func (h *testHTTPHandler) runBuild(t *testing.T) {
+	t.Helper()
+	runMemoryBuild(t, h.store, h.artifacts, acceptingVerifier{})
+}
+
+func (h *testHTTPHandler) runBuildWith(t *testing.T, verifier PackVerifier) {
+	t.Helper()
+	runMemoryBuild(t, h.store, h.artifacts, verifier)
+}
+
+func newTestHTTPHandler(t *testing.T, publicKey string) *testHTTPHandler {
 	t.Helper()
 	authenticator, err := NewStaticAuthenticator(AuthConfig{
 		Principals: []AuthPrincipalConfig{
@@ -400,10 +515,13 @@ func newTestHTTPHandler(t *testing.T, publicKey string) http.Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return NewHTTPHandler(
-		NewService(NewMemoryStore(), acceptingVerifier{}, nil),
-		authenticator,
-	)
+	store := NewMemoryStore()
+	artifacts := NewMemoryArtifactStore()
+	return &testHTTPHandler{
+		Handler:   NewHTTPHandler(NewService(store, artifacts, nil), authenticator),
+		store:     store,
+		artifacts: artifacts,
+	}
 }
 
 func createHTTPTestProject(t *testing.T, handler http.Handler) {

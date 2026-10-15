@@ -2,30 +2,29 @@ package registry
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"regexp"
 	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
-
-	"golang.org/x/sync/singleflight"
 )
 
 var idempotencyKeyPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{16,128}$`)
 
 type Service struct {
-	store       Store
-	verifier    PackVerifier
-	now         func() time.Time
-	validations singleflight.Group
+	store     Store
+	artifacts ArtifactStore
+	now       func() time.Time
 }
 
-func NewService(store Store, verifier PackVerifier, now func() time.Time) *Service {
+func NewService(store Store, artifacts ArtifactStore, now func() time.Time) *Service {
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
-	return &Service{store: store, verifier: verifier, now: now}
+	return &Service{store: store, artifacts: artifacts, now: now}
 }
 
 func (s *Service) CreateProject(
@@ -265,22 +264,22 @@ func (s *Service) Submit(
 	principal Principal,
 	idempotencyKey string,
 	artifact []byte,
-) (Release, bool, error) {
+) (Release, BuildJob, bool, error) {
 	if principal.Subject == "" {
-		return Release{}, false, ErrUnauthenticated
+		return Release{}, BuildJob{}, false, ErrUnauthenticated
 	}
 	if !principal.HasRole(RoleCreator) {
-		return Release{}, false, ErrForbidden
+		return Release{}, BuildJob{}, false, ErrForbidden
 	}
 	if !idempotencyKeyPattern.MatchString(idempotencyKey) {
-		return Release{}, false, fmt.Errorf("%w: Idempotency-Key must be 16..128 safe ASCII characters", ErrInvalidInput)
+		return Release{}, BuildJob{}, false, fmt.Errorf("%w: Idempotency-Key must be 16..128 safe ASCII characters", ErrInvalidInput)
 	}
 	envelope, err := InspectAndVerifyEnvelope(artifact)
 	if err != nil {
-		return Release{}, false, err
+		return Release{}, BuildJob{}, false, err
 	}
 	if !principal.AllowsPublisherKey(envelope.PublisherPublicKey) {
-		return Release{}, false, fmt.Errorf("%w: publisher key is not registered to this creator", ErrForbidden)
+		return Release{}, BuildJob{}, false, fmt.Errorf("%w: publisher key is not registered to this creator", ErrForbidden)
 	}
 	projectRole, member, err := s.store.GetProjectRole(
 		ctx,
@@ -288,34 +287,92 @@ func (s *Service) Submit(
 		principal.Subject,
 	)
 	if err != nil {
-		return Release{}, false, err
+		return Release{}, BuildJob{}, false, err
 	}
 	if !member || (projectRole != ProjectRoleOwner && projectRole != ProjectRoleEditor) {
-		return Release{}, false, fmt.Errorf("%w: creator cannot submit to this project", ErrForbidden)
+		return Release{}, BuildJob{}, false, fmt.Errorf("%w: creator cannot submit to this project", ErrForbidden)
 	}
-	if s.verifier == nil {
-		return Release{}, false, fmt.Errorf("%w: pack verifier is not configured", ErrUnavailable)
+	if s.artifacts == nil {
+		return Release{}, BuildJob{}, false, fmt.Errorf("%w: artifact store is not configured", ErrUnavailable)
 	}
-	validationKey := principal.Subject + "\n" + idempotencyKey + "\n" + envelope.ArtifactSHA256
-	verified, err, _ := s.validations.Do(validationKey, func() (any, error) {
-		return s.verifier.Verify(ctx, artifact, envelope.PublisherPublicKey)
-	})
-	if err != nil {
-		return Release{}, false, err
-	}
-	metadata, ok := verified.(PackMetadata)
-	if !ok {
-		return Release{}, false, fmt.Errorf("%w: pack verifier returned an invalid result", ErrUnavailable)
-	}
-	if metadata != envelope {
-		return Release{}, false, fmt.Errorf("%w: verifier metadata mismatch", ErrInvalidInput)
+	if err := s.artifacts.Put(ctx, envelope.ArtifactSHA256, artifact); err != nil {
+		return Release{}, BuildJob{}, false, err
 	}
 	return s.store.Submit(ctx, Submission{
 		SubmitterSubject: principal.Subject,
 		IdempotencyKey:   idempotencyKey,
-		Metadata:         metadata,
-		Artifact:         append([]byte(nil), artifact...),
+		Metadata:         envelope,
 		SubmittedAt:      s.now(),
+	})
+}
+
+func (s *Service) GetBuild(
+	ctx context.Context,
+	principal Principal,
+	releaseID string,
+) (BuildJob, error) {
+	if principal.Subject == "" {
+		return BuildJob{}, ErrUnauthenticated
+	}
+	canonicalID, err := canonicalUUID(releaseID, true)
+	if err != nil {
+		return BuildJob{}, fmt.Errorf("%w: invalid release ID", ErrInvalidInput)
+	}
+	release, err := s.store.Get(ctx, canonicalID)
+	if err != nil {
+		return BuildJob{}, err
+	}
+	if !principal.HasRole(RoleReviewer) {
+		_, member, roleErr := s.store.GetProjectRole(
+			ctx,
+			release.ProjectID,
+			principal.Subject,
+		)
+		if roleErr != nil {
+			return BuildJob{}, roleErr
+		}
+		if !member {
+			return BuildJob{}, ErrNotFound
+		}
+	}
+	return s.store.GetBuild(ctx, canonicalID)
+}
+
+func (s *Service) RetryBuild(
+	ctx context.Context,
+	principal Principal,
+	releaseID string,
+) (BuildJob, bool, error) {
+	if principal.Subject == "" {
+		return BuildJob{}, false, ErrUnauthenticated
+	}
+	canonicalID, err := canonicalUUID(releaseID, true)
+	if err != nil {
+		return BuildJob{}, false, fmt.Errorf("%w: invalid release ID", ErrInvalidInput)
+	}
+	release, err := s.store.Get(ctx, canonicalID)
+	if err != nil {
+		return BuildJob{}, false, err
+	}
+	role, member, err := s.store.GetProjectRole(
+		ctx,
+		release.ProjectID,
+		principal.Subject,
+	)
+	if err != nil {
+		return BuildJob{}, false, err
+	}
+	if !member {
+		return BuildJob{}, false, ErrNotFound
+	}
+	if !principal.HasRole(RoleCreator) ||
+		(role != ProjectRoleOwner && role != ProjectRoleEditor) {
+		return BuildJob{}, false, ErrForbidden
+	}
+	return s.store.RetryBuild(ctx, RetryBuildRequest{
+		ReleaseID: canonicalID,
+		Actor:     principal.Subject,
+		At:        s.now(),
 	})
 }
 
@@ -358,6 +415,9 @@ func (s *Service) Review(
 		return Release{}, false, projectErr
 	} else if member {
 		return Release{}, false, fmt.Errorf("%w: project members cannot review their project", ErrForbidden)
+	}
+	if err := s.requireSucceededBuild(ctx, canonicalID); err != nil {
+		return Release{}, false, err
 	}
 	return s.store.Transition(ctx, TransitionRequest{
 		ReleaseID: canonicalID,
@@ -428,6 +488,11 @@ func (s *Service) ownerTransition(
 	if current.OwnerSubject != principal.Subject {
 		return Release{}, false, ErrForbidden
 	}
+	if target == StatusPublished {
+		if err := s.requireSucceededBuild(ctx, canonicalID); err != nil {
+			return Release{}, false, err
+		}
+	}
 	return s.store.Transition(ctx, TransitionRequest{
 		ReleaseID: canonicalID,
 		Actor:     principal.Subject,
@@ -474,6 +539,9 @@ func (s *Service) Get(
 			return Release{}, projectErr
 		}
 		if project.Visibility == ProjectVisibilityPublic {
+			if err := s.requireSucceededBuild(ctx, canonicalID); err != nil {
+				return Release{}, ErrNotFound
+			}
 			release.Artifact = nil
 			return release, nil
 		}
@@ -503,6 +571,9 @@ func (s *Service) Download(
 	if release.Status != StatusPublished {
 		return Release{}, ErrNotFound
 	}
+	if err := s.requireSucceededBuild(ctx, canonicalID); err != nil {
+		return Release{}, ErrNotFound
+	}
 	project, err := s.store.GetProject(ctx, release.ProjectID)
 	if err != nil {
 		return Release{}, err
@@ -520,7 +591,33 @@ func (s *Service) Download(
 			return Release{}, ErrNotFound
 		}
 	}
+	if s.artifacts == nil {
+		return Release{}, fmt.Errorf("%w: artifact store is not configured", ErrUnavailable)
+	}
+	artifact, err := s.artifacts.Get(ctx, release.ArtifactSHA256)
+	if err != nil {
+		return Release{}, fmt.Errorf("%w: release artifact cannot be loaded", ErrUnavailable)
+	}
+	if int64(len(artifact)) != release.ArtifactSize {
+		return Release{}, fmt.Errorf("%w: release artifact size mismatch", ErrUnavailable)
+	}
+	digest := sha256.Sum256(artifact)
+	if hex.EncodeToString(digest[:]) != release.ArtifactSHA256 {
+		return Release{}, fmt.Errorf("%w: release artifact digest mismatch", ErrUnavailable)
+	}
+	release.Artifact = artifact
 	return release, nil
+}
+
+func (s *Service) requireSucceededBuild(ctx context.Context, releaseID string) error {
+	build, err := s.store.GetBuild(ctx, releaseID)
+	if err != nil {
+		return err
+	}
+	if build.Status != BuildStatusSucceeded {
+		return fmt.Errorf("%w: release build has not succeeded", ErrConflict)
+	}
+	return nil
 }
 
 func validateProjectDisplayName(value string) error {

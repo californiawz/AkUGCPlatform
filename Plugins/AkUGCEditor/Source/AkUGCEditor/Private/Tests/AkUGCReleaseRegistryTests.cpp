@@ -59,6 +59,31 @@ namespace AkUGCReleaseRegistryTest
 			Status);
 	}
 
+	FString BuildJson(
+		const TCHAR* Status,
+		int64 Attempt,
+		bool bRetryable,
+		const FString& StateFields)
+	{
+		return FString::Printf(
+			TEXT("{")
+			TEXT("\"releaseId\":\"11111111-2222-3333-4444-555555555555\",")
+			TEXT("\"projectId\":\"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\",")
+			TEXT("\"status\":\"%s\",")
+			TEXT("\"attempt\":%lld,")
+			TEXT("\"revision\":3,")
+			TEXT("\"retryable\":%s,")
+			TEXT("\"inputArtifactSha256\":\"%s\",")
+			TEXT("\"createdAt\":\"2026-10-15T06:00:00Z\",")
+			TEXT("\"updatedAt\":\"2026-10-15T06:01:00Z\"%s")
+			TEXT("}"),
+			Status,
+			static_cast<long long>(Attempt),
+			bRetryable ? TEXT("true") : TEXT("false"),
+			*FString::ChrN(64, TEXT('c')),
+			*StateFields);
+	}
+
 	FString ProjectJson(
 		int64 Revision = 1,
 		const TCHAR* Visibility = TEXT("private"))
@@ -352,6 +377,149 @@ bool FAkUGCReleaseRegistryResponseTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAkUGCBuildRegistryResponseTest,
+	"AkUGC.Editor.ReleaseRegistry.BuildStrictResponseParsing",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCBuildRegistryResponseTest::RunTest(const FString& Parameters)
+{
+	using namespace AkUGCReleaseRegistryTest;
+	const FAkUGCWorkEntry Expected = ExpectedEntry();
+	const FString Digest = FString::ChrN(64, TEXT('c'));
+	FAkUGCBuildRegistryResponse Response;
+	FString Error;
+
+	const FString Succeeded = BuildJson(
+		TEXT("succeeded"),
+		1,
+		false,
+		FString::Printf(
+			TEXT(",\"outputArtifactSha256\":\"%s\",")
+			TEXT("\"outputArtifactSize\":1024,")
+			TEXT("\"startedAt\":\"2026-10-15T06:00:10Z\",")
+			TEXT("\"finishedAt\":\"2026-10-15T06:00:20Z\""),
+			*Digest));
+	TestTrue(
+		TEXT("Succeeded build bound to exact artifact parses"),
+		FAkUGCReleaseRegistryClient::ParseBuildResponse(
+			EAkUGCBuildRegistryOperation::Get,
+			Result(
+				200,
+				TEXT("{\"build\":") + Succeeded + TEXT("}")),
+			Expected.ReleaseId,
+			ExpectedProjectId(),
+			Digest,
+			1024,
+			Response,
+			Error));
+	TestEqual(
+		TEXT("Succeeded output digest is preserved"),
+		Response.Build.OutputArtifactSha256,
+		Digest);
+	TestEqual(
+		TEXT("Succeeded output size is preserved"),
+		Response.Build.OutputArtifactSize,
+		static_cast<int64>(1024));
+
+	const FString Failed = BuildJson(
+		TEXT("failed"),
+		2,
+		true,
+		TEXT(",\"errorCode\":\"validator_unavailable\",")
+		TEXT("\"startedAt\":\"2026-10-15T06:00:10Z\",")
+		TEXT("\"finishedAt\":\"2026-10-15T06:00:20Z\""));
+	TestTrue(
+		TEXT("Retryable failed build parses"),
+		FAkUGCReleaseRegistryClient::ParseBuildResponse(
+			EAkUGCBuildRegistryOperation::Get,
+			Result(200, TEXT("{\"build\":") + Failed + TEXT("}")),
+			Expected.ReleaseId,
+			ExpectedProjectId(),
+			Digest,
+			1024,
+			Response,
+			Error));
+	TestTrue(
+		TEXT("Retryable flag is preserved"),
+		Response.Build.bRetryable);
+
+	const FString Queued = BuildJson(
+		TEXT("queued"),
+		0,
+		false,
+		TEXT(""));
+	TestTrue(
+		TEXT("Retry response requires strict queued build"),
+		FAkUGCReleaseRegistryClient::ParseBuildResponse(
+			EAkUGCBuildRegistryOperation::Retry,
+			Result(
+				200,
+				TEXT("{\"changed\":true,\"build\":")
+					+ Queued
+					+ TEXT("}")),
+			Expected.ReleaseId,
+			ExpectedProjectId(),
+			Digest,
+			1024,
+			Response,
+			Error));
+	TestTrue(TEXT("Retry changed flag is preserved"), Response.bChanged);
+
+	TestFalse(
+		TEXT("Build input digest cannot differ from local artifact"),
+		FAkUGCReleaseRegistryClient::ParseBuildResponse(
+			EAkUGCBuildRegistryOperation::Get,
+			Result(
+				200,
+				TEXT("{\"build\":") + Succeeded + TEXT("}")),
+			Expected.ReleaseId,
+			ExpectedProjectId(),
+			FString::ChrN(64, TEXT('d')),
+			1024,
+			Response,
+			Error));
+
+	const FString InvalidQueued = BuildJson(
+		TEXT("queued"),
+		0,
+		false,
+		FString::Printf(
+			TEXT(",\"outputArtifactSha256\":\"%s\",")
+			TEXT("\"outputArtifactSize\":1024"),
+			*Digest));
+	TestFalse(
+		TEXT("Queued build cannot claim an output artifact"),
+		FAkUGCReleaseRegistryClient::ParseBuildResponse(
+			EAkUGCBuildRegistryOperation::Get,
+			Result(
+				200,
+				TEXT("{\"build\":") + InvalidQueued + TEXT("}")),
+			Expected.ReleaseId,
+			ExpectedProjectId(),
+			Digest,
+			1024,
+			Response,
+			Error));
+
+	TestFalse(
+		TEXT("Unknown build response field is rejected"),
+		FAkUGCReleaseRegistryClient::ParseBuildResponse(
+			EAkUGCBuildRegistryOperation::Get,
+			Result(
+				200,
+				TEXT("{\"build\":")
+					+ Succeeded
+					+ TEXT(",\"trustedByServer\":true}")),
+			Expected.ReleaseId,
+			ExpectedProjectId(),
+			Digest,
+			1024,
+			Response,
+			Error));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FAkUGCProjectRegistryResponseTest,
 	"AkUGC.Editor.ReleaseRegistry.ProjectStrictResponseParsing",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -574,6 +742,11 @@ struct FAkUGCReleaseRegistryPanelTestAccess
 		Panel.RefreshRegistryStatus();
 	}
 
+	static void RetryBuild(SAkUGCWorkLibraryPanel& Panel)
+	{
+		Panel.RetryRegistryBuild();
+	}
+
 	static void Publish(SAkUGCWorkLibraryPanel& Panel)
 	{
 		Panel.PublishToRegistry();
@@ -622,6 +795,11 @@ struct FAkUGCReleaseRegistryPanelTestAccess
 	static const FString& ReleaseStatus(const SAkUGCWorkLibraryPanel& Panel)
 	{
 		return Panel.RegistryReleaseStatus;
+	}
+
+	static const FString& BuildStatus(const SAkUGCWorkLibraryPanel& Panel)
+	{
+		return Panel.RegistryBuild.Status;
 	}
 
 	static const FString& Status(const SAkUGCWorkLibraryPanel& Panel)
@@ -709,34 +887,56 @@ namespace AkUGCReleaseRegistryHttpTest
 			if (Stage == 0)
 			{
 				if (FAkUGCReleaseRegistryPanelTestAccess::ReleaseStatus(*Panel)
-					!= TEXT("submitted"))
+						!= TEXT("submitted")
+					|| FAkUGCReleaseRegistryPanelTestAccess::BuildStatus(*Panel)
+						!= TEXT("failed"))
 				{
-					return Fail(TEXT("Registry submit did not return submitted."));
+					return Fail(
+						TEXT("Registry submit/build did not expose retryable failure."));
 				}
-				FAkUGCReleaseRegistryPanelTestAccess::Refresh(*Panel);
+				FAkUGCReleaseRegistryPanelTestAccess::RetryBuild(*Panel);
 				if (!FAkUGCReleaseRegistryPanelTestAccess::Pending(*Panel))
 				{
-					return Fail(TEXT("Registry status refresh did not start."));
+					return Fail(TEXT("Registry build retry did not start."));
 				}
 				Stage = 1;
 				return false;
 			}
 			if (Stage == 1)
 			{
-				if (FAkUGCReleaseRegistryPanelTestAccess::ReleaseStatus(*Panel)
-					!= TEXT("approved"))
+				if (FAkUGCReleaseRegistryPanelTestAccess::BuildStatus(*Panel)
+					!= TEXT("queued"))
 				{
-					return Fail(TEXT("Registry refresh did not return approved."));
+					return Fail(
+						TEXT("Registry retry did not return queued build."));
+				}
+				FAkUGCReleaseRegistryPanelTestAccess::Refresh(*Panel);
+				if (!FAkUGCReleaseRegistryPanelTestAccess::Pending(*Panel))
+				{
+					return Fail(TEXT("Registry status refresh did not start."));
+				}
+				Stage = 2;
+				return false;
+			}
+			if (Stage == 2)
+			{
+				if (FAkUGCReleaseRegistryPanelTestAccess::ReleaseStatus(*Panel)
+						!= TEXT("approved")
+					|| FAkUGCReleaseRegistryPanelTestAccess::BuildStatus(*Panel)
+						!= TEXT("succeeded"))
+				{
+					return Fail(
+						TEXT("Registry refresh did not preserve succeeded build."));
 				}
 				FAkUGCReleaseRegistryPanelTestAccess::RefreshProject(*Panel);
 				if (!FAkUGCReleaseRegistryPanelTestAccess::Pending(*Panel))
 				{
 					return Fail(TEXT("Cloud Project refresh did not start."));
 				}
-				Stage = 2;
+				Stage = 3;
 				return false;
 			}
-			if (Stage == 2)
+			if (Stage == 3)
 			{
 				if (FAkUGCReleaseRegistryPanelTestAccess::ProjectAccessRole(*Panel)
 						!= TEXT("owner")
@@ -756,10 +956,10 @@ namespace AkUGCReleaseRegistryHttpTest
 				{
 					return Fail(TEXT("Set collaborator did not start."));
 				}
-				Stage = 3;
+				Stage = 4;
 				return false;
 			}
-			if (Stage == 3)
+			if (Stage == 4)
 			{
 				if (FAkUGCReleaseRegistryPanelTestAccess::MemberCount(*Panel)
 					!= 2)
@@ -773,10 +973,10 @@ namespace AkUGCReleaseRegistryHttpTest
 				{
 					return Fail(TEXT("Remove collaborator did not start."));
 				}
-				Stage = 4;
+				Stage = 5;
 				return false;
 			}
-			if (Stage == 4)
+			if (Stage == 5)
 			{
 				if (FAkUGCReleaseRegistryPanelTestAccess::MemberCount(*Panel)
 					!= 1)
@@ -789,10 +989,10 @@ namespace AkUGCReleaseRegistryHttpTest
 				{
 					return Fail(TEXT("Registry publish did not start."));
 				}
-				Stage = 5;
+				Stage = 6;
 				return false;
 			}
-			if (Stage == 5)
+			if (Stage == 6)
 			{
 				if (FAkUGCReleaseRegistryPanelTestAccess::ReleaseStatus(*Panel)
 					!= TEXT("published"))
@@ -806,7 +1006,7 @@ namespace AkUGCReleaseRegistryHttpTest
 				{
 					return Fail(TEXT("Public visibility request did not start."));
 				}
-				Stage = 6;
+				Stage = 7;
 				return false;
 			}
 			if (FAkUGCReleaseRegistryPanelTestAccess::ProjectVisibility(*Panel)
@@ -825,7 +1025,7 @@ namespace AkUGCReleaseRegistryHttpTest
 			UE_LOG(
 				LogTemp,
 				Display,
-				TEXT("[AkUGCReleaseRegistryHTTP] Passed Operations=20 LoopbackOnly=1 Visibility=public"));
+				TEXT("[AkUGCReleaseRegistryHTTP] Passed Operations=23 LoopbackOnly=1 Visibility=public Build=succeeded BuildRetry=1"));
 			Cleanup();
 			return true;
 		}
