@@ -1,6 +1,8 @@
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 import hashlib
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
@@ -8,6 +10,7 @@ import secrets
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -73,6 +76,131 @@ def json_body(value):
     return json.dumps(value, separators=(",", ":")).encode("utf-8")
 
 
+def player_environment(token, bad_token=None):
+    environment = dict(os.environ)
+    environment["AKUGC_PLAYER_REGISTRY_TOKEN"] = token
+    if bad_token is not None:
+        environment["AKUGC_PLAYER_REGISTRY_BAD_TOKEN"] = bad_token
+    return environment
+
+
+def run_client_automation(
+    client,
+    root,
+    output,
+    name,
+    test_path,
+    arguments,
+    timeout,
+    business_marker,
+    environment=None,
+):
+    play_log = output / f"{name}.log"
+    play_stdout = output / f"{name}.stdout.log"
+    run_checked(
+        [
+            client,
+            "/Game/Maps/Phase0",
+            *arguments,
+            f"-ExecCmds=Automation RunTests {test_path}",
+            "-TestExit=Automation Test Queue Empty",
+            "-unattended",
+            "-nop4",
+            "-nosplash",
+            "-nullrhi",
+            "-stdout",
+            f"-abslog={play_log}",
+        ],
+        play_stdout,
+        timeout,
+        client.parent,
+        environment,
+    )
+    require_automation_success(
+        play_stdout.read_text(encoding="utf-8", errors="replace"),
+        expected_selector=test_path,
+        expected_paths=(test_path,),
+        expected_total=1,
+        require_queue_empty=True,
+        require_test_exit=True,
+        return_code=0,
+    )
+    business_text = play_stdout.read_text(
+        encoding="utf-8", errors="replace"
+    )
+    if business_marker not in business_text:
+        business_text += play_log.read_text(
+            encoding="utf-8", errors="replace"
+        )
+    if business_marker not in business_text:
+        raise RuntimeError(f"{name} did not emit {business_marker}")
+
+
+@contextmanager
+def artifact_fixture(mode, release_id, artifact, content_hash):
+    expected_path = f"/v1/releases/{release_id}/download"
+    state = {"paths": [], "authorization": []}
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, _format, *_args):
+            return
+
+        def do_GET(self):
+            state["paths"].append(self.path)
+            state["authorization"].append(self.headers.get("Authorization"))
+            if mode == "redirect" and self.path == expected_path:
+                port = self.server.server_address[1]
+                self.send_response(302)
+                self.send_header(
+                    "Location",
+                    f"http://127.0.0.1:{port}/redirect-target",
+                )
+                self.send_header("Content-Length", "0")
+                self.send_header("Connection", "close")
+                self.end_headers()
+                return
+
+            body = artifact
+            if mode == "oversize":
+                body = b""
+            if self.path not in (expected_path, "/redirect-target"):
+                self.send_response(404)
+                self.send_header("Content-Length", "0")
+                self.send_header("Connection", "close")
+                self.end_headers()
+                return
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/vnd.akugc+json")
+            if mode == "oversize":
+                self.send_header("Content-Length", str(16 * 1024 * 1024 + 1))
+                artifact_sha = "0" * 64
+            else:
+                self.send_header("Content-Length", str(len(body)))
+                artifact_sha = hashlib.sha256(body).hexdigest()
+            self.send_header("ETag", f'"sha256:{artifact_sha}"')
+            self.send_header("X-AkUGC-Content-Hash", content_hash)
+            self.send_header("Connection", "close")
+            self.end_headers()
+            if body:
+                try:
+                    self.wfile.write(body)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}", state
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--engine", required=True, type=Path)
@@ -101,6 +229,14 @@ def main():
     project = root / "AkUGCPlatform.uproject"
     if not editor.is_file():
         raise FileNotFoundError(editor)
+    client = (
+        options.client.resolve()
+        if options.client
+        else root
+        / "Saved/StagedBuilds/WindowsClient/AkUGCPlatform/Binaries/Win64/AkUGCPlatformClient.exe"
+    )
+    if not options.skip_play and not client.is_file():
+        raise FileNotFoundError(client)
 
     metadata_path = output / "published.json"
     run_checked(
@@ -210,6 +346,14 @@ def main():
 
     server = None
     server_stream = None
+    game_completed = False
+    unpublished_product_rejected = False
+    wrong_token_rejected = False
+    wrong_key_rejected = False
+    tampered_download_rejected = False
+    oversized_download_rejected = False
+    redirect_rejected = False
+    revoked_product_rejected = False
     try:
         port = free_port()
         base = f"http://127.0.0.1:{port}"
@@ -267,6 +411,26 @@ def main():
         )
         if status != 404:
             raise RuntimeError(f"Unpublished download returned {status}")
+        if not options.skip_play:
+            run_client_automation(
+                client,
+                root,
+                output,
+                "player-unpublished-rejected",
+                "AkUGC.Runtime.ReleaseRegistry.DownloadRejected",
+                [
+                    "-AkUGCRegistryReject",
+                    f"-WorkId={release_digits}",
+                    f"-WorkLibrary={output / 'player-unpublished-library'}",
+                    f"-RegistryBase={base}",
+                    f"-WorkTrustedKey={public_key}",
+                    "-RegistryExpectedFailure=not_available",
+                ],
+                100,
+                "[AkUGCPlayerRegistryReject] Passed",
+                player_environment(tokens["player"]),
+            )
+            unpublished_product_rejected = True
 
         status, _, _ = request(
             base,
@@ -365,54 +529,130 @@ def main():
             root,
         )
 
-        game_completed = False
-        client = (
-            options.client.resolve()
-            if options.client
-            else root
-            / "Saved/StagedBuilds/WindowsClient/AkUGCPlatform/Binaries/Win64/AkUGCPlatformClient.exe"
-        )
         if not options.skip_play:
-            if not client.is_file():
-                raise FileNotFoundError(client)
-            play_log = output / "player-play.log"
-            play_stdout = output / "player-play.stdout.log"
-            run_checked(
-                [
+            fixture_token = "fixture-player-token-1234567890"
+            fixture_content_hash = pack["manifest"]["contentHash"]
+            with artifact_fixture(
+                "tampered",
+                release_id,
+                tampered,
+                fixture_content_hash,
+            ) as (fixture_base, fixture_state):
+                run_client_automation(
                     client,
-                    "/Game/Maps/Phase0",
+                    root,
+                    output,
+                    "player-tampered-download-rejected",
+                    "AkUGC.Runtime.ReleaseRegistry.DownloadRejected",
+                    [
+                        "-AkUGCRegistryReject",
+                        f"-WorkId={release_digits}",
+                        f"-WorkLibrary={output / 'player-tampered-library'}",
+                        f"-RegistryBase={fixture_base}",
+                        f"-WorkTrustedKey={public_key}",
+                        "-RegistryExpectedFailure=local_verification",
+                    ],
+                    100,
+                    "[AkUGCPlayerRegistryReject] Passed",
+                    player_environment(fixture_token),
+                )
+            if fixture_state["paths"] != [release_path + "/download"]:
+                raise RuntimeError(
+                    f"Tampered fixture request mismatch: {fixture_state['paths']}"
+                )
+            tampered_download_rejected = True
+
+            with artifact_fixture(
+                "oversize",
+                release_id,
+                artifact,
+                fixture_content_hash,
+            ) as (fixture_base, fixture_state):
+                run_client_automation(
+                    client,
+                    root,
+                    output,
+                    "player-oversized-download-rejected",
+                    "AkUGC.Runtime.ReleaseRegistry.DownloadRejected",
+                    [
+                        "-AkUGCRegistryReject",
+                        f"-WorkId={release_digits}",
+                        f"-WorkLibrary={output / 'player-oversized-library'}",
+                        f"-RegistryBase={fixture_base}",
+                        f"-WorkTrustedKey={public_key}",
+                        "-RegistryExpectedFailure=response_too_large",
+                    ],
+                    100,
+                    "[AkUGCPlayerRegistryReject] Passed",
+                    player_environment(fixture_token),
+                )
+            oversized_download_rejected = True
+
+            with artifact_fixture(
+                "redirect",
+                release_id,
+                artifact,
+                fixture_content_hash,
+            ) as (fixture_base, fixture_state):
+                run_client_automation(
+                    client,
+                    root,
+                    output,
+                    "player-redirect-rejected",
+                    "AkUGC.Runtime.ReleaseRegistry.DownloadRejected",
+                    [
+                        "-AkUGCRegistryReject",
+                        f"-WorkId={release_digits}",
+                        f"-WorkLibrary={output / 'player-redirect-library'}",
+                        f"-RegistryBase={fixture_base}",
+                        f"-WorkTrustedKey={public_key}",
+                        "-RegistryExpectedFailure=redirect",
+                    ],
+                    100,
+                    "[AkUGCPlayerRegistryReject] Passed",
+                    player_environment(fixture_token),
+                )
+            if fixture_state["paths"] != [release_path + "/download"]:
+                raise RuntimeError(
+                    "Player followed a forbidden Registry redirect: "
+                    + repr(fixture_state["paths"])
+                )
+            redirect_rejected = True
+
+            bad_public_key = (
+                ("0" if public_key[0] != "0" else "1") + public_key[1:]
+            )
+            run_client_automation(
+                client,
+                root,
+                output,
+                "player-registry-play",
+                "AkUGC.Runtime.WorkLibrary.SharedPlayable",
+                [
                     "-AkUGCWorkPlay",
+                    "-RegistryExerciseRejections",
                     f"-WorkId={release_digits}",
                     f"-WorkLibrary={output / 'player-b-library'}",
-                    f"-WorkShare={download_path}",
+                    f"-RegistryBase={base}",
+                    f"-RegistryBadTrustedKey={bad_public_key}",
                     f"-WorkTrustedKey={public_key}",
-                    f"-WorkBadShare={tampered_path}",
-                    "-ExecCmds=Automation RunTests AkUGC.Runtime.WorkLibrary.SharedPlayable",
-                    "-TestExit=Automation Test Queue Empty",
-                    "-unattended",
-                    "-nop4",
-                    "-nosplash",
-                    "-nullrhi",
-                    "-stdout",
-                    f"-abslog={play_log}",
                 ],
-                play_stdout,
                 190,
-                client.parent if options.client else root,
+                "[AkUGCWorkPlay] Passed",
+                player_environment(
+                    tokens["player"],
+                    tokens["player"] + "-invalid",
+                ),
             )
-            require_automation_success(
-                play_stdout.read_text(encoding="utf-8", errors="replace"),
-                expected_selector="AkUGC.Runtime.WorkLibrary.SharedPlayable",
-                expected_paths=("AkUGC.Runtime.WorkLibrary.SharedPlayable",),
-                expected_total=1,
-                require_queue_empty=True,
-                require_test_exit=True,
-                return_code=0,
-            )
-            if "[AkUGCWorkPlay] Passed" not in play_log.read_text(
+            play_text = (output / "player-registry-play.log").read_text(
                 encoding="utf-8", errors="replace"
-            ):
-                raise RuntimeError("Downloaded work did not complete a game")
+            )
+            if "Source=Registry" not in play_text or "Rejections=2" not in play_text:
+                raise RuntimeError(
+                    "Player did not prove direct Registry acquisition and rejection gates"
+                )
+            wrong_token_rejected = True
+            wrong_key_rejected = True
             game_completed = True
 
         status, _, _ = request(
@@ -433,6 +673,26 @@ def main():
         )
         if status != 404:
             raise RuntimeError(f"Revoked download returned {status}")
+        if not options.skip_play:
+            run_client_automation(
+                client,
+                root,
+                output,
+                "player-revoked-rejected",
+                "AkUGC.Runtime.ReleaseRegistry.DownloadRejected",
+                [
+                    "-AkUGCRegistryReject",
+                    f"-WorkId={release_digits}",
+                    f"-WorkLibrary={output / 'player-revoked-library'}",
+                    f"-RegistryBase={base}",
+                    f"-WorkTrustedKey={public_key}",
+                    "-RegistryExpectedFailure=not_available",
+                ],
+                100,
+                "[AkUGCPlayerRegistryReject] Passed",
+                player_environment(tokens["player"]),
+            )
+            revoked_product_rejected = True
 
         result = {
             "passed": True,
@@ -445,6 +705,14 @@ def main():
             "unpublished_download_rejected": True,
             "revoked_download_rejected": True,
             "player_local_validation": True,
+            "player_direct_registry_download": game_completed,
+            "player_unpublished_product_rejected": unpublished_product_rejected,
+            "player_wrong_token_rejected": wrong_token_rejected,
+            "player_wrong_key_rejected": wrong_key_rejected,
+            "player_tampered_download_rejected": tampered_download_rejected,
+            "player_oversized_download_rejected": oversized_download_rejected,
+            "player_redirect_rejected": redirect_rejected,
+            "player_revoked_product_rejected": revoked_product_rejected,
             "player_completed_game": game_completed,
             "isolated_creator_reviewer_player": True,
             "postgresql": True,

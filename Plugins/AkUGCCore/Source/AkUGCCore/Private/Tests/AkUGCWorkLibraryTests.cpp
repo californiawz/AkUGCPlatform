@@ -1,5 +1,6 @@
 #include "Misc/AutomationTest.h"
 #include "Async/Async.h"
+#include "Containers/StringConv.h"
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
@@ -59,6 +60,63 @@ bool FAkUGCWorkLibraryTest::RunTest(const FString& Parameters)
     TestFalse(TEXT("Share does not contain protected private material"), ShareJson.Contains(TEXT("protectedPrivateKey")));
     TestEqual(TEXT("Published signer matches protected identity"), Published.TrustedPublicKey, PublisherPublicKey);
     TestEqual(TEXT("Publishing does not edit author document"), FAkUGCLogicPackHasher::HashDocument(Document), SourceHash);
+    FTCHARToUTF8 ArtifactUtf8(*ShareJson, ShareJson.Len());
+    TArray<uint8> ArtifactBytes;
+    ArtifactBytes.Append(
+        reinterpret_cast<const uint8*>(ArtifactUtf8.Get()),
+        ArtifactUtf8.Length());
+    TestEqual(TEXT("Raw artifact SHA-256 hashes exact bytes"),
+        FAkUGCLogicPackHasher::Sha256Hex(ArtifactBytes),
+        FAkUGCLogicPackHasher::Sha256Hex(ShareJson));
+    FAkUGCWorkLibrary NetworkReceiver(
+        FPaths::Combine(Root, TEXT("NetworkReceiver")));
+    TestTrue(TEXT("Downloaded bytes import with independent trust and request binding"),
+        NetworkReceiver.ImportArtifact(
+            ArtifactBytes,
+            Published.TrustedPublicKey,
+            Published.ReleaseId,
+            Published.ContentHash,
+            Imported,
+            &Error));
+    TestTrue(TEXT("Downloaded byte import is idempotent"),
+        NetworkReceiver.ImportArtifact(
+            ArtifactBytes,
+            Published.TrustedPublicKey,
+            Published.ReleaseId,
+            Published.ContentHash,
+            Imported,
+            &Error));
+    const FGuid WrongExpectedReleaseId = FGuid::NewGuid();
+    FAkUGCWorkLibrary MismatchReceiver(
+        FPaths::Combine(Root, TEXT("MismatchReceiver")));
+    TestFalse(TEXT("Downloaded bytes cannot be stored under another requested release"),
+        MismatchReceiver.ImportArtifact(
+            ArtifactBytes,
+            Published.TrustedPublicKey,
+            WrongExpectedReleaseId,
+            Published.ContentHash,
+            Imported,
+            &Error));
+    TestFalse(TEXT("Release mismatch leaves no downloaded library side effect"),
+        MismatchReceiver.Load(Published.ReleaseId).bSucceeded);
+    TestFalse(TEXT("Downloaded bytes require the signed ContentHash binding"),
+        MismatchReceiver.ImportArtifact(
+            ArtifactBytes,
+            Published.TrustedPublicKey,
+            Published.ReleaseId,
+            FString::ChrN(64, TEXT('0')),
+            Imported,
+            &Error));
+    TArray<uint8> InvalidUtf8 = ArtifactBytes;
+    InvalidUtf8[0] = 0xff;
+    TestFalse(TEXT("Downloaded bytes reject non-canonical UTF-8 before parsing"),
+        MismatchReceiver.ImportArtifact(
+            InvalidUtf8,
+            Published.TrustedPublicKey,
+            Published.ReleaseId,
+            Published.ContentHash,
+            Imported,
+            &Error));
     TestFalse(TEXT("Embedded signer does not imply trust"), Receiver.Import(Share, TEXT(""), Imported, &Error));
     FAkUGCLogicPackKeyPair Attacker;
     FAkUGCLogicPackSigner::GenerateKeyPair(Attacker);

@@ -1,4 +1,4 @@
-#include "Transport/AkUGCEditorHttpTransport.h"
+#include "Network/AkUGCHttpTransport.h"
 
 #include <string>
 #include <thread>
@@ -10,27 +10,32 @@
 #include "SslModule.h"
 #include "Validation/AkUGCInputBudget.h"
 
-#if AKUGC_COPILOT_CURL
+#if AKUGC_HTTP_CURL
 THIRD_PARTY_INCLUDES_START
 #include "curl/curl.h"
 THIRD_PARTY_INCLUDES_END
 
-namespace AkUGCEditorHttpCurl
+namespace AkUGCHttpCurl
 {
-	bool bInitialized = false;
+	int32 InitializationCount = 0;
 	ISslManager* Ssl = nullptr;
 	ISslCertificateManager* Certificates = nullptr;
 	TArray<TUniquePtr<std::thread>> Workers;
-	TArray<TWeakPtr<FAkUGCEditorHttpRequest, ESPMode::ThreadSafe>> Requests;
+	TArray<TWeakPtr<FAkUGCHttpRequest, ESPMode::ThreadSafe>> Requests;
 
 	struct FReceive
 	{
-		FAkUGCEditorHttpRequestPtr Request;
-		FAkUGCEditorHttpResult Result;
+		FAkUGCHttpRequestPtr Request;
+		FAkUGCHttpResult Result;
 		int32 MaxBodyBytes = 0;
+		int32 MaxHeaderBytes = 0;
+		int64 HeaderBytes = 0;
 	};
 
-	bool IsSafeHeaderValue(const FString& Value, int32 MaxCharacters, bool bAllowEmpty)
+	bool IsSafeHeaderValue(
+		const FString& Value,
+		int32 MaxCharacters,
+		bool bAllowEmpty)
 	{
 		if ((!bAllowEmpty && Value.IsEmpty()) || Value.Len() > MaxCharacters)
 		{
@@ -67,9 +72,9 @@ namespace AkUGCEditorHttpCurl
 			|| Host == TEXT("127.0.0.1");
 	}
 
-	bool IsValidSpec(const FAkUGCEditorHttpRequestSpec& Spec)
+	bool IsValidSpec(const FAkUGCHttpRequestSpec& Spec)
 	{
-		if (!bInitialized
+		if (InitializationCount <= 0
 			|| Spec.Url.IsEmpty()
 			|| Spec.Url.Len() > AkUGCInputBudget::MaxCopilotUrlCharacters
 			|| !FMath::IsFinite(Spec.TimeoutSeconds)
@@ -77,6 +82,9 @@ namespace AkUGCEditorHttpCurl
 			|| Spec.TimeoutSeconds > 120.0f
 			|| Spec.MaxResponseBytes <= 0
 			|| Spec.MaxResponseBytes > AkUGCInputBudget::MaxLogicPackBytes
+			|| Spec.MaxResponseHeaderBytes <= 0
+			|| Spec.MaxResponseHeaderBytes
+				> AkUGCInputBudget::MaxCopilotResponseBytes
 			|| Spec.Body.Num() > AkUGCInputBudget::MaxLogicPackBytes
 			|| !IsSafeHeaderValue(
 				Spec.BearerToken,
@@ -88,8 +96,12 @@ namespace AkUGCEditorHttpCurl
 			|| Spec.Url.Contains(TEXT("\\"))
 			|| Spec.Url.Contains(TEXT("#"))
 			|| Spec.Url.Contains(TEXT("?"))
-			|| (!Spec.Url.StartsWith(TEXT("https://"), ESearchCase::CaseSensitive)
-				&& !Spec.Url.StartsWith(TEXT("http://"), ESearchCase::CaseSensitive)))
+			|| (!Spec.Url.StartsWith(
+					TEXT("https://"),
+					ESearchCase::CaseSensitive)
+				&& !Spec.Url.StartsWith(
+					TEXT("http://"),
+					ESearchCase::CaseSensitive)))
 		{
 			return false;
 		}
@@ -101,8 +113,11 @@ namespace AkUGCEditorHttpCurl
 			}
 		}
 		if (!Spec.BearerToken.IsEmpty()
-			&& Spec.Url.StartsWith(TEXT("http://"), ESearchCase::CaseSensitive)
-			&& (!Spec.bAllowLoopbackHttpWithBearer || !IsLoopbackHttpUrl(Spec.Url)))
+			&& Spec.Url.StartsWith(
+				TEXT("http://"),
+				ESearchCase::CaseSensitive)
+			&& (!Spec.bAllowLoopbackHttpWithBearer
+				|| !IsLoopbackHttpUrl(Spec.Url)))
 		{
 			return false;
 		}
@@ -113,6 +128,116 @@ namespace AkUGCEditorHttpCurl
 		}
 #endif
 		return true;
+	}
+
+	bool ParseContentLength(const FString& Value, int64& OutLength)
+	{
+		if (Value.IsEmpty())
+		{
+			return false;
+		}
+		uint64 Result = 0;
+		for (const TCHAR Character : Value)
+		{
+			if (Character < TEXT('0') || Character > TEXT('9'))
+			{
+				return false;
+			}
+			const uint64 Digit = static_cast<uint64>(Character - TEXT('0'));
+			if (Result
+				> (static_cast<uint64>(MAX_int64) - Digit) / 10ULL)
+			{
+				return false;
+			}
+			Result = Result * 10ULL + Digit;
+		}
+		OutLength = static_cast<int64>(Result);
+		return true;
+	}
+
+	size_t Header(char* Data, size_t Size, size_t Count, void* User)
+	{
+		FReceive& Receive = *static_cast<FReceive*>(User);
+		if (Receive.Request->IsCancelled()
+			|| (Size != 0 && Count > MAX_uint64 / Size))
+		{
+			return 0;
+		}
+		const size_t Length = Size * Count;
+		if (Length > static_cast<size_t>(MAX_int64)
+			|| Receive.HeaderBytes
+				> Receive.MaxHeaderBytes - static_cast<int64>(Length))
+		{
+			Receive.Result.bHeadersTooLarge = true;
+			return 0;
+		}
+		Receive.HeaderBytes += static_cast<int64>(Length);
+
+		int32 TextLength = static_cast<int32>(Length);
+		while (TextLength > 0
+			&& (Data[TextLength - 1] == '\r'
+				|| Data[TextLength - 1] == '\n'))
+		{
+			--TextLength;
+		}
+		int32 Colon = INDEX_NONE;
+		bool bAscii = true;
+		for (int32 Index = 0; Index < TextLength; ++Index)
+		{
+			const uint8 Character = static_cast<uint8>(Data[Index]);
+			if (Character == 0 || Character >= 127
+				|| (Character < 32 && Character != '\t'))
+			{
+				bAscii = false;
+				break;
+			}
+			if (Colon == INDEX_NONE && Character == ':')
+			{
+				Colon = Index;
+			}
+		}
+		if (bAscii && Colon > 0)
+		{
+			TArray<ANSICHAR> Line;
+			Line.Append(Data, TextLength);
+			Line.Add('\0');
+			FString Text(ANSI_TO_TCHAR(Line.GetData()));
+			FString Name = Text.Left(Colon);
+			FString Value = Text.Mid(Colon + 1);
+			Name.TrimStartAndEndInline();
+			Value.TrimStartAndEndInline();
+			bool bValidName = !Name.IsEmpty();
+			for (const TCHAR Character : Name)
+			{
+				bValidName &= (Character >= TEXT('0')
+						&& Character <= TEXT('9'))
+					|| (Character >= TEXT('A')
+						&& Character <= TEXT('Z'))
+					|| (Character >= TEXT('a')
+						&& Character <= TEXT('z'))
+					|| Character == TEXT('-');
+			}
+			if (bValidName)
+			{
+				FAkUGCHttpHeader& Stored =
+					Receive.Result.Headers.AddDefaulted_GetRef();
+				Stored.Name = MoveTemp(Name);
+				Stored.Value = MoveTemp(Value);
+				if (Stored.Name.Equals(
+						TEXT("Content-Length"),
+						ESearchCase::IgnoreCase))
+				{
+					int64 ContentLength = 0;
+					if (ParseContentLength(Stored.Value, ContentLength)
+						&& ContentLength > Receive.MaxBodyBytes)
+					{
+						Receive.Result.bTooLarge = true;
+						return 0;
+					}
+				}
+			}
+		}
+		return Length;
 	}
 
 	size_t Write(char* Data, size_t Size, size_t Count, void* User)
@@ -128,8 +253,10 @@ namespace AkUGCEditorHttpCurl
 			return 0;
 		}
 		const size_t Length = Size * Count;
-		const int32 Remaining = Receive.MaxBodyBytes - Receive.Result.Body.Num();
-		if (Remaining < 0 || Length > static_cast<size_t>(Remaining))
+		const int32 Remaining =
+			Receive.MaxBodyBytes - Receive.Result.Body.Num();
+		if (Remaining < 0
+			|| Length > static_cast<size_t>(Remaining))
 		{
 			Receive.Result.bTooLarge = true;
 			return 0;
@@ -149,25 +276,27 @@ namespace AkUGCEditorHttpCurl
 		{
 			return CURLE_SSL_CERTPROBLEM;
 		}
-		Certificates->AddCertificatesToSslContext(static_cast<SSL_CTX*>(Context));
+		Certificates->AddCertificatesToSslContext(
+			static_cast<SSL_CTX*>(Context));
 		return CURLE_OK;
 	}
 }
 #endif
 
-FAkUGCEditorHttpResult FAkUGCEditorHttpRequest::TakeResult()
+FAkUGCHttpResult FAkUGCHttpRequest::TakeResult()
 {
 	FScopeLock Lock(&Mutex);
 	return MoveTemp(Result);
 }
 
-bool FAkUGCEditorHttpTransport::Initialize()
+bool FAkUGCHttpTransport::Initialize()
 {
 	check(IsInGameThread());
-#if AKUGC_COPILOT_CURL
-	using namespace AkUGCEditorHttpCurl;
-	if (bInitialized)
+#if AKUGC_HTTP_CURL
+	using namespace AkUGCHttpCurl;
+	if (InitializationCount > 0)
 	{
+		++InitializationCount;
 		return true;
 	}
 	FSslModule& Module = FSslModule::Get();
@@ -193,25 +322,30 @@ bool FAkUGCEditorHttpTransport::Initialize()
 		Certificates = nullptr;
 		return false;
 	}
-	bInitialized = true;
+	InitializationCount = 1;
 	return true;
 #else
 	return false;
 #endif
 }
 
-void FAkUGCEditorHttpTransport::Shutdown()
+void FAkUGCHttpTransport::Shutdown()
 {
 	check(IsInGameThread());
-#if AKUGC_COPILOT_CURL
-	using namespace AkUGCEditorHttpCurl;
-	if (!bInitialized)
+#if AKUGC_HTTP_CURL
+	using namespace AkUGCHttpCurl;
+	if (InitializationCount <= 0)
 	{
 		return;
 	}
-	for (const TWeakPtr<FAkUGCEditorHttpRequest, ESPMode::ThreadSafe>& Weak : Requests)
+	if (--InitializationCount > 0)
 	{
-		if (const FAkUGCEditorHttpRequestPtr Request = Weak.Pin())
+		return;
+	}
+	for (const TWeakPtr<FAkUGCHttpRequest, ESPMode::ThreadSafe>& Weak
+		: Requests)
+	{
+		if (const FAkUGCHttpRequestPtr Request = Weak.Pin())
 		{
 			Request->Cancel();
 		}
@@ -232,23 +366,22 @@ void FAkUGCEditorHttpTransport::Shutdown()
 	}
 	Ssl = nullptr;
 	Certificates = nullptr;
-	bInitialized = false;
 #endif
 }
 
-FAkUGCEditorHttpRequestPtr FAkUGCEditorHttpTransport::Start(
-	FAkUGCEditorHttpRequestSpec Spec)
+FAkUGCHttpRequestPtr FAkUGCHttpTransport::Start(
+	FAkUGCHttpRequestSpec Spec)
 {
 	check(IsInGameThread());
-#if AKUGC_COPILOT_CURL
-	using namespace AkUGCEditorHttpCurl;
+#if AKUGC_HTTP_CURL
+	using namespace AkUGCHttpCurl;
 	if (!IsValidSpec(Spec))
 	{
 		return nullptr;
 	}
 	for (int32 Index = Workers.Num() - 1; Index >= 0; --Index)
 	{
-		const FAkUGCEditorHttpRequestPtr Existing = Requests[Index].Pin();
+		const FAkUGCHttpRequestPtr Existing = Requests[Index].Pin();
 		if (!Existing.IsValid() || Existing->IsDone())
 		{
 			if (Workers[Index]->joinable())
@@ -264,8 +397,8 @@ FAkUGCEditorHttpRequestPtr FAkUGCEditorHttpTransport::Start(
 		return nullptr;
 	}
 
-	const FAkUGCEditorHttpRequestPtr Request =
-		MakeShared<FAkUGCEditorHttpRequest, ESPMode::ThreadSafe>();
+	const FAkUGCHttpRequestPtr Request =
+		MakeShared<FAkUGCHttpRequest, ESPMode::ThreadSafe>();
 	Requests.Add(Request);
 	Workers.Add(MakeUnique<std::thread>(
 		[Request, Spec = MoveTemp(Spec)]() mutable
@@ -273,7 +406,9 @@ FAkUGCEditorHttpRequestPtr FAkUGCEditorHttpTransport::Start(
 			FReceive Receive;
 			Receive.Request = Request;
 			Receive.MaxBodyBytes = Spec.MaxResponseBytes;
-			Receive.Result.Body.Reserve(FMath::Min(Spec.MaxResponseBytes, 64 * 1024));
+			Receive.MaxHeaderBytes = Spec.MaxResponseHeaderBytes;
+			Receive.Result.Body.Reserve(
+				FMath::Min(Spec.MaxResponseBytes, 64 * 1024));
 
 			FTCHARToUTF8 UrlBytes(*Spec.Url);
 			FTCHARToUTF8 TokenBytes(*Spec.BearerToken);
@@ -300,7 +435,8 @@ FAkUGCEditorHttpRequestPtr FAkUGCEditorHttpTransport::Start(
 					{
 						return;
 					}
-					curl_slist* Added = curl_slist_append(Headers, Header.c_str());
+					curl_slist* Added =
+						curl_slist_append(Headers, Header.c_str());
 					if (Added)
 					{
 						Headers = Added;
@@ -313,15 +449,21 @@ FAkUGCEditorHttpRequestPtr FAkUGCEditorHttpTransport::Start(
 
 				if (!Spec.ContentType.IsEmpty())
 				{
-					AddHeader(std::string("Content-Type: ") + ContentTypeBytes.Get());
+					AddHeader(
+						std::string("Content-Type: ")
+						+ ContentTypeBytes.Get());
 				}
 				if (!Spec.BearerToken.IsEmpty())
 				{
-					AddHeader(std::string("Authorization: Bearer ") + TokenBytes.Get());
+					AddHeader(
+						std::string("Authorization: Bearer ")
+						+ TokenBytes.Get());
 				}
 				if (!Spec.IdempotencyKey.IsEmpty())
 				{
-					AddHeader(std::string("Idempotency-Key: ") + IdempotencyBytes.Get());
+					AddHeader(
+						std::string("Idempotency-Key: ")
+						+ IdempotencyBytes.Get());
 				}
 
 				Set(CURLOPT_URL, UrlBytes.Get());
@@ -334,7 +476,7 @@ FAkUGCEditorHttpRequestPtr FAkUGCEditorHttpTransport::Start(
 				Set(CURLOPT_NOSIGNAL, 1L);
 				Set(CURLOPT_SSL_VERIFYPEER, 1L);
 				Set(CURLOPT_SSL_VERIFYHOST, 2L);
-				if (Spec.Method == EAkUGCEditorHttpMethod::Post)
+				if (Spec.Method == EAkUGCHttpMethod::Post)
 				{
 					static const uint8 EmptyBody = 0;
 					Set(CURLOPT_POST, 1L);
@@ -342,7 +484,8 @@ FAkUGCEditorHttpRequestPtr FAkUGCEditorHttpTransport::Start(
 						CURLOPT_POSTFIELDS,
 						Spec.Body.IsEmpty()
 							? static_cast<const void*>(&EmptyBody)
-							: static_cast<const void*>(Spec.Body.GetData()));
+							: static_cast<const void*>(
+								Spec.Body.GetData()));
 					Set(
 						CURLOPT_POSTFIELDSIZE_LARGE,
 						static_cast<curl_off_t>(Spec.Body.Num()));
@@ -358,28 +501,40 @@ FAkUGCEditorHttpRequestPtr FAkUGCEditorHttpTransport::Start(
 				Set(
 					CURLOPT_TIMEOUT_MS,
 					static_cast<long>(
-						FMath::Max(1.0f, Spec.TimeoutSeconds * 1000.0f)));
+						FMath::Max(
+							1.0f,
+							Spec.TimeoutSeconds * 1000.0f)));
 				Set(
 					CURLOPT_CONNECTTIMEOUT_MS,
 					static_cast<long>(
 						FMath::Min(
 							10000.0f,
-							FMath::Max(1.0f, Spec.TimeoutSeconds * 1000.0f))));
+							FMath::Max(
+								1.0f,
+								Spec.TimeoutSeconds * 1000.0f))));
+				Set(CURLOPT_HEADERFUNCTION, &Header);
+				Set(CURLOPT_HEADERDATA, &Receive);
 				Set(CURLOPT_WRITEFUNCTION, &Write);
 				Set(CURLOPT_WRITEDATA, &Receive);
 				Set(CURLOPT_NOPROGRESS, 0L);
 				Set(
 					CURLOPT_XFERINFOFUNCTION,
-					+[](void* User, curl_off_t, curl_off_t, curl_off_t, curl_off_t) -> int
+					+[](void* User, curl_off_t, curl_off_t, curl_off_t,
+						   curl_off_t) -> int
 					{
-						return static_cast<FAkUGCEditorHttpRequest*>(User)
+						return static_cast<FAkUGCHttpRequest*>(User)
 							->IsCancelled()
 							? 1
 							: 0;
 					});
 				Set(CURLOPT_XFERINFODATA, Request.Get());
-				Set(CURLOPT_ACCEPT_ENCODING, "");
-				if (Spec.Url.StartsWith(TEXT("https://"), ESearchCase::CaseSensitive))
+				if (Spec.bAcceptCompressedResponse)
+				{
+					Set(CURLOPT_ACCEPT_ENCODING, "");
+				}
+				if (Spec.Url.StartsWith(
+						TEXT("https://"),
+						ESearchCase::CaseSensitive))
 				{
 #if WITH_DEV_AUTOMATION_TESTS
 					if (!Spec.TestCaBundle.IsEmpty())
@@ -389,7 +544,9 @@ FAkUGCEditorHttpRequestPtr FAkUGCEditorHttpTransport::Start(
 					else
 #endif
 					{
-						Set(CURLOPT_CAINFO, static_cast<const char*>(nullptr));
+						Set(
+							CURLOPT_CAINFO,
+							static_cast<const char*>(nullptr));
 						Set(CURLOPT_SSL_CTX_FUNCTION, &ConfigureSsl);
 					}
 				}
@@ -398,13 +555,28 @@ FAkUGCEditorHttpRequestPtr FAkUGCEditorHttpTransport::Start(
 					Code = curl_easy_perform(Handle);
 				}
 				long Status = 0;
-				curl_easy_getinfo(Handle, CURLINFO_RESPONSE_CODE, &Status);
+				curl_easy_getinfo(
+					Handle,
+					CURLINFO_RESPONSE_CODE,
+					&Status);
 				Receive.Result.StatusCode = static_cast<int32>(Status);
+				char* EffectiveUrl = nullptr;
+				if (curl_easy_getinfo(
+						Handle,
+						CURLINFO_EFFECTIVE_URL,
+						&EffectiveUrl)
+						== CURLE_OK
+					&& EffectiveUrl)
+				{
+					Receive.Result.EffectiveUrl =
+						UTF8_TO_TCHAR(EffectiveUrl);
+				}
 				curl_slist_free_all(Headers);
 				curl_easy_cleanup(Handle);
 			}
 			Receive.Result.NativeCode = static_cast<int32>(Code);
-			Receive.Result.bTimedOut = Code == CURLE_OPERATION_TIMEDOUT;
+			Receive.Result.bTimedOut =
+				Code == CURLE_OPERATION_TIMEDOUT;
 			Receive.Result.bCancelled = Request->IsCancelled();
 			{
 				FScopeLock Lock(&Request->Mutex);

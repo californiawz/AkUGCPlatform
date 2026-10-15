@@ -52,7 +52,10 @@ namespace
 
         TArray<uint8> Message;
         Message.SetNumUninitialized(TotalLength);
-        FMemory::Memcpy(Message.GetData(), Input, InputLength);
+        if (InputLength > 0)
+        {
+            FMemory::Memcpy(Message.GetData(), Input, InputLength);
+        }
         Message[InputLength] = 0x80;
         FMemory::Memzero(Message.GetData() + InputLength + 1, PadLength - 1);
         for (int32 i = 0; i < 8; ++i)
@@ -411,6 +414,11 @@ FString FAkUGCLogicPackHasher::Sha256Hex(const FString& Utf8)
 {
     FTCHARToUTF8 Converter(*Utf8, Utf8.Len());
     return Sha256HexDigest(reinterpret_cast<const uint8*>(Converter.Get()), Converter.Length());
+}
+
+FString FAkUGCLogicPackHasher::Sha256Hex(TConstArrayView<uint8> Bytes)
+{
+    return Sha256HexDigest(Bytes.GetData(), Bytes.Num());
 }
 
 bool FAkUGCLogicPackHasher::DeterministicSerialize(const FAkUGCProjectDocument& Document, FString& OutJson, FString* OutError)

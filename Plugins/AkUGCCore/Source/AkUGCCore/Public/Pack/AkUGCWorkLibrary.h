@@ -29,6 +29,14 @@ public:
         const FString& ShareDirectory, FAkUGCWorkEntry& OutEntry, FString& OutSharePath, FString* OutError = nullptr) const;
     bool Import(const FString& SharePath, const FString& IndependentlyTrustedPublicKey,
         FAkUGCWorkEntry& OutEntry, FString* OutError = nullptr) const;
+    /**
+     * Imports exact downloaded bytes only after local signature verification and
+     * binding the signed manifest to the requested Release and response ContentHash.
+     */
+    bool ImportArtifact(TConstArrayView<uint8> Artifact,
+        const FString& IndependentlyTrustedPublicKey,
+        const FGuid& ExpectedReleaseId, const FString& ExpectedContentHash,
+        FAkUGCWorkEntry& OutEntry, FString* OutError = nullptr) const;
     bool List(TArray<FAkUGCWorkEntry>& OutEntries, int32& OutRejectedCount, FString* OutError = nullptr) const;
     FAkUGCLogicPackLoadResult Load(const FGuid& ReleaseId) const;
     bool Export(const FGuid& ReleaseId, const FString& Destination, FString* OutError = nullptr) const;

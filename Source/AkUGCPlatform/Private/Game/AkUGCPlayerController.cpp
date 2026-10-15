@@ -9,11 +9,21 @@
 #include "Game/AkUGCRoom.h"
 #include "Kismet/GameplayStatics.h"
 #include "Net/UnrealNetwork.h"
+#include "Release/AkUGCPlayerRegistryState.h"
 
 AAkUGCPlayerController::AAkUGCPlayerController()
 {
     // Keep the explicit overview camera when a replicated Pawn is acknowledged.
     bAutoManageActiveCameraTarget = false;
+    PrimaryActorTick.bCanEverTick = true;
+    PrimaryActorTick.bStartWithTickEnabled = true;
+    RegistryState = new FAkUGCPlayerRegistryState();
+}
+
+AAkUGCPlayerController::~AAkUGCPlayerController()
+{
+    delete RegistryState;
+    RegistryState = nullptr;
 }
 
 void AAkUGCPlayerController::SetupInputComponent()

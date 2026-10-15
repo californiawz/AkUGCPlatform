@@ -19,8 +19,6 @@ public class AkUGCEditor : ModuleRules
         {
             "EditorSubsystem",
             "ApplicationCore",
-            "HTTP",
-            "SSL",
             "OpenSSL",
             "Json",
             "InputCore",
@@ -30,14 +28,5 @@ public class AkUGCEditor : ModuleRules
             "ToolMenus",
             "UnrealEd"
         });
-        if (Target.Platform == UnrealTargetPlatform.Win64 && !Target.WindowsPlatform.bUseXCurl)
-        {
-            AddEngineThirdPartyPrivateStaticDependencies(Target, "libcurl");
-            PrivateDefinitions.Add("AKUGC_COPILOT_CURL=1");
-        }
-        else
-        {
-            PrivateDefinitions.Add("AKUGC_COPILOT_CURL=0");
-        }
     }
 }

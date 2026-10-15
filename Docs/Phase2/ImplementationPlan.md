@@ -194,7 +194,33 @@
 **边界**：
 
 - 当前面板不提供 Reviewer、撤回、公钥轮换链登记或 token 持久化；公网 IdP、TLS、云项目和协作者仍不属于本切片。
-- Player 仍由 P19.1 验收编排下载并本地验签；Player 产品内直接获取、导入和游玩是下一切片。
+- P19.2 本身只接入 Creator；Player 产品内直接获取、导入和游玩已在后续 P19.3 完成。
 - 四台真实物理设备验收继续延期，不计入本阶段通过证据。
+
+### P19.3：Packaged Player Registry 产品接入
+
+**目标**：让 Packaged Player 使用 Player 身份直接获取 published Release，并确保 Registry、HTTP Header 或包内自带公钥都不能替代独立信任根和本地完整验证。
+
+**实现**：
+
+- 将 P19.2 的异步 libcurl 传输下沉为 `AkUGCCore` Runtime 能力，Editor 保持兼容入口；Client 启动时统一初始化，退出前取消并回收工作线程。传输继续禁用代理、netrc 和重定向，并新增 64 KiB 响应 Header 总预算、`Content-Length` 接收前超限拒绝、最终 URL 与响应 Header 证据。
+- 新增 Player Registry 客户端和 `FetchRegistryWork` / `CancelRegistryWork` 入口。静态 token 阶段只允许规范 loopback Base URL，token 只保留到请求完成，不写入配置、本地作品记录或日志。
+- 下载严格限制为 16 MiB、未压缩且有固定长度的 `application/vnd.akugc+json`；要求唯一 `Content-Length`、Artifact SHA-256 ETag 和 ContentHash Header，并核对精确响应字节、最终 URL、重复字段及禁止的传输编码。
+- 信任公钥必须由 Player 调用方独立提供。客户端不请求或采用 Registry 的 `publisherPublicKey`；HTTP 200、ETag、ContentHash 和包内公钥都不能把错误信任根提升为可信。
+- 作品库新增原始制品字节导入边界：规范 UTF-8 后调用 `LoadVerified`，并在任何写盘前绑定请求 ReleaseId 与已签名 ContentHash。入库后的 `PrepareLibraryWork` 继续从 `.ugcwork` 再次验签，成功准备后才允许 `StartSolo`。
+- Packaged Client 验收先后验证未发布 404、错误 token 401、错误独立公钥、具有匹配 ETag 的网络篡改包、Header 阶段 16 MiB + 1、HTTP 302、正常直接下载并完成一局，以及撤回后的 404；每个拒绝都确认作品库为空且 Session 未启动。
+
+**已验证（2026-10-15）**：
+
+- AkUGCPlatformEditor、Client、Server Win64 Development 编译成功；最新 Client 完成 Cook/Stage。
+- Python 回归 120/120；Editor `AkUGC` 完整自动化 139/139；共享 Copilot HTTP/TLS 协议夹具 42/42 保持通过。
+- 真实 PostgreSQL + Registry + Packaged Player 本机隔离闭环通过：8 路提交为一个 `201` 与七个 `200`，Player 产品入口完成全部拒绝门禁、本地验签、入库、准备、开局、胜利结算和撤回后拒绝。
+- 完整证据位于本机 `Saved/ReleaseRegistryVerification/P19_3_PlayerRegistry_Final3/result.json`；共享传输与完整 Editor 回归证据位于 `Saved/P19_3_Copilot_Final1/result.json`。
+
+**边界**：
+
+- 当前 Player 是本机静态 token + loopback HTTP Alpha 入口；正式账号登录、凭据安全存储、TLS、公网错误恢复和离线下载体验仍需后续产品化。
+- 本切片只接入单人 Player。Dedicated Server 固定 Release 获取、会话版本锁定和回滚仍未实现，不能把 Player 本地库当作 DS 发布控制面。
+- 四台真实物理设备验收继续延期；本轮证据是同机独立 token、目录、进程和恶意 loopback 夹具，不计作实体设备通过。
 
 玩家 Asset Pack 白名单试点放在 Release Registry 稳定之后，避免同时扩大网络、内容与沙箱攻击面。

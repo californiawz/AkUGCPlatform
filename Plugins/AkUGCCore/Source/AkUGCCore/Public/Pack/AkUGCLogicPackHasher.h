@@ -39,4 +39,7 @@ public:
 
 	/** 底层：对 UTF-8 字节流计算 SHA-256 hex。 */
 	static FString Sha256Hex(const FString& Utf8);
+
+	/** 底层：对原始字节精确计算 SHA-256 hex，不执行文本转码。 */
+	static FString Sha256Hex(TConstArrayView<uint8> Bytes);
 };

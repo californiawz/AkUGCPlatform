@@ -1,5 +1,6 @@
 #include "Pack/AkUGCWorkLibrary.h"
 
+#include "Containers/StringConv.h"
 #include "Dom/JsonObject.h"
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
@@ -46,6 +47,52 @@ namespace AkUGCWorkFiles
         const bool Written = FFileHelper::SaveStringToFile(Text, *Temporary, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM)
             && IFileManager::Get().Move(*Path, *Temporary, false, false, false, true);
         if (!Written) { IFileManager::Get().Delete(*Temporary); return Fail(Error, TEXT("文件原子写入失败。")); }
+        return true;
+    }
+
+    bool DecodeArtifact(
+        TConstArrayView<uint8> Artifact,
+        FString& OutJson,
+        FString* Error)
+    {
+        OutJson.Reset();
+        if (Artifact.IsEmpty()
+            || Artifact.Num() > FAkUGCWorkLibrary::MaxFileBytes)
+        {
+            return Fail(
+                Error,
+                TEXT("下载制品为空或超过 16 MiB。"));
+        }
+        FFileHelper::BufferToString(
+            OutJson,
+            Artifact.GetData(),
+            Artifact.Num());
+        FTCHARToUTF8 RoundTrip(*OutJson, OutJson.Len());
+        if (RoundTrip.Length() != Artifact.Num()
+            || FMemory::Memcmp(
+                RoundTrip.Get(),
+                Artifact.GetData(),
+                Artifact.Num()) != 0)
+        {
+            OutJson.Reset();
+            return Fail(
+                Error,
+                TEXT("下载制品不是规范 UTF-8 文本。"));
+        }
+        return true;
+    }
+
+    bool IsLowerHex(const FString& Value, int32 Characters)
+    {
+        if (Value.Len() != Characters) { return false; }
+        for (const TCHAR Character : Value)
+        {
+            if (!((Character >= TEXT('0') && Character <= TEXT('9'))
+                || (Character >= TEXT('a') && Character <= TEXT('f'))))
+            {
+                return false;
+            }
+        }
         return true;
     }
 
@@ -158,6 +205,46 @@ bool FAkUGCWorkLibrary::Import(const FString& SharePath, const FString& Independ
 {
     FString Json;
     return AkUGCWorkFiles::Read(SharePath, Json, OutError) && Store(Json, IndependentlyTrustedPublicKey, OutEntry, OutError);
+}
+
+bool FAkUGCWorkLibrary::ImportArtifact(
+    TConstArrayView<uint8> Artifact,
+    const FString& IndependentlyTrustedPublicKey,
+    const FGuid& ExpectedReleaseId,
+    const FString& ExpectedContentHash,
+    FAkUGCWorkEntry& OutEntry,
+    FString* OutError) const
+{
+    if (OutError) { OutError->Reset(); }
+    FString Json;
+    if (!ExpectedReleaseId.IsValid()
+        || !AkUGCWorkFiles::IsLowerHex(ExpectedContentHash, 64)
+        || !AkUGCWorkFiles::DecodeArtifact(Artifact, Json, OutError))
+    {
+        if (OutError && OutError->IsEmpty())
+        {
+            *OutError = TEXT("下载制品的预期 Release 或 ContentHash 无效。");
+        }
+        return false;
+    }
+    const FString Key =
+        IndependentlyTrustedPublicKey.TrimStartAndEnd().ToLower();
+    const FAkUGCLogicPackLoadResult Verified =
+        FAkUGCLogicPackLoader::LoadVerified(Json, Key);
+    if (!Verified.bSucceeded)
+    {
+        return AkUGCWorkFiles::Fail(
+            OutError,
+            Verified.ErrorMessage);
+    }
+    if (Verified.Pack.Manifest.ReleaseId != ExpectedReleaseId
+        || Verified.Pack.Manifest.ContentHash != ExpectedContentHash)
+    {
+        return AkUGCWorkFiles::Fail(
+            OutError,
+            TEXT("下载制品与请求的 Release 或 ContentHash 不一致。"));
+    }
+    return Store(Json, Key, OutEntry, OutError);
 }
 
 FAkUGCLogicPackLoadResult FAkUGCWorkLibrary::Load(const FGuid& ReleaseId) const

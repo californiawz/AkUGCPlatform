@@ -62,6 +62,16 @@
 - Reviewer 操作不进入 Creator 面板；Creator 只有在刷新得到 `approved` 后才能发起 publish。撤回和公钥轮换链登记留在后续切片。
 - 取消只终止客户端等待，不能回滚可能已经到达服务端的提交或发布；取消后必须刷新状态确认最终结果。
 
+## Packaged Player 客户端
+
+- Player 只对显式 ReleaseId 调用 `GET /v1/releases/{releaseId}/download`。P19 静态 token 模式仍只接受 `http://127.0.0.1` 或 `http://localhost`；地址、token 和独立信任公钥由当前运行入口注入，不写入配置或作品库元数据。
+- Runtime 与 Creator 共用有界异步 libcurl 传输生命周期：禁止代理、重定向、netrc 和凭据跨地址转发；响应 Header 最多 64 KiB，制品最多 16 MiB。`Content-Length` 在 Header 到达时已超限会立即中止，响应压缩和 chunked artifact 均不接受。
+- 下载成功必须精确包含 `application/vnd.akugc+json`、`Content-Length`、Artifact SHA-256 `ETag` 和 `X-AkUGC-Content-Hash`。客户端核对最终 URL、精确字节长度、SHA-256 和重复 Header；这些字段只绑定传输结果，不能授予作品信任。
+- 信任根只能来自调用方独立提供的 64 位 Ed25519 公钥。Player 下载接口不读取 Registry 元数据里的 `publisherPublicKey`，也不接受包内公钥自证；错误公钥即使配合合法 HTTP 200、ContentHash 和 ETag 仍必须本地拒绝。
+- 入库前对原始响应字节执行规范 UTF-8、`LoadVerified`、请求 ReleaseId 和已签名 ContentHash 绑定检查；全部通过后才原子创建本地 `.ugcwork`。已存在同 ID 的不同内容继续按冲突拒绝，不会覆盖。
+- 选择作品时 `PrepareLibraryWork` 会从本地记录再次验签；只有准备成功后 `StartSolo` 才能建立 Session。401/403/404、重定向、超限、摘要错误、篡改制品和错误信任根都不得写入目标 Release 或启动 Session。
+- 当前产品切片提供 `FetchRegistryWork` / `CancelRegistryWork` 运行时入口；自动化通过仅对 Player 子进程可见的环境变量把本机 Alpha 凭据注入该入口，避免凭据出现在 Unreal 命令行元数据。玩家账号登录、凭据安全存储与远端 TLS 地址属于正式 IdP 切片，不能沿用静态 token 方案上线公网。
+
 ## 并发判定
 
 - 提交事务先按 `Owner + Idempotency-Key` 获取事务级 advisory lock，再检查幂等记录、插入或比对 Release，最后写入幂等绑定。
@@ -73,5 +83,5 @@
 
 - P19 v1 将小于 16 MiB 的制品保存在 PostgreSQL `bytea`，便于先证明事务与不可变语义；对象存储拆分在 Registry 契约稳定后进行，迁移时 ArtifactSHA256 和不可变语义不得改变。
 - Publisher 公钥当前由本地认证配置绑定；P18.1 的双签名轮换链登记 API 是后续 P19 切片，不能通过修改现有 Release 的公钥来模拟轮换。
-- 私人/公开可见性、项目协作者、构建任务、DS 固定版本和资产包上传不属于本切片。
+- P19.2 已接入 Creator Studio，P19.3 已接入 Packaged Player；Reviewer UI、撤回 UI、私人/公开可见性、项目协作者、构建任务、DS 固定版本和资产包上传不属于本切片。
 - 四台真实物理设备验收按当前决策延期；本阶段使用本机隔离 Creator、Reviewer、Player 和 PostgreSQL 进程验证。

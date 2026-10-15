@@ -3,6 +3,8 @@
 #include "GameFramework/PlayerController.h"
 #include "AkUGCPlayerController.generated.h"
 
+struct FAkUGCPlayerRegistryState;
+
 UCLASS()
 class AKUGCPLATFORM_API AAkUGCPlayerController : public APlayerController
 {
@@ -10,7 +12,10 @@ class AKUGCPLATFORM_API AAkUGCPlayerController : public APlayerController
 
 public:
     AAkUGCPlayerController();
+    virtual ~AAkUGCPlayerController() override;
     virtual void BeginPlay() override;
+    virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+    virtual void Tick(float DeltaSeconds) override;
     virtual void SetupInputComponent() override;
     virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
     void SetRoomMemberId(int32 Id) { if (HasAuthority()) { RoomMemberId = Id; } }
@@ -47,6 +52,12 @@ public:
     UFUNCTION(Exec)
     void ImportWork(const FString& SharePath, const FString& IndependentlyTrustedPublicKey);
     UFUNCTION(Exec)
+    void FetchRegistryWork(const FString& RegistryBaseUrl,
+        const FString& BearerToken, const FString& ReleaseId,
+        const FString& IndependentlyTrustedPublicKey);
+    UFUNCTION(Exec)
+    void CancelRegistryWork();
+    UFUNCTION(Exec)
     void ExportWork(const FString& ReleaseId, const FString& Destination);
     UFUNCTION(Exec)
     void DeleteWork(const FString& ReleaseId);
@@ -55,9 +66,12 @@ public:
     void NextWork();
     void PlaySelectedWork();
     FString GetWorkLibraryStatus() const { return WorkLibraryStatus; }
+    bool HasPendingRegistryWork() const;
+    FString GetRegistryFailureCode() const;
     static FString WorkLibraryDirectory();
 
 private:
+    FAkUGCPlayerRegistryState* RegistryState = nullptr;
     FString SelectedWorkId;
     FString WorkLibraryStatus;
     UPROPERTY(Replicated)
