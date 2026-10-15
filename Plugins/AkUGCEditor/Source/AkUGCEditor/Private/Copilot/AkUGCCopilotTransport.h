@@ -1,34 +1,11 @@
 #pragma once
 
-#include "CoreMinimal.h"
+#include "Transport/AkUGCEditorHttpTransport.h"
 #include "Validation/AkUGCInputBudget.h"
 
-struct FAkUGCCopilotTransportResult
-{
-    int32 NativeCode = 0;
-    int32 StatusCode = 0;
-    bool bTimedOut = false;
-    bool bCancelled = false;
-    bool bTooLarge = false;
-    TArray<uint8> Body;
-};
-
-class FAkUGCCopilotRequest : public TSharedFromThis<FAkUGCCopilotRequest, ESPMode::ThreadSafe>
-{
-public:
-    void Cancel() { bCancel.Store(true); }
-    bool IsDone() const { return bDone.Load(); }
-    bool IsCancelled() const { return bCancel.Load(); }
-    FAkUGCCopilotTransportResult TakeResult();
-private:
-    friend class FAkUGCCopilotTransport;
-    TAtomic<bool> bCancel{false};
-    TAtomic<bool> bDone{false};
-    FCriticalSection Mutex;
-    FAkUGCCopilotTransportResult Result;
-};
-
-using FAkUGCCopilotRequestPtr = TSharedPtr<FAkUGCCopilotRequest, ESPMode::ThreadSafe>;
+using FAkUGCCopilotTransportResult = FAkUGCEditorHttpResult;
+using FAkUGCCopilotRequest = FAkUGCEditorHttpRequest;
+using FAkUGCCopilotRequestPtr = FAkUGCEditorHttpRequestPtr;
 
 class FAkUGCCopilotTransport
 {

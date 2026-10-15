@@ -872,6 +872,8 @@ def main(argv=None):
 
 def _run_verification(args, root, output, user_dir):
     events = []
+    registry_events = []
+    registry_release = {}
     mutex = threading.Lock()
     wave = {"enemyPrefabId": "official.unit.basic_enemy", "enemyCount": 8, "spawnIntervalSeconds": 1.0,
             "enemyMaxHealth": 100.0, "enemyMoveSpeed": 300.0, "enemyGoalDamage": 10.0, "startDelaySeconds": 0.0}
@@ -1010,7 +1012,121 @@ def _run_verification(args, root, output, user_dir):
         do_POST = serve
         do_GET = serve
 
-    server = tls_server = key_path = None
+    class RegistryHandler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *_):
+            pass
+
+        def send_json(self, status, value):
+            data = json.dumps(value, separators=(",", ":")).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def release(self, status, revision):
+            return {
+                "releaseId": registry_release["release_id"],
+                "projectId": registry_release["project_id"],
+                "schemaVersion": registry_release["schema_version"],
+                "ownerSubject": "creator-a",
+                "publisherPublicKey": registry_release["public_key"],
+                "contentHash": registry_release["content_hash"],
+                "artifactSha256": registry_release["artifact_sha256"],
+                "artifactSize": registry_release["artifact_size"],
+                "status": status,
+                "revision": revision,
+                "submittedAt": "2026-10-15T06:00:00Z",
+                "updatedAt": f"2026-10-15T06:0{revision - 1}:00Z",
+            }
+
+        def serve(self):
+            authorization_valid = (
+                self.headers.get("Authorization")
+                == "Bearer registry-creator-token"
+            )
+            size = int(self.headers.get("Content-Length", "0"))
+            event = {
+                "method": self.command,
+                "path": self.path,
+                "authorization_valid": authorization_valid,
+                "content_type": self.headers.get("Content-Type", ""),
+                "idempotency_key": self.headers.get("Idempotency-Key", ""),
+                "content_length": size,
+            }
+            with mutex:
+                registry_events.append(event)
+            if not authorization_valid:
+                self.send_json(401, {"error": {"code": "unauthenticated"}})
+                return
+            if self.command == "POST" and self.path == "/v1/releases":
+                if (
+                    size < 1
+                    or size > 16 * 1024 * 1024
+                    or event["content_type"] != "application/vnd.akugc+json"
+                    or not re.fullmatch(
+                        r"[A-Za-z0-9._:-]{16,128}",
+                        event["idempotency_key"],
+                    )
+                ):
+                    self.send_json(400, {"error": {"code": "invalid_input"}})
+                    return
+                artifact = self.rfile.read(size)
+                try:
+                    pack = json.loads(artifact.decode("utf-8-sig"))
+                    manifest = pack["manifest"]
+                    signature = pack["signature"]
+                    release_id = str(uuid.UUID(manifest["releaseId"])).lower()
+                    project_id = str(uuid.UUID(manifest["projectId"])).lower()
+                except (KeyError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                    self.send_json(400, {"error": {"code": "invalid_input"}})
+                    return
+                registry_release.update(
+                    {
+                        "release_id": release_id,
+                        "project_id": project_id,
+                        "schema_version": manifest["schemaVersion"],
+                        "public_key": signature["publicKey"],
+                        "content_hash": manifest["contentHash"],
+                        "artifact_sha256": hashlib.sha256(artifact).hexdigest(),
+                        "artifact_size": len(artifact),
+                    }
+                )
+                self.send_json(
+                    201,
+                    {"created": True, "release": self.release("submitted", 1)},
+                )
+                return
+            expected_path = (
+                f"/v1/releases/{registry_release.get('release_id', '')}"
+            )
+            if self.command == "GET" and self.path == expected_path:
+                self.send_json(200, {"release": self.release("approved", 2)})
+                return
+            if (
+                self.command == "POST"
+                and self.path == expected_path + "/publish"
+                and size == 0
+            ):
+                self.send_json(
+                    200,
+                    {"changed": True, "release": self.release("published", 3)},
+                )
+                return
+            self.send_json(404, {"error": {"code": "not_found"}})
+
+        def handle(self):
+            try:
+                super().handle()
+            except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+                pass
+
+        do_POST = serve
+        do_GET = serve
+
+    server = tls_server = registry_server = key_path = None
     threads = []
     fixture_flags = []
     if not args.parameter_ui:
@@ -1026,15 +1142,20 @@ def _run_verification(args, root, output, user_dir):
         key_path.write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         tls_server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        registry_server = ThreadingHTTPServer(("127.0.0.1", 0), RegistryHandler)
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.load_cert_chain(cert_path, key_path)
         tls_server.socket = context.wrap_socket(tls_server.socket, server_side=True)
-        threads = [threading.Thread(target=item.serve_forever, daemon=True) for item in (server, tls_server)]
+        threads = [
+            threading.Thread(target=item.serve_forever, daemon=True)
+            for item in (server, tls_server, registry_server)
+        ]
         for thread in threads:
             thread.start()
         fixture_flags = [f"-CopilotFixture=http://127.0.0.1:{server.server_port}",
                          f"-CopilotTlsFixture=https://localhost:{tls_server.server_port}", f"-CopilotTlsCa={cert_path}",
-                         f"-CopilotTlsMismatch=https://127.0.0.1:{tls_server.server_port}"]
+                         f"-CopilotTlsMismatch=https://127.0.0.1:{tls_server.server_port}",
+                         f"-RegistryFixture=http://127.0.0.1:{registry_server.server_port}"]
     log = output / "editor.log"
     selector = "AkUGC" if args.all_tests else "AkUGC.Editor.Copilot.RealHttpProtocol"
     command = [str(args.engine / "Engine/Binaries/Win64/UnrealEditor-Cmd.exe"), str(root / "AkUGCPlatform.uproject"),
@@ -1062,7 +1183,7 @@ def _run_verification(args, root, output, user_dir):
                     process.terminate()
                     process.wait(timeout=15)
     finally:
-        for item in (server, tls_server):
+        for item in (server, tls_server, registry_server):
             if item is not None:
                 item.shutdown()
                 item.server_close()
@@ -1096,7 +1217,7 @@ def _run_verification(args, root, output, user_dir):
             expected_selector=actual_selector,
             expected_paths=(expected_path,),
             expected_total=None if args.all_tests and not args.mouse_ui else 1,
-            minimum_total=134 if args.all_tests and not args.mouse_ui else None,
+            minimum_total=137 if args.all_tests and not args.mouse_ui else None,
             require_queue_empty=True,
             require_test_exit=True,
             return_code=code,
@@ -1137,9 +1258,32 @@ def _run_verification(args, root, output, user_dir):
         if not result["passed"]:
             raise RuntimeError("Mouse UI validation failed")
         return
+    registry_protocol_passed = (
+        not args.all_tests
+        or (
+            "[AkUGCReleaseRegistryHTTP] Passed Operations=3 LoopbackOnly=1" in text
+            and len(registry_events) == 3
+            and registry_events[0]["method"] == "POST"
+            and registry_events[0]["path"] == "/v1/releases"
+            and registry_events[0]["content_type"] == "application/vnd.akugc+json"
+            and registry_events[0]["idempotency_key"].startswith("akugc-release-")
+            and registry_events[0]["content_length"] > 0
+            and registry_events[1]["method"] == "GET"
+            and registry_events[1]["path"].endswith(registry_release["release_id"])
+            and registry_events[2]["method"] == "POST"
+            and registry_events[2]["path"].endswith(
+                registry_release["release_id"] + "/publish"
+            )
+            and registry_events[2]["content_length"] == 0
+            and all(event["authorization_valid"] for event in registry_events)
+        )
+    )
     result = {"kind": "local_http_protocol_fixture_not_real_ai", "passed": not automation_error
-              and "[AkUGCCopilotHTTP] Passed Cases=42 FixtureOnly=1" in text,
+              and "[AkUGCCopilotHTTP] Passed Cases=42 FixtureOnly=1" in text
+              and registry_protocol_passed,
               "cases": completed, "http_requests": events,
+              "registry_requests": registry_events,
+              "creator_registry_protocol_verified": registry_protocol_passed,
               "credentials_only_sent_over_verified_tls": all(not event["authorization_present"] or event["tls"] for event in events)
                   and "/credentials-must-not-arrive" not in counts,
               "tls_authenticated_success": any(event["path"] == "/tls-ok" and event["authorization_valid_fixture"] for event in events),
@@ -1168,7 +1312,8 @@ def _run_verification(args, root, output, user_dir):
     if (not result["passed"] or not result["credentials_only_sent_over_verified_tls"] or len(set(completed)) != 42
             or not result["request_level_redirect_blocked"] or not result["native_timeout_verified"]
             or not result["tls_authenticated_success"] or not result["tls_invalid_certificates_rejected_before_http"]
-            or not result["explanation_diagnostic_only"]):
+            or not result["explanation_diagnostic_only"]
+            or not result["creator_registry_protocol_verified"]):
         raise RuntimeError(f"Copilot HTTP protocol verification failed: {log}\n{text[-5000:]}")
 
 

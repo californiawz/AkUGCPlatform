@@ -29,6 +29,8 @@ namespace
 void SAkUGCWorkLibraryPanel::Construct(const FArguments& InArgs, UAkUGCEditorSubsystem* InSubsystem)
 {
     Subsystem = InSubsystem;
+    RegistryBaseUrl = TEXT("http://127.0.0.1:8088");
+    RegistryStatus = TEXT("Registry token 只保留在当前面板内存中；P19 本机模式只允许 loopback HTTP。请先完成一次本地签名发布。");
     RecoveryPath = FPaths::Combine(
         FPaths::ProjectSavedDir(),
         TEXT("UGC/Recovery"),
@@ -47,7 +49,7 @@ void SAkUGCWorkLibraryPanel::Construct(const FArguments& InArgs, UAkUGCEditorSub
         [SNew(SHorizontalBox)
             + SHorizontalBox::Slot().AutoWidth().Padding(2)
             [SNew(SButton).Text(FText::FromString(TEXT("一键签名发布当前项目")))
-                .IsEnabled_Lambda([this] { return Subsystem.IsValid() && Subsystem->HasOpenProject(); })
+                .IsEnabled_Lambda([this] { return !PendingRegistryRequest.IsValid() && Subsystem.IsValid() && Subsystem->HasOpenProject(); })
                 .OnClicked(this, &SAkUGCWorkLibraryPanel::Publish)]
             + SHorizontalBox::Slot().AutoWidth().Padding(2)
             [SNew(SButton).Text(FText::FromString(TEXT("刷新作品库"))).OnClicked(this, &SAkUGCWorkLibraryPanel::Refresh)]
@@ -55,6 +57,58 @@ void SAkUGCWorkLibraryPanel::Construct(const FArguments& InArgs, UAkUGCEditorSub
             [SNew(SButton).Text(FText::FromString(TEXT("打开分享目录"))).OnClicked_Lambda([]
                 { FPlatformProcess::ExploreFolder(*FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("UGC/Share")))); return FReply::Handled(); })]
         ]
+        + SVerticalBox::Slot().AutoHeight().Padding(0, 8, 0, 2)
+        [SNew(STextBlock).Text(FText::FromString(TEXT("Release Registry（本机 Alpha）")))]
+        + SVerticalBox::Slot().AutoHeight()
+        [SNew(STextBlock).Text(FText::FromString(TEXT("先上传最近一次本地签名包；独立 Reviewer 审核后刷新状态，再发布。静态 token 不保存，且不会替代作品签名或 Player 本地验签。"))).AutoWrapText(true)]
+        + SVerticalBox::Slot().AutoHeight().Padding(0, 2)
+        [SNew(SEditableTextBox)
+            .HintText(FText::FromString(TEXT("Registry Base URL（仅 http://127.0.0.1 或 localhost）")))
+            .Text_Lambda([this] { return FText::FromString(RegistryBaseUrl); })
+            .OnTextChanged_Lambda([this](const FText& Text) { RegistryBaseUrl = Text.ToString(); })]
+        + SVerticalBox::Slot().AutoHeight().Padding(0, 2)
+        [SNew(SEditableTextBox)
+            .IsPassword(true)
+            .HintText(FText::FromString(TEXT("Creator Bearer Token（仅面板内存，不保存）")))
+            .OnTextChanged_Lambda([this](const FText& Text) { RegistryToken = Text.ToString(); })]
+        + SVerticalBox::Slot().AutoHeight()
+        [SNew(SHorizontalBox)
+            + SHorizontalBox::Slot().AutoWidth().Padding(2)
+            [SNew(SButton).Text(FText::FromString(TEXT("上传最近签名包")))
+                .IsEnabled_Lambda([this]
+                    {
+                        return !PendingRegistryRequest.IsValid()
+                            && LastPublishedEntry.IsSet()
+                            && !LastPublishedSharePath.IsEmpty()
+                            && !RegistryToken.IsEmpty();
+                    })
+                .OnClicked(this, &SAkUGCWorkLibraryPanel::SubmitToRegistry)]
+            + SHorizontalBox::Slot().AutoWidth().Padding(2)
+            [SNew(SButton).Text(FText::FromString(TEXT("刷新 Registry 状态")))
+                .IsEnabled_Lambda([this]
+                    {
+                        return !PendingRegistryRequest.IsValid()
+                            && LastPublishedEntry.IsSet()
+                            && !RegistryToken.IsEmpty();
+                    })
+                .OnClicked(this, &SAkUGCWorkLibraryPanel::RefreshRegistryStatus)]
+            + SHorizontalBox::Slot().AutoWidth().Padding(2)
+            [SNew(SButton).Text(FText::FromString(TEXT("发布已审核 Release")))
+                .IsEnabled_Lambda([this]
+                    {
+                        return !PendingRegistryRequest.IsValid()
+                            && LastPublishedEntry.IsSet()
+                            && RegistryReleaseStatus == TEXT("approved")
+                            && !RegistryToken.IsEmpty();
+                    })
+                .OnClicked(this, &SAkUGCWorkLibraryPanel::PublishToRegistry)]
+            + SHorizontalBox::Slot().AutoWidth().Padding(2)
+            [SNew(SButton).Text(FText::FromString(TEXT("取消 Registry 请求")))
+                .IsEnabled_Lambda([this] { return PendingRegistryRequest.IsValid(); })
+                .OnClicked(this, &SAkUGCWorkLibraryPanel::CancelRegistryRequest)]
+        ]
+        + SVerticalBox::Slot().AutoHeight()
+        [SNew(STextBlock).Text_Lambda([this] { return FText::FromString(RegistryStatus); }).AutoWrapText(true)]
         + SVerticalBox::Slot().AutoHeight().Padding(0, 8, 0, 2)
         [SNew(STextBlock).Text(FText::FromString(TEXT("发布身份恢复与轮换")))]
         + SVerticalBox::Slot().AutoHeight()
@@ -128,6 +182,28 @@ void SAkUGCWorkLibraryPanel::Construct(const FArguments& InArgs, UAkUGCEditorSub
     Refresh();
 }
 
+SAkUGCWorkLibraryPanel::~SAkUGCWorkLibraryPanel()
+{
+    if (PendingRegistryRequest.IsValid())
+    {
+        PendingRegistryRequest->Cancel();
+    }
+    SecureResetString(RegistryToken);
+}
+
+void SAkUGCWorkLibraryPanel::Tick(
+    const FGeometry& Geometry,
+    double CurrentTime,
+    float DeltaTime)
+{
+    SCompoundWidget::Tick(Geometry, CurrentTime, DeltaTime);
+    if (PendingRegistryRequest.IsValid() && PendingRegistryRequest->IsDone())
+    {
+        const FAkUGCEditorHttpRequestPtr Completed = PendingRegistryRequest;
+        CompleteRegistryRequest(Completed, Completed->TakeResult());
+    }
+}
+
 FReply SAkUGCWorkLibraryPanel::Publish()
 {
     FString Error, Path;
@@ -138,6 +214,10 @@ FReply SAkUGCWorkLibraryPanel::Publish()
             FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("UGC/Share")), Entry, Path, &Error))
     {
         SharePath = Path;
+        LastPublishedEntry = Entry;
+        LastPublishedSharePath = Path;
+        RegistryReleaseStatus.Reset();
+        RegistryStatus = TEXT("本地签名包已就绪；可显式上传到 Registry。");
         bConfirmedTrust = false;
         Refresh();
         Status = FString::Printf(TEXT("发布完成：%s\n分享路径：%s\n独立核对公钥：%s\n已发布的是当前项目快照，不含尚未应用的参数草稿。"),
@@ -145,6 +225,152 @@ FReply SAkUGCWorkLibraryPanel::Publish()
     }
     else { Status = Error.IsEmpty() ? TEXT("请先打开项目。") : Error; }
     return FReply::Handled();
+}
+
+FReply SAkUGCWorkLibraryPanel::SubmitToRegistry()
+{
+    if (PendingRegistryRequest.IsValid() || !LastPublishedEntry.IsSet())
+    {
+        return FReply::Handled();
+    }
+    FString Error;
+    const FAkUGCWorkEntry Entry = LastPublishedEntry.GetValue();
+    const FAkUGCEditorHttpRequestPtr Request =
+        FAkUGCReleaseRegistryClient::StartSubmit(
+            RegistryBaseUrl,
+            RegistryToken,
+            Entry,
+            LastPublishedSharePath,
+            RegistryRequestTimeoutSeconds,
+            Error);
+    if (!Request.IsValid())
+    {
+        RegistryStatus = Error;
+        return FReply::Handled();
+    }
+    RegistryRequestEntry = Entry;
+    PendingRegistryOperation = EAkUGCReleaseRegistryOperation::Submit;
+    PendingRegistryRequest = Request;
+    RegistryStatus = TEXT("正在上传本地签名包；禁止重定向，当前项目和本地作品库不会被修改。");
+    return FReply::Handled();
+}
+
+FReply SAkUGCWorkLibraryPanel::RefreshRegistryStatus()
+{
+    if (PendingRegistryRequest.IsValid() || !LastPublishedEntry.IsSet())
+    {
+        return FReply::Handled();
+    }
+    FString Error;
+    const FAkUGCWorkEntry Entry = LastPublishedEntry.GetValue();
+    const FAkUGCEditorHttpRequestPtr Request =
+        FAkUGCReleaseRegistryClient::StartGet(
+            RegistryBaseUrl,
+            RegistryToken,
+            Entry.ReleaseId,
+            RegistryRequestTimeoutSeconds,
+            Error);
+    if (!Request.IsValid())
+    {
+        RegistryStatus = Error;
+        return FReply::Handled();
+    }
+    RegistryRequestEntry = Entry;
+    PendingRegistryOperation = EAkUGCReleaseRegistryOperation::Get;
+    PendingRegistryRequest = Request;
+    RegistryStatus = TEXT("正在刷新 Registry 状态；当前项目和本地作品库不会被修改。");
+    return FReply::Handled();
+}
+
+FReply SAkUGCWorkLibraryPanel::PublishToRegistry()
+{
+    if (PendingRegistryRequest.IsValid()
+        || !LastPublishedEntry.IsSet()
+        || RegistryReleaseStatus != TEXT("approved"))
+    {
+        return FReply::Handled();
+    }
+    FString Error;
+    const FAkUGCWorkEntry Entry = LastPublishedEntry.GetValue();
+    const FAkUGCEditorHttpRequestPtr Request =
+        FAkUGCReleaseRegistryClient::StartPublish(
+            RegistryBaseUrl,
+            RegistryToken,
+            Entry.ReleaseId,
+            RegistryRequestTimeoutSeconds,
+            Error);
+    if (!Request.IsValid())
+    {
+        RegistryStatus = Error;
+        return FReply::Handled();
+    }
+    RegistryRequestEntry = Entry;
+    PendingRegistryOperation = EAkUGCReleaseRegistryOperation::Publish;
+    PendingRegistryRequest = Request;
+    RegistryStatus = TEXT("正在发布已审核 Release；不会修改或重新签名本地制品。");
+    return FReply::Handled();
+}
+
+FReply SAkUGCWorkLibraryPanel::CancelRegistryRequest()
+{
+    if (PendingRegistryRequest.IsValid())
+    {
+        PendingRegistryRequest->Cancel();
+        RegistryStatus = TEXT("正在取消 Registry 请求。");
+    }
+    return FReply::Handled();
+}
+
+void SAkUGCWorkLibraryPanel::CompleteRegistryRequest(
+    const FAkUGCEditorHttpRequestPtr& Request,
+    FAkUGCEditorHttpResult Result)
+{
+    if (Request != PendingRegistryRequest)
+    {
+        return;
+    }
+    PendingRegistryRequest.Reset();
+    FAkUGCReleaseRegistryResponse Response;
+    FString Error;
+    if (!FAkUGCReleaseRegistryClient::ParseResponse(
+            PendingRegistryOperation,
+            Result,
+            RegistryRequestEntry,
+            Response,
+            Error))
+    {
+        RegistryStatus = Error;
+        return;
+    }
+    RegistryReleaseStatus = Response.Release.Status;
+    const FString Id =
+        Response.Release.ReleaseId.ToString(EGuidFormats::DigitsWithHyphensLower);
+    switch (PendingRegistryOperation)
+    {
+    case EAkUGCReleaseRegistryOperation::Submit:
+        RegistryStatus = FString::Printf(
+            TEXT("%s：%s\nRegistry 状态：%s。Reviewer 必须是另一主体。"),
+            Response.bCreated ? TEXT("Registry 已创建不可变 Release") : TEXT("Registry 幂等返回现有 Release"),
+            *Id,
+            *RegistryReleaseStatus);
+        break;
+    case EAkUGCReleaseRegistryOperation::Get:
+        RegistryStatus = FString::Printf(
+            TEXT("Registry 状态已刷新：%s\n状态：%s，修订：%lld。"),
+            *Id,
+            *RegistryReleaseStatus,
+            static_cast<long long>(Response.Release.Revision));
+        break;
+    case EAkUGCReleaseRegistryOperation::Publish:
+        RegistryStatus = FString::Printf(
+            TEXT("%s：%s\nPlayer 下载后仍必须使用独立可信公钥本地验签。"),
+            Response.bChanged ? TEXT("Release 已发布") : TEXT("Release 已是 published，幂等成功"),
+            *Id);
+        break;
+    default:
+        RegistryStatus = TEXT("Registry 返回了未知操作结果。");
+        break;
+    }
 }
 
 bool SAkUGCWorkLibraryPanel::ReadRecoveryPassphrase(

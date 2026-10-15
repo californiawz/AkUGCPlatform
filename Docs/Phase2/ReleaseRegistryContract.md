@@ -52,6 +52,16 @@
   - 只有 `published` 返回制品；未发布、已拒绝和已撤回统一按 `404` 隐藏。
   - 响应携带 Artifact SHA-256 ETag 和 ContentHash，但二者都不能替代 Player 本地验签。
 
+## Creator Studio 客户端
+
+- 面板只操作最近一次成功的本地签名发布；上传前重新读取并以该记录的独立公钥、ReleaseId 和 ContentHash 执行 `LoadVerified`，不接受任意手工路径绕过。
+- 静态 token 阶段仅允许 loopback HTTP；Base URL、Creator token 和请求状态只存在于面板内存，不写入项目、配置或作品库。
+- 上传使用 `akugc-release-<ReleaseIdDigits>` 作为稳定幂等键。重复点击或重启后的相同包由 Registry 返回现有 Release，不创建新版本。
+- submit/get/publish 响应最多 64 KiB，必须是规范 UTF-8、无重复和未知字段的契约 JSON；返回的 ReleaseId、公钥及 ContentHash 必须与本地签名记录一致。
+- Registry 元数据只用于显示状态和启用发布操作。客户端不能把响应里的 `publisherPublicKey` 当作信任根，也不能修改、重新签名或覆盖本地制品。
+- Reviewer 操作不进入 Creator 面板；Creator 只有在刷新得到 `approved` 后才能发起 publish。撤回和公钥轮换链登记留在后续切片。
+- 取消只终止客户端等待，不能回滚可能已经到达服务端的提交或发布；取消后必须刷新状态确认最终结果。
+
 ## 并发判定
 
 - 提交事务先按 `Owner + Idempotency-Key` 获取事务级 advisory lock，再检查幂等记录、插入或比对 Release，最后写入幂等绑定。

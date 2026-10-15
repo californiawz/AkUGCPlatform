@@ -170,6 +170,31 @@
 
 - 当前静态 Bearer 认证和无 TLS HTTP 被强制限制在 loopback，仅用于本机 Alpha；公网部署必须替换正式身份提供方并启用 TLS。
 - 当前 Creator/Reviewer/Player 隔离是同一台机器上的独立 token、目录和进程，不等同于四台物理设备验收。
-- Creator Studio 与 Player 产品内的 Registry 操作仍需在 P19.2 接入；本切片由真实 PackTool、HTTP、PostgreSQL 和 Packaged Client 编排证明服务契约。
+- P19.1 提交时 Creator Studio 与 Player 尚未直接调用 Registry；本切片由真实 PackTool、HTTP、PostgreSQL 和 Packaged Client 编排证明服务契约，产品入口由后续切片分别接入。
+
+### P19.2：Creator Studio Registry 产品接入
+
+**目标**：让 Creator 在现有本地签名发布之后，直接从作品库面板提交不可变 Release、查看审核状态并发布已审核版本；不把 Reviewer 权限或公网凭据模型混入 Creator。
+
+**实现**：
+
+- 将 Editor 的 libcurl、TLS、禁重定向、接收时响应预算、超时和取消逻辑抽为共享异步传输，Copilot 与 Registry 共用最多四个工作请求和统一生命周期，模块卸载前会取消并等待所有请求。
+- 新增 Creator Registry 客户端。P19 静态 token 模式只接受 `http://127.0.0.1` 或 `http://localhost`，拒绝用户信息、路径、查询、片段、非法端口、非 ASCII token 和 Header 注入；token 仅保留在当前面板内存，不写入项目或配置。
+- 上传前通过单一文件句柄限制制品为 16 MiB，并再次用最近一次本地发布记录的独立公钥、ReleaseId 和 ContentHash 调用 `LoadVerified`；磁盘文件被替换或与最近签名结果不一致时不发送。
+- 提交使用稳定的 ReleaseId 幂等键和原始 `.akugc` 字节；控制面响应在接收时限制为 64 KiB，要求规范 UTF-8、无重复字段、无未知字段、精确类型和受支持状态，并绑定回本地 ReleaseId、公钥与 ContentHash。服务端返回的公钥不能成为新的信任根。
+- 作品库面板新增“上传最近签名包”“刷新 Registry 状态”“发布已审核 Release”和取消请求。上传、查询、失败与发布均不修改当前 Document、本地作品库或签名制品；Reviewer 仍必须使用另一主体在 Creator UI 外完成审核。
+- 本地协议夹具验证真实二进制上传、Bearer、Content-Type、幂等键、GET 和空体发布请求；严格解析回归覆盖 loopback 边界、重复/未知字段、错误公钥、非法 UTF-8、超限、取消和非预期 HTTP 状态。
+
+**已验证（2026-10-15）**：
+
+- AkUGCPlatformEditor Win64 Development 编译成功；Python 回归 120/120。
+- Editor `AkUGC` 完整自动化 137/137，原 Copilot HTTP/TLS 42/42 保持通过，Creator Registry 协议完成 submit/get/publish 三步且未修改项目修订或文档。
+- 最终证据位于本机 `Saved/P19_2_CreatorRegistry_Final4/result.json`。
+
+**边界**：
+
+- 当前面板不提供 Reviewer、撤回、公钥轮换链登记或 token 持久化；公网 IdP、TLS、云项目和协作者仍不属于本切片。
+- Player 仍由 P19.1 验收编排下载并本地验签；Player 产品内直接获取、导入和游玩是下一切片。
+- 四台真实物理设备验收继续延期，不计入本阶段通过证据。
 
 玩家 Asset Pack 白名单试点放在 Release Registry 稳定之后，避免同时扩大网络、内容与沙箱攻击面。
