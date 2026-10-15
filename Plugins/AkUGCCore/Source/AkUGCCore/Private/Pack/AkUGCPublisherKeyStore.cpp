@@ -12,6 +12,7 @@
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
+#include "Validation/AkUGCInputBudget.h"
 
 // OpenSSL 的 UI 类型别名与 UE 的 UI 命名空间冲突，include 期间重命名规避。
 #define UI OpenSSL_UI
@@ -285,17 +286,12 @@ namespace AkUGCPublisherKeyStorePrivate
 		FString* OutError,
 		const TCHAR* Label)
 	{
-		OutText.Reset();
-		const int64 Size = IFileManager::Get().FileSize(*Path);
-		if (Size <= 0 || Size > MaxBytes)
-		{
-			return Fail(OutError, FString::Printf(TEXT("%s缺失、为空或大小异常。"), Label));
-		}
-		if (!FFileHelper::LoadFileToString(OutText, *Path))
-		{
-			return Fail(OutError, FString::Printf(TEXT("无法读取%s。"), Label));
-		}
-		return true;
+		return AkUGCInputBudget::LoadTextFile(
+			Path,
+			MaxBytes,
+			Label,
+			OutText,
+			OutError);
 	}
 
 	FString RotationMessage(const FAkUGCPublisherKeyRotation& Rotation)
@@ -856,6 +852,14 @@ namespace AkUGCPublisherKeyStorePrivate
 	{
 		OutInfo = FAkUGCPublisherIdentityInfo();
 		OutProtectedPrivateKey.Reset();
+		if (!AkUGCInputBudget::ValidateJson(
+				Json,
+				MaxIdentityFileBytes,
+				TEXT("Protected publisher identity"),
+				OutError))
+		{
+			return false;
+		}
 		TSharedPtr<FJsonObject> Object;
 		if (!FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Json), Object)
 			|| !Object.IsValid())
@@ -1410,6 +1414,14 @@ namespace AkUGCPublisherKeyStorePrivate
 		FString* OutError)
 	{
 		OutFields = FRecoveryBundleFields();
+		if (!AkUGCInputBudget::ValidateJson(
+				Json,
+				MaxRecoveryBundleBytes,
+				TEXT("Publisher recovery bundle"),
+				OutError))
+		{
+			return false;
+		}
 		TSharedPtr<FJsonObject> Object;
 		if (!FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Json), Object)
 			|| !Object.IsValid()

@@ -10,6 +10,7 @@
 #include "Pack/AkUGCPublisherKeyStore.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
+#include "Validation/AkUGCInputBudget.h"
 
 namespace AkUGCWorkFiles
 {
@@ -21,21 +22,22 @@ namespace AkUGCWorkFiles
 
     bool Read(const FString& Path, FString& Text, FString* Error, int64 Limit = FAkUGCWorkLibrary::MaxFileBytes)
     {
-        TUniquePtr<FArchive> Reader(IFileManager::Get().CreateFileReader(*Path));
-        const int64 Size = Reader ? Reader->TotalSize() : -1;
-        if (Size <= 0 || Size > Limit) { return Fail(Error, TEXT("文件缺失、为空或超过大小限制。")); }
-        TArray<uint8> Bytes;
-        Bytes.SetNumUninitialized(static_cast<int32>(Size));
-        Reader->Serialize(Bytes.GetData(), Size);
-        if (Reader->IsError()) { return Fail(Error, TEXT("无法完整读取文件。")); }
-        FFileHelper::BufferToString(Text, Bytes.GetData(), Bytes.Num());
-        return true;
+        return AkUGCInputBudget::LoadTextFile(
+            Path,
+            Limit,
+            TEXT("UGC work file"),
+            Text,
+            Error);
     }
 
     bool WriteNew(const FString& Path, const FString& Text, FString* Error)
     {
-        if (Text.IsEmpty() || FTCHARToUTF8(*Text).Length() > FAkUGCWorkLibrary::MaxFileBytes)
-        { return Fail(Error, TEXT("文件内容为空或超过大小限制。")); }
+        if (!AkUGCInputBudget::ValidateUtf8Text(
+                Text,
+                FAkUGCWorkLibrary::MaxFileBytes,
+                TEXT("UGC work file"),
+                Error))
+        { return false; }
         if (IFileManager::Get().FileExists(*Path) || IFileManager::Get().DirectoryExists(*Path))
         { return Fail(Error, TEXT("目标已存在；不会覆盖已有文件。")); }
         if (!IFileManager::Get().MakeDirectory(*FPaths::GetPath(Path), true))
@@ -167,10 +169,22 @@ FAkUGCLogicPackLoadResult FAkUGCWorkLibrary::Load(const FGuid& ReleaseId) const
     TSharedPtr<FJsonObject> Object;
     FString Key, Json;
     double Version = 0;
-    if (!FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Envelope), Object) || !Object.IsValid()
+    if (!AkUGCInputBudget::ValidateJson(
+            Envelope,
+            FAkUGCWorkLibrary::MaxFileBytes,
+            TEXT("Work library record"),
+            &Result.ErrorMessage)
+        || !FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Envelope), Object) || !Object.IsValid()
+        || Object->Values.Num() != 3
         || !Object->TryGetNumberField(TEXT("version"), Version) || Version != 1
         || !Object->TryGetStringField(TEXT("trustedPublicKey"), Key) || !Object->TryGetStringField(TEXT("packJson"), Json))
-    { Result.ErrorMessage = TEXT("作品库记录损坏或版本不兼容。"); return Result; }
+    {
+        if (Result.ErrorMessage.IsEmpty())
+        {
+            Result.ErrorMessage = TEXT("作品库记录损坏或版本不兼容。");
+        }
+        return Result;
+    }
     Result = FAkUGCLogicPackLoader::LoadVerified(Json, Key);
     if (Result.bSucceeded && Result.Pack.Manifest.ReleaseId != ReleaseId)
     { Result.bSucceeded = false; Result.ErrorMessage = TEXT("作品记录ID与文件名不一致。"); }

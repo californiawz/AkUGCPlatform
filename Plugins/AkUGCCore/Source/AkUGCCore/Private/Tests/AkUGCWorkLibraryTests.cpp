@@ -385,6 +385,31 @@ bool FAkUGCWorkLibraryTest::RunTest(const FString& Parameters)
         else { TestEqual(TEXT("Concurrent creation selects one identity"), LoadedPublicKey, ConcurrentPublicKey); }
     }
 
+    const FString DuplicateDirectory = FPaths::Combine(Root, TEXT("DuplicatePublisher"));
+    const FAkUGCPublisherKeyStore DuplicatePublisher(DuplicateDirectory);
+    FString DuplicatePublicKey;
+    TestTrue(TEXT("Duplicate-field fixture identity is created"),
+        DuplicatePublisher.GetOrCreatePublicKey(DuplicatePublicKey, &Error));
+    FString DuplicateIdentity;
+    TestTrue(TEXT("Duplicate-field fixture identity is readable"),
+        FFileHelper::LoadFileToString(DuplicateIdentity, *DuplicatePublisher.IdentityPath()));
+    TestEqual(
+        TEXT("Duplicate-field fixture changes one identity key"),
+        DuplicateIdentity.ReplaceInline(
+            TEXT("\"version\":"),
+            TEXT("\"version\":2,\"version\":"),
+            ESearchCase::CaseSensitive),
+        1);
+    TestTrue(TEXT("Duplicate-field fixture identity is written"),
+        FFileHelper::SaveStringToFile(
+            DuplicateIdentity,
+            *DuplicatePublisher.IdentityPath(),
+            FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM));
+    TestFalse(TEXT("Duplicate identity field is rejected before DOM parsing"),
+        DuplicatePublisher.GetOrCreatePublicKey(DuplicatePublicKey, &Error));
+    TestTrue(TEXT("Duplicate identity rejection is explicit"),
+        Error.Contains(TEXT("duplicated")));
+
     const FString StaleDirectory = FPaths::Combine(Root, TEXT("StalePublisher"));
     const FAkUGCPublisherKeyStore StalePublisher(StaleDirectory);
     IFileManager::Get().MakeDirectory(*StaleDirectory, true);

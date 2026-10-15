@@ -400,6 +400,32 @@ bool FAkUGCLogicPackCodecTest::RunTest(const FString& Parameters)
         FAkUGCLogicPackHasher::HashLogicProgram(Decoded.Program),
         FAkUGCLogicPackHasher::HashLogicProgram(Build.Pack.Program));
 
+    FAkUGCLogicPack InvalidIndices = Build.Pack;
+    TestTrue(TEXT("Built pack has instructions for index validation"),
+        !InvalidIndices.Program.Instructions.IsEmpty());
+    if (!InvalidIndices.Program.Instructions.IsEmpty())
+    {
+        InvalidIndices.Program.Instructions[0].SuccessorIndices = {MAX_int32};
+        FString InvalidIndexJson;
+        TestTrue(TEXT("Out-of-range successor fixture serializes"),
+            FAkUGCLogicPackCodec::Serialize(InvalidIndices, InvalidIndexJson, &Error));
+        TestFalse(TEXT("Out-of-range successor index is rejected"),
+            FAkUGCLogicPackCodec::Deserialize(InvalidIndexJson, Decoded, &Error));
+        TestTrue(TEXT("Successor rejection is explicit"),
+            Error.Contains(TEXT("有效指令索引")));
+    }
+
+    FString DuplicateFieldJson = Json;
+    const int32 DuplicateCount = DuplicateFieldJson.ReplaceInline(
+        TEXT("\"releaseId\":"),
+        TEXT("\"releaseId\":\"00000000-0000-0000-0000-000000000000\",\"releaseId\":"),
+        ESearchCase::CaseSensitive);
+    TestEqual(TEXT("Duplicate-field fixture changed one manifest key"), DuplicateCount, 1);
+    TestFalse(TEXT("Duplicate Logic Pack field is rejected before DOM parsing"),
+        FAkUGCLogicPackCodec::Deserialize(DuplicateFieldJson, Decoded, &Error));
+    TestTrue(TEXT("Duplicate-field rejection is explicit"),
+        Error.Contains(TEXT("duplicated")));
+
     return true;
 }
 
@@ -595,6 +621,23 @@ bool FAkUGCLogicPackSignVerifyTest::RunTest(const FString& Parameters)
     TestTrue(*Error, FAkUGCLogicPackSigner::GenerateKeyPair(Other, &Error));
     TestFalse(TEXT("Wrong trusted public key is rejected"),
         FAkUGCLogicPackVerifier::Verify(Build.Pack.Manifest, Signature, Other.PublicKey, &Error));
+
+    const FString OversizedHex = FString::ChrN(1024 * 1024, TEXT('a'));
+    FAkUGCLogicPackSignature RejectedSignature;
+    TestFalse(TEXT("Oversized private-key hex is rejected before decoding"),
+        FAkUGCLogicPackSigner::Sign(
+            Build.Pack.Manifest,
+            OversizedHex,
+            RejectedSignature,
+            &Error));
+    FAkUGCLogicPackSignature OversizedSignature = Signature;
+    OversizedSignature.Signature = OversizedHex;
+    TestFalse(TEXT("Oversized signature hex is rejected before decoding"),
+        FAkUGCLogicPackVerifier::Verify(
+            Build.Pack.Manifest,
+            OversizedSignature,
+            KeyPair.PublicKey,
+            &Error));
 
     return true;
 }

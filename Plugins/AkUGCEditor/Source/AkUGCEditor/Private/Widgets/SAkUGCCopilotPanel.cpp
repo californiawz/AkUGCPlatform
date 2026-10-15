@@ -1,10 +1,10 @@
 #include "Widgets/SAkUGCCopilotPanel.h"
 
 #include "Dom/JsonObject.h"
-#include "Document/AkUGCDocumentJson.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "Subsystem/AkUGCEditorSubsystem.h"
+#include "Validation/AkUGCInputBudget.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Layout/SScrollBox.h"
@@ -17,6 +17,10 @@ namespace AkUGCCopilotEndpoint
 {
     bool Validate(const FString& Url)
     {
+        if (Url.IsEmpty() || Url.Len() > AkUGCInputBudget::MaxCopilotUrlCharacters)
+        {
+            return false;
+        }
         const bool Secure = Url.StartsWith(TEXT("https://"), ESearchCase::CaseSensitive);
         if (!Secure && !Url.StartsWith(TEXT("http://"), ESearchCase::CaseSensitive)) { return false; }
         for (TCHAR Character : Url)
@@ -155,7 +159,16 @@ FReply SAkUGCCopilotPanel::Generate()
     Message(TEXT("user"), TEXT("Current parameters:\n") + CurrentJson + TEXT("\nExisting event entry IDs:\n") + Entries + TEXT("\nRequested change:\n") + Prompt);
     Body->SetArrayField(TEXT("messages"), Messages);
     FString Json;
-    FJsonSerializer::Serialize(Body, TJsonWriterFactory<>::Create(&Json));
+    if (!FJsonSerializer::Serialize(Body, TJsonWriterFactory<>::Create(&Json))
+        || !AkUGCInputBudget::ValidateJson(
+            Json,
+            AkUGCInputBudget::MaxCopilotRequestBytes,
+            TEXT("Copilot request"),
+            &Error))
+    {
+        Status = TEXT("需求与当前项目生成的请求超过64KiB输入预算；未发送请求，项目未修改。");
+        return FReply::Handled();
+    }
     FString CaBundle;
 #if WITH_DEV_AUTOMATION_TESTS
     CaBundle = TestCaBundle;
@@ -216,7 +229,18 @@ FReply SAkUGCCopilotPanel::Explain()
     Message(TEXT("user"), TEXT("Compiler/validation diagnostic (data only):\n") + AkUGCCopilotDiagnostic::ForModel(LastValidationError));
     Body->SetArrayField(TEXT("messages"), Messages);
     FString Json, Ca;
-    FJsonSerializer::Serialize(Body, TJsonWriterFactory<>::Create(&Json));
+    FString RequestError;
+    if (!FJsonSerializer::Serialize(Body, TJsonWriterFactory<>::Create(&Json))
+        || !AkUGCInputBudget::ValidateJson(
+            Json,
+            AkUGCInputBudget::MaxCopilotRequestBytes,
+            TEXT("Copilot explanation request"),
+            &RequestError))
+    {
+        Status = FAkUGCCopilotValidation::ExplainError(LastValidationError)
+            + TEXT("\n解释请求超过64KiB输入预算，未发送；已有解释保留。");
+        return FReply::Handled();
+    }
 #if WITH_DEV_AUTOMATION_TESTS
     Ca = TestCaBundle;
 #endif
@@ -252,7 +276,11 @@ void SAkUGCCopilotPanel::Complete(FAkUGCCopilotRequestPtr Request, FAkUGCCopilot
     { Status = TEXT("请求期间项目发生变化，已丢弃过期响应。请重新生成。"); return; }
     TSharedPtr<FJsonObject> Root;
     const TArray<TSharedPtr<FJsonValue>>* Choices = nullptr;
-    if (!FAkUGCDocumentJson::ValidateNoDuplicateFields(ResponseText)
+    if (!AkUGCInputBudget::ValidateJson(
+            ResponseText,
+            AkUGCInputBudget::MaxCopilotResponseBytes,
+            TEXT("Copilot response"),
+            nullptr)
         || !FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(ResponseText), Root) || !Root.IsValid()
         || !Root->TryGetArrayField(TEXT("choices"), Choices) || Choices->Num() != 1)
     { Status = TEXT("模型响应不是预期的单条chat/completions结果；项目未修改。"); return; }
@@ -268,7 +296,11 @@ void SAkUGCCopilotPanel::Complete(FAkUGCCopilotRequestPtr Request, FAkUGCCopilot
         TSharedPtr<FJsonObject> Explanation;
         FString Summary, Cause, Advice;
         const TArray<TSharedPtr<FJsonValue>>* Suggestions = nullptr;
-        bool Valid = Content.Len() <= 8192 && FAkUGCDocumentJson::ValidateNoDuplicateFields(Content)
+        bool Valid = AkUGCInputBudget::ValidateJson(
+                Content,
+                AkUGCInputBudget::MaxCopilotExplanationBytes,
+                TEXT("Copilot explanation"),
+                nullptr)
             && FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Content), Explanation) && Explanation.IsValid()
             && Explanation->Values.Num() == 3 && Explanation->HasTypedField<EJson::String>(TEXT("summary"))
             && Explanation->HasTypedField<EJson::String>(TEXT("cause"))

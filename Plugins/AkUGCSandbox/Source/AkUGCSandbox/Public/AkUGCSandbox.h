@@ -22,6 +22,8 @@ enum class EAkUGCSandboxStatus : uint8
 	CallDepthExceeded,
 	/** Effect 配额超限（受控副作用次数超出上限）。 */
 	EffectLimitExceeded,
+	/** 脚本源码或 chunk 名称超过解析前输入预算。 */
+	InputLimitExceeded,
 };
 
 /** 沙箱配额配置。 */
@@ -72,6 +74,12 @@ struct FAkUGCSandboxImpl;
 class AKUGCSANDBOX_API FAkUGCSandbox
 {
 public:
+	/** Lua 编译前允许的最大 UTF-8 源码字节数。 */
+	static constexpr int64 MaxScriptSourceBytes = 128 * 1024;
+
+	/** Lua 编译前允许的最大 UTF-8 chunk 名称字节数。 */
+	static constexpr int32 MaxChunkNameBytes = 256;
+
 	FAkUGCSandbox();
 	~FAkUGCSandbox();
 

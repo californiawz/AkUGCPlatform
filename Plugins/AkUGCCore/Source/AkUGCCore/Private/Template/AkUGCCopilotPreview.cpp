@@ -8,7 +8,7 @@
 #include "Dom/JsonObject.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
-#include "Document/AkUGCDocumentJson.h"
+#include "Validation/AkUGCInputBudget.h"
 
 namespace AkUGCCopilotGraph
 {
@@ -132,9 +132,19 @@ bool FAkUGCCopilotValidation::Preview(const FAkUGCProjectDocument& Document, con
     FAkUGCCopilotPreview& OutPreview, FString* OutError)
 {
     OutPreview = {};
-    if (Document.Scenes.Num() != 1 || ParameterJson.Len() > 65536)
-    { if (OutError) { *OutError = TEXT("Copilot requires a single scene and response under 64K characters."); } return false; }
-    if (!FAkUGCDocumentJson::ValidateNoDuplicateFields(ParameterJson, OutError)) { return false; }
+    if (Document.Scenes.Num() != 1)
+    {
+        if (OutError) { *OutError = TEXT("Copilot requires a single scene."); }
+        return false;
+    }
+    if (!AkUGCInputBudget::ValidateJson(
+            ParameterJson,
+            AkUGCInputBudget::MaxCopilotProposalBytes,
+            TEXT("Copilot proposal"),
+            OutError))
+    {
+        return false;
+    }
     TSharedPtr<FJsonObject> Root;
     double Version = 0;
     if (!FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(ParameterJson), Root) || !Root.IsValid()

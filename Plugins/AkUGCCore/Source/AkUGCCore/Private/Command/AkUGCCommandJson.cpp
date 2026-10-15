@@ -1,13 +1,13 @@
 #include "Command/AkUGCCommandJson.h"
 
 #include "Command/AkUGCCommand.h"
-#include "Document/AkUGCDocumentJson.h"
 #include "Dom/JsonObject.h"
 #include "JsonObjectConverter.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "String/LexFromString.h"
 #include "UObject/UnrealType.h"
+#include "Validation/AkUGCInputBudget.h"
 
 namespace
 {
@@ -77,11 +77,24 @@ bool FAkUGCCommandJson::Serialize(
         0,
         0,
         &ExportCallback);
-    if (!bSucceeded && OutError)
+    if (!bSucceeded)
     {
-        *OutError = TEXT("Failed to serialize UGC command transaction.");
+        if (OutError)
+        {
+            *OutError = TEXT("Failed to serialize UGC command transaction.");
+        }
+        return false;
     }
-    return bSucceeded;
+    if (!AkUGCInputBudget::ValidateUtf8Text(
+            OutJson,
+            AkUGCInputBudget::MaxCommandTransactionBytes,
+            TEXT("UGC command transaction"),
+            OutError))
+    {
+        OutJson.Reset();
+        return false;
+    }
+    return true;
 }
 
 bool FAkUGCCommandJson::Deserialize(
@@ -90,7 +103,11 @@ bool FAkUGCCommandJson::Deserialize(
     FString* OutError)
 {
     OutTransaction = FAkUGCCommandTransaction{};
-    if (!FAkUGCDocumentJson::ValidateNoDuplicateFields(Json, OutError))
+    if (!AkUGCInputBudget::ValidateJson(
+            Json,
+            AkUGCInputBudget::MaxCommandTransactionBytes,
+            TEXT("UGC command transaction"),
+            OutError))
     {
         return false;
     }
@@ -110,6 +127,16 @@ bool FAkUGCCommandJson::Deserialize(
         if (OutError)
         {
             *OutError = TEXT("commands: Field must be an array.");
+        }
+        return false;
+    }
+    if (Commands->Num() > AkUGCInputBudget::MaxCommandsPerTransaction)
+    {
+        if (OutError)
+        {
+            *OutError = FString::Printf(
+                TEXT("commands: Transaction exceeds the command budget of %d."),
+                AkUGCInputBudget::MaxCommandsPerTransaction);
         }
         return false;
     }

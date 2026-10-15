@@ -517,13 +517,32 @@ FAkUGCSandboxResult FAkUGCSandbox::RunScript(const FString& Source, const FStrin
 		return Result;
 	}
 
+	if (Source.Len() > MaxScriptSourceBytes
+		|| ChunkName.Len() > MaxChunkNameBytes)
+	{
+		Result.Status = EAkUGCSandboxStatus::InputLimitExceeded;
+		Result.ErrorMessage = TEXT("sandbox script input exceeds its UTF-8 byte budget");
+		return Result;
+	}
+	const FTCHARToUTF8 SourceUtf8(*Source, Source.Len());
+	const FTCHARToUTF8 ChunkNameUtf8(*ChunkName, ChunkName.Len());
+	if (SourceUtf8.Length() > MaxScriptSourceBytes
+		|| ChunkNameUtf8.Length() > MaxChunkNameBytes)
+	{
+		Result.Status = EAkUGCSandboxStatus::InputLimitExceeded;
+		Result.ErrorMessage = TEXT("sandbox script input exceeds its UTF-8 byte budget");
+		return Result;
+	}
+
 	lua_State* L = Impl->State;
 	FLuaCallScope Scope(L);
 
 	// 编译源码。
-	const auto SourceAnsi = StringCast<ANSICHAR>(*Source, Source.Len());
-	const auto ChunkNameAnsi = StringCast<ANSICHAR>(*ChunkName, ChunkName.Len());
-	const int LoadStatus = luaL_loadbuffer(L, SourceAnsi.Get(), SourceAnsi.Length(), ChunkNameAnsi.Get());
+	const int LoadStatus = luaL_loadbuffer(
+		L,
+		SourceUtf8.Get(),
+		SourceUtf8.Length(),
+		ChunkNameUtf8.Get());
 	if (LoadStatus != LUA_OK)
 	{
 		Result.Status = EAkUGCSandboxStatus::CompileError;

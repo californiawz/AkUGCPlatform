@@ -19,6 +19,9 @@
 class AKLUARUNTIME_API FLuaScriptLoader
 {
 public:
+	/** Hard cap applied before allocating or reading one source/bytecode module. */
+	static constexpr int64 MaxModuleBytes = 4 * 1024 * 1024;
+
 	/** Matches NS_SLUA::LuaState::LoadFileDelegate. */
 	static TArray<uint8> LoadLuaModule(const char* ModuleName, FString& OutFullPath);
 

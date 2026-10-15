@@ -22,6 +22,7 @@
 #include "Scene/AkUGCSceneRuntime.h"
 #include "Session/AkUGCDocumentRuntimeSession.h"
 #include "Validation/AkUGCDocumentValidator.h"
+#include "Validation/AkUGCInputBudget.h"
 
 #if PLATFORM_WINDOWS
 #include "Windows/WindowsHWrapper.h"
@@ -216,7 +217,12 @@ bool UAkUGCEditorSubsystem::SaveProject(const FString& FilePath, FString* OutErr
     FString WrittenJson;
     FAkUGCProjectDocument VerifiedDocument;
     FString VerificationError;
-    if (!FFileHelper::LoadFileToString(WrittenJson, *TemporaryPath)
+    if (!AkUGCInputBudget::LoadTextFile(
+            TemporaryPath,
+            AkUGCInputBudget::MaxProjectDocumentBytes,
+            TEXT("Temporary UGC project"),
+            WrittenJson,
+            &VerificationError)
         || !FAkUGCDocumentJson::Deserialize(WrittenJson, VerifiedDocument, &VerificationError))
     {
         FileManager.Delete(*TemporaryPath, false, true, true);
@@ -244,12 +250,13 @@ bool UAkUGCEditorSubsystem::SaveProject(const FString& FilePath, FString* OutErr
 bool UAkUGCEditorSubsystem::LoadProject(const FString& FilePath, FString* OutError)
 {
     FString Json;
-    if (!FFileHelper::LoadFileToString(Json, *FilePath))
+    if (!AkUGCInputBudget::LoadTextFile(
+            FilePath,
+            AkUGCInputBudget::MaxProjectDocumentBytes,
+            TEXT("UGC project file"),
+            Json,
+            OutError))
     {
-        if (OutError)
-        {
-            *OutError = FString::Printf(TEXT("Failed to read UGC project from '%s'."), *FilePath);
-        }
         return false;
     }
 

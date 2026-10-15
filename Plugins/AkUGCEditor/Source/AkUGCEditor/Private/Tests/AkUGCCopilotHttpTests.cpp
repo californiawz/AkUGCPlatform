@@ -158,6 +158,36 @@ namespace AkUGCCopilotHttpTest
                         FAkUGCCopilotTestAccess::Start(*Panel, Url);
                         Test->TestFalse(TEXT("Invalid endpoint is not sent"), FAkUGCCopilotTestAccess::Pending(*Panel));
                     }
+                    const FString OversizedUrl =
+                        TEXT("https://host/")
+                        + FString::ChrN(
+                            AkUGCInputBudget::MaxCopilotUrlCharacters,
+                            TEXT('a'));
+                    FAkUGCCopilotTestAccess::Start(*Panel, OversizedUrl);
+                    Test->TestFalse(
+                        TEXT("Oversized endpoint is not sent"),
+                        FAkUGCCopilotTestAccess::Pending(*Panel));
+
+                    FString OversizedMultibyteRequest = TEXT("{\"value\":\"");
+                    OversizedMultibyteRequest += FString::ChrN(22000, TEXT('界'));
+                    OversizedMultibyteRequest += TEXT("\"}");
+                    Test->TestFalse(
+                        TEXT("Transport rejects a request over the UTF-8 byte budget"),
+                        FAkUGCCopilotTransport::Start(
+                            TEXT("http://127.0.0.1:9/rejected"),
+                            OversizedMultibyteRequest,
+                            FString(),
+                            1.0f).IsValid());
+
+                    const FString OversizedMultibyteKey =
+                        FString::ChrN(2000, TEXT('界'));
+                    Test->TestFalse(
+                        TEXT("Transport rejects an API key over the UTF-8 byte budget"),
+                        FAkUGCCopilotTransport::Start(
+                            TEXT("https://localhost/rejected"),
+                            TEXT("{}"),
+                            OversizedMultibyteKey,
+                            1.0f).IsValid());
                     FinishCase(); return false;
                 }
                 if (Case == TEXT("credentials-blocked"))

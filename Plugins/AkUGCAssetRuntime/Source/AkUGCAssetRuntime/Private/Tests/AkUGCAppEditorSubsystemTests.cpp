@@ -5,6 +5,7 @@
 #include "Engine/World.h"
 #include "Subsystem/AkUGCAppEditorSubsystem.h"
 #include "Subsystem/AkUGCLogicRuntimeSubsystem.h"
+#include "Validation/AkUGCInputBudget.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -152,6 +153,19 @@ bool FAkUGCAppEditorSubsystemWorkflowTest::RunTest(const FString& Parameters)
     FString Json;
     TestTrue(TEXT("App exports project JSON"), Subsystem->ExportProjectJson(Json).bSucceeded);
     TestFalse(TEXT("Exported project JSON is not empty"), Json.IsEmpty());
+
+    const FAkUGCAppEditResult OversizedInput = Subsystem->LoadProjectJson(
+        FString::ChrN(
+            static_cast<int32>(
+                AkUGCInputBudget::MaxProjectDocumentBytes + 1),
+            TEXT(' ')));
+    TestFalse(TEXT("App rejects project JSON over the shared byte budget"),
+        OversizedInput.bSucceeded);
+    TestTrue(TEXT("App oversized-input rejection reports its JSON boundary"),
+        OversizedInput.ErrorPath == TEXT("appEditor.json")
+            && OversizedInput.ErrorMessage.Contains(TEXT("UTF-8 bytes")));
+    TestTrue(TEXT("Rejected oversized App JSON preserves the current project"),
+        Subsystem->GetEntityRecord(EnemyId, Enemy));
 
     const FString MaliciousJson = Json.Replace(
         TEXT("\"integerValue\": \"2\""),

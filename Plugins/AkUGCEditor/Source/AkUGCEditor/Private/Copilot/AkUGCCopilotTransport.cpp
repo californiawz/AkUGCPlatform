@@ -33,7 +33,9 @@ namespace AkUGCCopilotCurl
         if (Receive.Request->IsCancelled()) { return 0; }
         if (Size != 0 && Count > MAX_uint64 / Size) { Receive.Result.bTooLarge = true; return 0; }
         const size_t Length = Size * Count;
-        if (Length > static_cast<size_t>(FAkUGCCopilotTransport::MaxBodyBytes - Receive.Result.Body.Num()))
+        const int32 Remaining =
+            FAkUGCCopilotTransport::MaxBodyBytes - Receive.Result.Body.Num();
+        if (Remaining < 0 || Length > static_cast<size_t>(Remaining))
         { Receive.Result.bTooLarge = true; return 0; }
         if (Length > 0) { Receive.Result.Body.Append(reinterpret_cast<const uint8*>(Data), static_cast<int32>(Length)); }
         return Length;
@@ -98,8 +100,35 @@ FAkUGCCopilotRequestPtr FAkUGCCopilotTransport::Start(const FString& Url, const 
     check(IsInGameThread());
 #if AKUGC_COPILOT_CURL
     using namespace AkUGCCopilotCurl;
+    const bool bJsonValid = AkUGCInputBudget::ValidateJson(
+        Json,
+        AkUGCInputBudget::MaxCopilotRequestBytes,
+        TEXT("Copilot request"),
+        nullptr);
+    const bool bApiKeyValid = ApiKey.IsEmpty()
+        || AkUGCInputBudget::ValidateUtf8Text(
+            ApiKey,
+            AkUGCInputBudget::MaxCopilotApiKeyBytes,
+            TEXT("Copilot API key"),
+            nullptr);
+    bool bUrlCharactersValid = true;
+    for (const TCHAR Character : Url)
+    {
+        if (Character <= 32 || Character >= 127)
+        {
+            bUrlCharactersValid = false;
+            break;
+        }
+    }
     if (!bInitialized || !FMath::IsFinite(TimeoutSeconds) || TimeoutSeconds <= 0 || TimeoutSeconds > 60
-        || Json.Len() > 65536 || ApiKey.Len() > 4096 || ApiKey.Contains(TEXT("\r")) || ApiKey.Contains(TEXT("\n"))
+        || !bJsonValid || !bApiKeyValid
+        || Url.IsEmpty() || Url.Len() > AkUGCInputBudget::MaxCopilotUrlCharacters
+        || !bUrlCharactersValid
+        || Url.Contains(TEXT("\r")) || Url.Contains(TEXT("\n"))
+        || Url.Contains(TEXT("@")) || Url.Contains(TEXT("\\"))
+        || Url.Contains(TEXT("#")) || Url.Contains(TEXT("?"))
+        || ApiKey.Contains(TEXT("\r")) || ApiKey.Contains(TEXT("\n"))
+        || TestCaBundle.Len() > 4096
         || (!Url.StartsWith(TEXT("https://"), ESearchCase::CaseSensitive) && !Url.StartsWith(TEXT("http://"), ESearchCase::CaseSensitive))
         || (!ApiKey.IsEmpty() && !Url.StartsWith(TEXT("https://"), ESearchCase::CaseSensitive))) { return nullptr; }
     for (int32 Index = Workers.Num() - 1; Index >= 0; --Index)

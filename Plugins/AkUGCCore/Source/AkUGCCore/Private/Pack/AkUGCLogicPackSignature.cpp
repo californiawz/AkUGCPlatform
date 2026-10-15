@@ -43,14 +43,14 @@ namespace
 		return Hex;
 	}
 
-	bool HexToBytes(const FString& Hex, TArray<uint8>& Out)
+	bool HexToBytes(const FString& Hex, int32 ExpectedBytes, TArray<uint8>& Out)
 	{
 		Out.Reset();
-		if ((Hex.Len() % 2) != 0)
+		if (ExpectedBytes <= 0 || Hex.Len() != ExpectedBytes * 2)
 		{
 			return false;
 		}
-		Out.Reserve(Hex.Len() / 2);
+		Out.Reserve(ExpectedBytes);
 		for (int32 Index = 0; Index < Hex.Len(); Index += 2)
 		{
 			const int32 High = HexNibble(Hex[Index]);
@@ -150,7 +150,7 @@ bool FAkUGCLogicPackSigner::Sign(
 	FString* OutError)
 {
 	TArray<uint8> PrivateKeyBytes;
-	if (!HexToBytes(PrivateKeyHex, PrivateKeyBytes) || PrivateKeyBytes.Num() != Ed25519PrivateKeyBytes)
+	if (!HexToBytes(PrivateKeyHex, Ed25519PrivateKeyBytes, PrivateKeyBytes))
 	{
 		if (OutError)
 		{
@@ -318,7 +318,7 @@ bool FAkUGCLogicPackVerifier::Verify(
 	}
 
 	TArray<uint8> SignatureBytes;
-	if (!HexToBytes(Signature.Signature, SignatureBytes) || SignatureBytes.Num() != Ed25519SignatureBytes)
+	if (!HexToBytes(Signature.Signature, Ed25519SignatureBytes, SignatureBytes))
 	{
 		if (OutError)
 		{
@@ -328,7 +328,7 @@ bool FAkUGCLogicPackVerifier::Verify(
 	}
 
 	TArray<uint8> PublicKeyBytes;
-	if (!HexToBytes(TrustedPublicKeyHex, PublicKeyBytes) || PublicKeyBytes.Num() != Ed25519PublicKeyBytes)
+	if (!HexToBytes(TrustedPublicKeyHex, Ed25519PublicKeyBytes, PublicKeyBytes))
 	{
 		if (OutError)
 		{

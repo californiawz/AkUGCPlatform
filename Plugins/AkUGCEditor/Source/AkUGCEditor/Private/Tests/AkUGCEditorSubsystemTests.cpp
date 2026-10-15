@@ -14,6 +14,7 @@
 #include "Pack/AkUGCPublisherKeyStore.h"
 #include "Pack/AkUGCLogicPackHasher.h"
 #include "Template/AkUGCCopilotPreview.h"
+#include "Validation/AkUGCInputBudget.h"
 #include "Widgets/SAkUGCCopilotPanel.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
@@ -82,8 +83,31 @@ bool FAkUGCEditorSubsystemWorkflowTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Creator project loads"), Subsystem->LoadProject(TestPath, &Error));
     TestEqual(TEXT("Loaded project restores entity"), Subsystem->GetDocument().Scenes[0].Entities.Num(), TemplateEntityCount + 1);
 
+    const FString LoadedHash = FAkUGCLogicPackHasher::HashDocument(Subsystem->GetDocument());
+    const FString OversizedPath = FPaths::Combine(
+        FPaths::ProjectSavedDir(),
+        TEXT("Automation/CreatorStudioOversized.json"));
+    TestTrue(
+        TEXT("Oversized project fixture is written"),
+        FFileHelper::SaveStringToFile(
+            FString::ChrN(
+                static_cast<int32>(AkUGCInputBudget::MaxProjectDocumentBytes + 1),
+                TEXT(' ')),
+            *OversizedPath,
+            FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM));
+    TestFalse(
+        TEXT("Creator project entry rejects oversized files"),
+        Subsystem->LoadProject(OversizedPath, &Error));
+    TestTrue(TEXT("Oversized project rejection reports the input budget"),
+        Error.Contains(TEXT("input budget")));
+    TestEqual(
+        TEXT("Rejected project load preserves the open document"),
+        FAkUGCLogicPackHasher::HashDocument(Subsystem->GetDocument()),
+        LoadedHash);
+
     Subsystem->CloseProject();
     IFileManager::Get().Delete(*TestPath, false, true);
+    IFileManager::Get().Delete(*OversizedPath, false, true);
     return true;
 }
 
@@ -690,6 +714,43 @@ bool FAkUGCCopilotApplyTest::RunTest(const FString& Parameters)
     FString Json;
     FAkUGCTowerDefenseTemplate::SerializeParameters(Proposed, Json);
     FAkUGCCopilotPreview Preview;
+
+    const FString OversizedProposal =
+        TEXT("{\"schemaVersion\":1,\"padding\":\"")
+        + FString::ChrN(22000, TEXT('界'))
+        + TEXT("\"}");
+    TestFalse(
+        TEXT("Copilot preview rejects a multibyte proposal over its UTF-8 budget"),
+        FAkUGCCopilotValidation::Preview(
+            Subsystem->GetDocument(),
+            OversizedProposal,
+            Preview,
+            &Error));
+    TestTrue(TEXT("Oversized proposal rejection is explicit"),
+        Error.Contains(TEXT("UTF-8 bytes")));
+    TestEqual(
+        TEXT("Rejected oversized proposal preserves the authored document"),
+        FAkUGCLogicPackHasher::HashDocument(Subsystem->GetDocument()),
+        Before);
+
+    FString DuplicateProposal = Json;
+    TestEqual(
+        TEXT("Duplicate proposal fixture changes one schemaVersion key"),
+        DuplicateProposal.ReplaceInline(
+            TEXT("\"schemaVersion\":"),
+            TEXT("\"schemaVersion\":1,\"schemaVersion\":"),
+            ESearchCase::CaseSensitive),
+        1);
+    TestFalse(
+        TEXT("Copilot preview rejects duplicate fields before DOM parsing"),
+        FAkUGCCopilotValidation::Preview(
+            Subsystem->GetDocument(),
+            DuplicateProposal,
+            Preview,
+            &Error));
+    TestTrue(TEXT("Duplicate proposal rejection is explicit"),
+        Error.Contains(TEXT("duplicated")));
+
     TestTrue(TEXT("Proposal precompiles on copy"), FAkUGCCopilotValidation::Preview(Subsystem->GetDocument(), Json, Preview, &Error));
     TestEqual(TEXT("Preview preserves authored document"), FAkUGCLogicPackHasher::HashDocument(Subsystem->GetDocument()), Before);
     TestFalse(TEXT("Preview creates no undo entry"), Subsystem->CanUndo());

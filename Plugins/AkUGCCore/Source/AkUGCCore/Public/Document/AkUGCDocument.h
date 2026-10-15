@@ -30,6 +30,22 @@ namespace AkUGCLogicLimits
     inline constexpr double MaxTimerDelaySeconds = 3600.0;
 }
 
+namespace AkUGCDocumentLimits
+{
+    inline constexpr int32 MaxScenes = 8;
+    inline constexpr int32 MaxEntities = 500;
+    inline constexpr int32 MaxComponentsPerEntity = 32;
+    inline constexpr int32 MaxTotalComponents = 2000;
+    inline constexpr int32 MaxPropertiesPerComponent = 64;
+    inline constexpr int32 MaxTotalProperties = 10000;
+    inline constexpr int32 MaxTagsPerEntity = 32;
+    inline constexpr int32 MaxTotalTags = 4000;
+    inline constexpr int32 MaxCapabilities = 16;
+    inline constexpr int32 MaxDisplayNameLength = 128;
+    inline constexpr int32 MaxNameLength = 128;
+    inline constexpr int32 MaxValueStringLength = 4096;
+}
+
 UENUM(BlueprintType)
 enum class EAkUGCValueType : uint8
 {

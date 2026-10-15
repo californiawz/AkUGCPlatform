@@ -58,6 +58,33 @@
 - 轮换不改变旧作品签名。P19 必须验证并登记完整双签名链，旧公钥是否仍可提交新 Release 由 Registry 状态决定。
 - 完全丢失私钥且没有恢复包时，密码学上不能证明新身份继承旧身份；只能进入后续账号人工恢复流程，不能本地伪造连续性。
 
+### P18.2：不可信输入预算与解析前拒绝
+
+**目标**：在进入 JSON DOM、UStruct、Lua 编译器或文件内容分配前统一限制不可信输入，防止超大文件、多字节绕过、深层/高 token JSON、重复字段、数组放大、非法索引和路径穿越。
+
+**实现**：
+
+- 新增共享 `AkUGCInputBudget`：Project/Command JSON 上限 4 MiB、Logic Pack 16 MiB、Copilot 请求/提案 64 KiB、响应 256 KiB、解释 16 KiB；所有文本按 UTF-8 字节计量。
+- JSON 进入 DOM 前统一限制嵌套深度 32、token 131072、字段名 128 字符，并拒绝普通或转义形式的重复字段。
+- Document 直接反序列化也执行场景、实体、组件、属性、Tag、Logic、Ruleset 与字符串结构预算；Command 事务最多 1024 条；Logic Pack 对 Manifest、依赖、指令、边、入口/后继索引和签名字段先行限界。
+- 项目、Logic Pack、作品库和发布身份文件统一通过同一文件句柄先取长度、再有界读取，避免先检查路径再无界重开的竞态；拒绝不会替换现有项目、身份或作品记录。
+- Copilot 在面板序列化后和 Transport 内重复检查出站 JSON；URL、API Key、响应体、内层提案与解释分别限界，超限、深层或重复字段响应不产生可应用预览。
+- Lua 模块名仅允许规范 ASCII 分段并限制在配置根目录内，单模块最多 4 MiB；沙箱 Lua 源码最多 128 KiB、chunk 名最多 256 UTF-8 字节，超限在 Lua 编译前以独立状态拒绝。
+- Ed25519 私钥、公钥和签名 Hex 在解码分配前要求精确长度，避免低层 API 被超长字符串放大。
+
+**已验证（2026-10-15）**：
+
+- AkUGCPlatformEditor、Client、Server Win64 Development 编译成功。
+- Python 回归 106/106；Editor `AkUGC` 自动化 128/128。
+- 自动化覆盖多字节字节预算、深度/token 放大、普通与转义重复字段、Document 结构与字符串预算、Command 数量、Pack 非法后继索引、项目/App 真实加载入口、Copilot 出站/提案边界、身份重复字段、超长签名 Hex、Lua 模块路径/文件上限与沙箱源码上限。
+- 完整 Editor 日志位于本机 `Saved/Logs/InputBudget_FinalAutomation.log`。
+
+**安全边界**：
+
+- 输入预算只限制解析与资源放大，不替代 Schema、Capability、内容哈希、签名、业务规则和移动端内容预算；客户端与服务端仍须执行完整本地验证。
+- 当前上限面向首个 Creator Alpha；如需调整必须同时更新共享常量、入口测试和运行预算，不能在单一路径放宽形成旁路。
+- 四台真实物理设备的外部验证继续按当前决策延期，不计入本阶段通过证据。
+
 ### P19：Release Registry 最小闭环
 
 **目标**：建立可本地部署的 Go + PostgreSQL 发布控制面，先完成不可变 Release 的上传、审核、发布、撤回和下载，不在本阶段开放玩家资产上传。

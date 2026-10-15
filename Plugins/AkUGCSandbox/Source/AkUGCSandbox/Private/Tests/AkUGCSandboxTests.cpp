@@ -26,6 +26,52 @@ bool FAkUGCSandboxRunTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAkUGCSandboxInputBudgetTest,
+	"AkUGC.Sandbox.VM.InputBudget",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCSandboxInputBudgetTest::RunTest(const FString& Parameters)
+{
+	FAkUGCSandbox Sandbox;
+	FString Error;
+	TestTrue(*Error, Sandbox.Initialize(FAkUGCSandboxConfig(), &Error));
+
+	const FAkUGCSandboxResult OversizedAscii = Sandbox.RunScript(
+		FString::ChrN(
+			static_cast<int32>(FAkUGCSandbox::MaxScriptSourceBytes + 1),
+			TEXT('x')));
+	TestEqual(
+		TEXT("Oversized ASCII source is rejected before Lua compilation"),
+		OversizedAscii.Status,
+		EAkUGCSandboxStatus::InputLimitExceeded);
+
+	const FAkUGCSandboxResult OversizedUtf8 = Sandbox.RunScript(
+		FString::ChrN(
+			static_cast<int32>(FAkUGCSandbox::MaxScriptSourceBytes / 2),
+			TEXT('界')));
+	TestEqual(
+		TEXT("Multibyte source cannot bypass the UTF-8 budget"),
+		OversizedUtf8.Status,
+		EAkUGCSandboxStatus::InputLimitExceeded);
+
+	const FAkUGCSandboxResult OversizedChunk = Sandbox.RunScript(
+		TEXT("return"),
+		FString::ChrN(
+			FAkUGCSandbox::MaxChunkNameBytes + 1,
+			TEXT('x')));
+	TestEqual(
+		TEXT("Oversized chunk name is rejected before Lua compilation"),
+		OversizedChunk.Status,
+		EAkUGCSandboxStatus::InputLimitExceeded);
+
+	TestEqual(
+		TEXT("Rejected input does not poison the sandbox VM"),
+		Sandbox.RunScript(TEXT("assert(1 + 1 == 2)")).Status,
+		EAkUGCSandboxStatus::Success);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FAkUGCSandboxForbiddenTest,
 	"AkUGC.Sandbox.VM.ForbiddenLibraries",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

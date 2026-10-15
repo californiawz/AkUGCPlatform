@@ -1,6 +1,5 @@
 #include "Pack/AkUGCLogicPackLoader.h"
 
-#include "Misc/FileHelper.h"
 #include "Document/AkUGCDocument.h"
 #include "Logic/AkUGCLogicCompiler.h"
 #include "Pack/AkUGCLogicPackBuilder.h"
@@ -9,6 +8,7 @@
 #include "Pack/AkUGCLogicPackSignature.h"
 #include "Validation/AkUGCCapabilityValidator.h"
 #include "Validation/AkUGCDocumentValidator.h"
+#include "Validation/AkUGCInputBudget.h"
 
 FAkUGCLogicPackLoadResult FAkUGCLogicPackLoader::Load(const FString& Json)
 {
@@ -115,11 +115,13 @@ FAkUGCLogicPackLoadResult FAkUGCLogicPackLoader::LoadFromFile(const FString& Fil
 	FAkUGCLogicPackLoadResult Result;
 
 	FString Json;
-	if (!FFileHelper::LoadFileToString(Json, *FilePath))
+	if (!AkUGCInputBudget::LoadTextFile(
+			FilePath,
+			AkUGCInputBudget::MaxLogicPackBytes,
+			TEXT("Logic Pack file"),
+			Json,
+			&Result.ErrorMessage))
 	{
-		Result.ErrorMessage = FString::Printf(
-			TEXT("Logic Pack 加载失败：无法读取文件 %s。"),
-			*FilePath);
 		return Result;
 	}
 
@@ -133,11 +135,13 @@ FAkUGCLogicPackLoadResult FAkUGCLogicPackLoader::LoadVerifiedFromFile(
 	FAkUGCLogicPackLoadResult Result;
 
 	FString Json;
-	if (!FFileHelper::LoadFileToString(Json, *FilePath))
+	if (!AkUGCInputBudget::LoadTextFile(
+			FilePath,
+			AkUGCInputBudget::MaxLogicPackBytes,
+			TEXT("Logic Pack file"),
+			Json,
+			&Result.ErrorMessage))
 	{
-		Result.ErrorMessage = FString::Printf(
-			TEXT("Logic Pack 加载失败：无法读取文件 %s。"),
-			*FilePath);
 		return Result;
 	}
 

@@ -186,6 +186,13 @@ FAkUGCValidationResult FAkUGCDocumentValidator::ValidateLogicGraph(
             break;
         }
 
+        if (!Node.SpawnPrefabId.IsNone()
+            && Node.SpawnPrefabId.ToString().Len() > AkUGCDocumentLimits::MaxNameLength)
+        {
+            Result.AddError(
+                NodePath + TEXT(".spawnPrefabId"),
+                TEXT("Spawn Prefab ID exceeds the name input budget."));
+        }
         if (!FMath::IsFinite(Node.PositionX) || !FMath::IsFinite(Node.PositionY))
         {
             Result.AddError(NodePath + TEXT(".position"), TEXT("Logic node position must be finite."));
@@ -359,9 +366,244 @@ void FAkUGCValidationResult::AddWarning(FString Path, FString Message)
     Issues.Add({EAkUGCValidationSeverity::Warning, MoveTemp(Path), MoveTemp(Message)});
 }
 
-FAkUGCValidationResult FAkUGCDocumentValidator::Validate(const FAkUGCProjectDocument& Document)
+FAkUGCValidationResult FAkUGCDocumentValidator::ValidateInputBudgets(
+    const FAkUGCProjectDocument& Document)
 {
     FAkUGCValidationResult Result;
+
+    if (Document.Scenes.Num() > AkUGCDocumentLimits::MaxScenes)
+    {
+        Result.AddError(
+            TEXT("scenes"),
+            FString::Printf(
+                TEXT("Project exceeds the scene input budget of %d."),
+                AkUGCDocumentLimits::MaxScenes));
+        return Result;
+    }
+
+    if (Document.Manifest.DisplayName.Len()
+            > AkUGCDocumentLimits::MaxDisplayNameLength
+        || Document.Manifest.TemplateId.ToString().Len()
+            > AkUGCDocumentLimits::MaxNameLength)
+    {
+        Result.AddError(
+            TEXT("manifest"),
+            TEXT("Project manifest text exceeds its input budget."));
+        return Result;
+    }
+    if (Document.Manifest.Capabilities.Num()
+        > AkUGCDocumentLimits::MaxCapabilities)
+    {
+        Result.AddError(
+            TEXT("manifest.capabilities"),
+            FString::Printf(
+                TEXT("Capability list exceeds the input budget of %d."),
+                AkUGCDocumentLimits::MaxCapabilities));
+        return Result;
+    }
+    for (int32 CapabilityIndex = 0;
+        CapabilityIndex < Document.Manifest.Capabilities.Num();
+        ++CapabilityIndex)
+    {
+        if (Document.Manifest.Capabilities[CapabilityIndex].ToString().Len()
+            > AkUGCDocumentLimits::MaxNameLength)
+        {
+            Result.AddError(
+                FString::Printf(
+                    TEXT("manifest.capabilities[%d]"),
+                    CapabilityIndex),
+                TEXT("Capability name exceeds the input budget."));
+            return Result;
+        }
+    }
+
+    int64 TotalEntities = 0;
+    int64 TotalComponents = 0;
+    int64 TotalProperties = 0;
+    int64 TotalTags = 0;
+    for (int32 SceneIndex = 0; SceneIndex < Document.Scenes.Num(); ++SceneIndex)
+    {
+        const FAkUGCSceneDocument& Scene = Document.Scenes[SceneIndex];
+        const FString ScenePath = FString::Printf(TEXT("scenes[%d]"), SceneIndex);
+        if (Scene.DisplayName.Len() > AkUGCDocumentLimits::MaxDisplayNameLength)
+        {
+            Result.AddError(
+                ScenePath + TEXT(".displayName"),
+                TEXT("Scene display name exceeds the input budget."));
+            return Result;
+        }
+        if (Scene.Ruleset.Waves.Num()
+            > AkUGCTowerDefenseRulesetLimits::MaxWaveCount)
+        {
+            Result.AddError(
+                ScenePath + TEXT(".ruleset.waves"),
+                FString::Printf(
+                    TEXT("Ruleset exceeds the wave input budget of %d."),
+                    AkUGCTowerDefenseRulesetLimits::MaxWaveCount));
+            return Result;
+        }
+        if (Scene.LogicGraph.Nodes.Num() > AkUGCLogicLimits::MaxNodes
+            || Scene.LogicGraph.Connections.Num()
+                > AkUGCLogicLimits::MaxConnections)
+        {
+            Result.AddError(
+                ScenePath + TEXT(".logicGraph"),
+                TEXT("Logic graph exceeds its node or connection input budget."));
+            return Result;
+        }
+        for (int32 NodeIndex = 0;
+            NodeIndex < Scene.LogicGraph.Nodes.Num();
+            ++NodeIndex)
+        {
+            const FAkUGCLogicNode& Node = Scene.LogicGraph.Nodes[NodeIndex];
+            if (Node.Message.Len() > AkUGCLogicLimits::MaxMessageLength
+                || Node.SpawnPrefabId.ToString().Len()
+                    > AkUGCDocumentLimits::MaxNameLength)
+            {
+                Result.AddError(
+                    FString::Printf(
+                        TEXT("%s.logicGraph.nodes[%d]"),
+                        *ScenePath,
+                        NodeIndex),
+                    TEXT("Logic node text exceeds its input budget."));
+                return Result;
+            }
+        }
+        TotalEntities += Scene.Entities.Num();
+        if (TotalEntities > AkUGCDocumentLimits::MaxEntities)
+        {
+            Result.AddError(
+                TEXT("scenes"),
+                FString::Printf(
+                    TEXT("Project exceeds the entity input budget of %d."),
+                    AkUGCDocumentLimits::MaxEntities));
+            return Result;
+        }
+        for (int32 EntityIndex = 0; EntityIndex < Scene.Entities.Num(); ++EntityIndex)
+        {
+            const FAkUGCEntityRecord& Entity = Scene.Entities[EntityIndex];
+            const FString EntityPath =
+                FString::Printf(TEXT("scenes[%d].entities[%d]"), SceneIndex, EntityIndex);
+            if (Entity.PrefabId.ToString().Len()
+                > AkUGCDocumentLimits::MaxNameLength)
+            {
+                Result.AddError(
+                    EntityPath + TEXT(".prefabId"),
+                    TEXT("Prefab ID exceeds the input budget."));
+                return Result;
+            }
+            if (Entity.Components.Num() > AkUGCDocumentLimits::MaxComponentsPerEntity)
+            {
+                Result.AddError(
+                    EntityPath + TEXT(".components"),
+                    FString::Printf(
+                        TEXT("Entity exceeds the component input budget of %d."),
+                        AkUGCDocumentLimits::MaxComponentsPerEntity));
+                return Result;
+            }
+            if (Entity.Tags.Num() > AkUGCDocumentLimits::MaxTagsPerEntity)
+            {
+                Result.AddError(
+                    EntityPath + TEXT(".tags"),
+                    FString::Printf(
+                        TEXT("Entity exceeds the tag input budget of %d."),
+                        AkUGCDocumentLimits::MaxTagsPerEntity));
+                return Result;
+            }
+            for (int32 TagIndex = 0; TagIndex < Entity.Tags.Num(); ++TagIndex)
+            {
+                if (Entity.Tags[TagIndex].ToString().Len()
+                    > AkUGCDocumentLimits::MaxNameLength)
+                {
+                    Result.AddError(
+                        FString::Printf(
+                            TEXT("%s.tags[%d]"),
+                            *EntityPath,
+                            TagIndex),
+                        TEXT("Tag exceeds the input budget."));
+                    return Result;
+                }
+            }
+            TotalComponents += Entity.Components.Num();
+            TotalTags += Entity.Tags.Num();
+            if (TotalComponents > AkUGCDocumentLimits::MaxTotalComponents
+                || TotalTags > AkUGCDocumentLimits::MaxTotalTags)
+            {
+                Result.AddError(
+                    TEXT("scenes"),
+                    TEXT("Project exceeds the total component or tag input budget."));
+                return Result;
+            }
+            for (int32 ComponentIndex = 0;
+                ComponentIndex < Entity.Components.Num();
+                ++ComponentIndex)
+            {
+                const FAkUGCComponentRecord& Component =
+                    Entity.Components[ComponentIndex];
+                const FString ComponentPath = FString::Printf(
+                    TEXT("%s.components[%d]"),
+                    *EntityPath,
+                    ComponentIndex);
+                if (Component.TypeId.ToString().Len()
+                    > AkUGCDocumentLimits::MaxNameLength)
+                {
+                    Result.AddError(
+                        ComponentPath + TEXT(".typeId"),
+                        TEXT("Component type ID exceeds the input budget."));
+                    return Result;
+                }
+                if (Component.Properties.Num()
+                    > AkUGCDocumentLimits::MaxPropertiesPerComponent)
+                {
+                    Result.AddError(
+                        ComponentPath + TEXT(".properties"),
+                        FString::Printf(
+                            TEXT("Component exceeds the property input budget of %d."),
+                            AkUGCDocumentLimits::MaxPropertiesPerComponent));
+                    return Result;
+                }
+                TotalProperties += Component.Properties.Num();
+                if (TotalProperties > AkUGCDocumentLimits::MaxTotalProperties)
+                {
+                    Result.AddError(
+                        TEXT("scenes"),
+                        FString::Printf(
+                            TEXT("Project exceeds the total property input budget of %d."),
+                            AkUGCDocumentLimits::MaxTotalProperties));
+                    return Result;
+                }
+                for (const TPair<FName, FAkUGCValue>& Property
+                    : Component.Properties)
+                {
+                    if (Property.Key.ToString().Len()
+                            > AkUGCDocumentLimits::MaxNameLength
+                        || Property.Value.StringValue.Len()
+                            > AkUGCDocumentLimits::MaxValueStringLength
+                        || Property.Value.NameValue.ToString().Len()
+                            > AkUGCDocumentLimits::MaxNameLength)
+                    {
+                        Result.AddError(
+                            ComponentPath + TEXT(".properties.")
+                                + Property.Key.ToString(),
+                            TEXT("Property name or value text exceeds its input budget."));
+                        return Result;
+                    }
+                }
+            }
+        }
+    }
+
+    return Result;
+}
+
+FAkUGCValidationResult FAkUGCDocumentValidator::Validate(
+    const FAkUGCProjectDocument& Document)
+{
+    FAkUGCValidationResult Result = ValidateInputBudgets(Document);
+    if (!Result.IsValid())
+    {
+        return Result;
+    }
 
     if (Document.Manifest.SchemaVersion != AkUGCSchema::CurrentProjectDocumentVersion)
     {
@@ -382,10 +624,62 @@ FAkUGCValidationResult FAkUGCDocumentValidator::Validate(const FAkUGCProjectDocu
     {
         Result.AddError(TEXT("manifest.displayName"), TEXT("Project display name is required."));
     }
+    else if (Document.Manifest.DisplayName.Len() > AkUGCDocumentLimits::MaxDisplayNameLength)
+    {
+        Result.AddError(
+            TEXT("manifest.displayName"),
+            FString::Printf(
+                TEXT("Project display name exceeds the input budget of %d characters."),
+                AkUGCDocumentLimits::MaxDisplayNameLength));
+    }
 
     if (Document.Manifest.TemplateId.IsNone())
     {
         Result.AddError(TEXT("manifest.templateId"), TEXT("Template ID is required."));
+    }
+    else if (Document.Manifest.TemplateId.ToString().Len() > AkUGCDocumentLimits::MaxNameLength)
+    {
+        Result.AddError(
+            TEXT("manifest.templateId"),
+            FString::Printf(
+                TEXT("Template ID exceeds the input budget of %d characters."),
+                AkUGCDocumentLimits::MaxNameLength));
+    }
+    if (Document.Manifest.Capabilities.Num() > AkUGCDocumentLimits::MaxCapabilities)
+    {
+        Result.AddError(
+            TEXT("manifest.capabilities"),
+            FString::Printf(
+                TEXT("Capability list exceeds the input budget of %d."),
+                AkUGCDocumentLimits::MaxCapabilities));
+    }
+    else
+    {
+        TSet<FName> Capabilities;
+        for (int32 CapabilityIndex = 0;
+            CapabilityIndex < Document.Manifest.Capabilities.Num();
+            ++CapabilityIndex)
+        {
+            const FName Capability = Document.Manifest.Capabilities[CapabilityIndex];
+            if (Capability.IsNone()
+                || Capability.ToString().Len() > AkUGCDocumentLimits::MaxNameLength)
+            {
+                Result.AddError(
+                    FString::Printf(
+                        TEXT("manifest.capabilities[%d]"),
+                        CapabilityIndex),
+                    TEXT("Capability name is empty or exceeds the name input budget."));
+            }
+            else if (Capabilities.Contains(Capability))
+            {
+                Result.AddError(
+                    FString::Printf(
+                        TEXT("manifest.capabilities[%d]"),
+                        CapabilityIndex),
+                    TEXT("Capability names must be unique."));
+            }
+            Capabilities.Add(Capability);
+        }
     }
 
     TSet<FGuid> SceneIds;
@@ -396,6 +690,14 @@ FAkUGCValidationResult FAkUGCDocumentValidator::Validate(const FAkUGCProjectDocu
         const FAkUGCSceneDocument& Scene = Document.Scenes[SceneIndex];
         const FString ScenePath = FString::Printf(TEXT("scenes[%d]"), SceneIndex);
 
+        if (Scene.DisplayName.Len() > AkUGCDocumentLimits::MaxDisplayNameLength)
+        {
+            Result.AddError(
+                ScenePath + TEXT(".displayName"),
+                FString::Printf(
+                    TEXT("Scene display name exceeds the input budget of %d characters."),
+                    AkUGCDocumentLimits::MaxDisplayNameLength));
+        }
         if (!Scene.SceneId.IsValid())
         {
             Result.AddError(ScenePath + TEXT(".sceneId"), TEXT("Scene ID must be a valid GUID."));
@@ -440,9 +742,29 @@ FAkUGCValidationResult FAkUGCDocumentValidator::Validate(const FAkUGCProjectDocu
             {
                 Result.AddError(EntityPath + TEXT(".prefabId"), TEXT("Prefab ID is required."));
             }
+            else if (Entity.PrefabId.ToString().Len() > AkUGCDocumentLimits::MaxNameLength)
+            {
+                Result.AddError(
+                    EntityPath + TEXT(".prefabId"),
+                    TEXT("Prefab ID exceeds the name input budget."));
+            }
             if (Entity.Transform.ContainsNaN())
             {
                 Result.AddError(EntityPath + TEXT(".transform"), TEXT("Entity transform must be finite."));
+            }
+            for (int32 TagIndex = 0; TagIndex < Entity.Tags.Num(); ++TagIndex)
+            {
+                if (Entity.Tags[TagIndex].IsNone()
+                    || Entity.Tags[TagIndex].ToString().Len()
+                        > AkUGCDocumentLimits::MaxNameLength)
+                {
+                    Result.AddError(
+                        FString::Printf(
+                            TEXT("%s.tags[%d]"),
+                            *EntityPath,
+                            TagIndex),
+                        TEXT("Tag is empty or exceeds the name input budget."));
+                }
             }
 
             for (int32 ComponentIndex = 0; ComponentIndex < Entity.Components.Num(); ++ComponentIndex)
@@ -457,6 +779,12 @@ FAkUGCValidationResult FAkUGCDocumentValidator::Validate(const FAkUGCProjectDocu
                 {
                     Result.AddError(ComponentPath + TEXT(".typeId"), TEXT("Component type ID is required."));
                 }
+                else if (Component.TypeId.ToString().Len() > AkUGCDocumentLimits::MaxNameLength)
+                {
+                    Result.AddError(
+                        ComponentPath + TEXT(".typeId"),
+                        TEXT("Component type ID exceeds the name input budget."));
+                }
                 if (Component.SchemaVersion < 1)
                 {
                     Result.AddError(ComponentPath + TEXT(".schemaVersion"), TEXT("Component schema version must be positive."));
@@ -465,6 +793,30 @@ FAkUGCValidationResult FAkUGCDocumentValidator::Validate(const FAkUGCProjectDocu
                 for (const TPair<FName, FAkUGCValue>& Property : Component.Properties)
                 {
                     const FString PropertyPath = ComponentPath + TEXT(".properties.") + Property.Key.ToString();
+                    if (Property.Key.IsNone()
+                        || Property.Key.ToString().Len() > AkUGCDocumentLimits::MaxNameLength)
+                    {
+                        Result.AddError(
+                            PropertyPath,
+                            TEXT("Property name is empty or exceeds the name input budget."));
+                    }
+                    if (Property.Value.StringValue.Len()
+                        > AkUGCDocumentLimits::MaxValueStringLength)
+                    {
+                        Result.AddError(
+                            PropertyPath + TEXT(".stringValue"),
+                            FString::Printf(
+                                TEXT("String value exceeds the input budget of %d characters."),
+                                AkUGCDocumentLimits::MaxValueStringLength));
+                    }
+                    if (!Property.Value.NameValue.IsNone()
+                        && Property.Value.NameValue.ToString().Len()
+                            > AkUGCDocumentLimits::MaxNameLength)
+                    {
+                        Result.AddError(
+                            PropertyPath + TEXT(".nameValue"),
+                            TEXT("Name value exceeds the name input budget."));
+                    }
                     if (!FMath::IsFinite(Property.Value.NumberValue))
                     {
                         Result.AddError(PropertyPath + TEXT(".numberValue"), TEXT("Number field must be finite."));

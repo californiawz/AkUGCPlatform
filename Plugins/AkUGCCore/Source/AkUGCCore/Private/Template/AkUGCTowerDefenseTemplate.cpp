@@ -1,7 +1,6 @@
 #include "Template/AkUGCTowerDefenseTemplate.h"
 
 #include "Command/AkUGCCommandExecutor.h"
-#include "Document/AkUGCDocumentJson.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "JsonObjectConverter.h"
@@ -10,6 +9,7 @@
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "Validation/AkUGCDocumentValidator.h"
+#include "Validation/AkUGCInputBudget.h"
 
 namespace
 {
@@ -506,7 +506,14 @@ bool FAkUGCTowerDefenseTemplate::SerializeParameters(const FAkUGCTowerDefensePar
 bool FAkUGCTowerDefenseTemplate::DeserializeParameters(const FString& Json,
     FAkUGCTowerDefenseParameters& OutParameters, FString* OutError)
 {
-    if (!FAkUGCDocumentJson::ValidateNoDuplicateFields(Json, OutError)) { return false; }
+    if (!AkUGCInputBudget::ValidateJson(
+            Json,
+            AkUGCInputBudget::MaxCopilotProposalBytes,
+            TEXT("Tower-defense parameter JSON"),
+            OutError))
+    {
+        return false;
+    }
     TSharedPtr<FJsonObject> Root;
     if (!FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Json), Root) || !Root.IsValid())
     {

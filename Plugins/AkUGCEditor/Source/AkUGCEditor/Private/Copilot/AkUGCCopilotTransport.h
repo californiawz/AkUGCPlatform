@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Validation/AkUGCInputBudget.h"
 
 struct FAkUGCCopilotTransportResult
 {
@@ -36,5 +37,6 @@ public:
     static void Shutdown();
     static FAkUGCCopilotRequestPtr Start(const FString& Url, const FString& Json,
         const FString& ApiKey, float TimeoutSeconds, const FString& TestCaBundle = FString());
-    static constexpr int32 MaxBodyBytes = 262144;
+    static constexpr int32 MaxBodyBytes =
+        static_cast<int32>(AkUGCInputBudget::MaxCopilotResponseBytes);
 };

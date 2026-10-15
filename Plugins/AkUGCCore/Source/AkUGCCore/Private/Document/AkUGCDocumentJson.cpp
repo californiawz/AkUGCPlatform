@@ -9,6 +9,8 @@
 #include "Serialization/JsonSerializer.h"
 #include "String/LexFromString.h"
 #include "UObject/UnrealType.h"
+#include "Validation/AkUGCDocumentValidator.h"
+#include "Validation/AkUGCInputBudget.h"
 
 namespace
 {
@@ -151,63 +153,6 @@ namespace
             }
         }
         return true;
-    }
-
-    struct FJsonContainerFields
-    {
-        bool bIsObject = false;
-        TSet<FString> Fields;
-    };
-
-    bool ValidateNoDuplicateJsonFields(const FString& Json, FString& OutError)
-    {
-        const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Json);
-        TArray<FJsonContainerFields> Containers;
-        EJsonNotation Notation;
-        while (Reader->ReadNext(Notation))
-        {
-            if (Notation == EJsonNotation::Error)
-            {
-                OutError = Reader->GetErrorMessage();
-                return false;
-            }
-
-            const FString& Identifier = Reader->GetIdentifier();
-            if (!Containers.IsEmpty() && Containers.Last().bIsObject)
-            {
-                if (Containers.Last().Fields.Contains(Identifier))
-                {
-                    OutError = FString::Printf(TEXT("JSON field '%s' is duplicated."), *Identifier);
-                    return false;
-                }
-                Containers.Last().Fields.Add(Identifier);
-            }
-
-            if (Notation == EJsonNotation::ObjectStart)
-            {
-                FJsonContainerFields& Container = Containers.AddDefaulted_GetRef();
-                Container.bIsObject = true;
-            }
-            else if (Notation == EJsonNotation::ArrayStart)
-            {
-                Containers.AddDefaulted();
-            }
-            else if (Notation == EJsonNotation::ObjectEnd || Notation == EJsonNotation::ArrayEnd)
-            {
-                if (Containers.IsEmpty())
-                {
-                    OutError = TEXT("JSON container structure is invalid.");
-                    return false;
-                }
-                Containers.Pop();
-            }
-        }
-        if (!Reader->GetErrorMessage().IsEmpty())
-        {
-            OutError = Reader->GetErrorMessage();
-            return false;
-        }
-        return Containers.IsEmpty();
     }
 
     bool ValidateExactFields(
@@ -385,13 +330,11 @@ namespace
 
 bool FAkUGCDocumentJson::ValidateNoDuplicateFields(const FString& Json, FString* OutError)
 {
-    FString Error;
-    const bool bSucceeded = ValidateNoDuplicateJsonFields(Json, Error);
-    if (!bSucceeded && OutError)
-    {
-        *OutError = Error.IsEmpty() ? TEXT("Invalid JSON field structure.") : MoveTemp(Error);
-    }
-    return bSucceeded;
+    return AkUGCInputBudget::ValidateJson(
+        Json,
+        AkUGCInputBudget::MaxLogicPackBytes,
+        TEXT("JSON input"),
+        OutError);
 }
 
 bool FAkUGCDocumentJson::Serialize(
@@ -424,11 +367,24 @@ bool FAkUGCDocumentJson::Serialize(
         0,
         0,
         &ExportCallback);
-    if (!bSucceeded && OutError)
+    if (!bSucceeded)
     {
-        *OutError = TEXT("Failed to serialize UGC project document.");
+        if (OutError)
+        {
+            *OutError = TEXT("Failed to serialize UGC project document.");
+        }
+        return false;
     }
-    return bSucceeded;
+    if (!AkUGCInputBudget::ValidateUtf8Text(
+            OutJson,
+            AkUGCInputBudget::MaxProjectDocumentBytes,
+            TEXT("UGC project document"),
+            OutError))
+    {
+        OutJson.Reset();
+        return false;
+    }
+    return true;
 }
 
 bool FAkUGCDocumentJson::Deserialize(
@@ -443,15 +399,12 @@ bool FAkUGCDocumentJson::Deserialize(
         *OutMigration = FAkUGCDocumentMigrationResult{};
     }
 
-    FString DuplicateFieldError;
-    if (!ValidateNoDuplicateJsonFields(Json, DuplicateFieldError))
+    if (!AkUGCInputBudget::ValidateJson(
+            Json,
+            AkUGCInputBudget::MaxProjectDocumentBytes,
+            TEXT("UGC project document"),
+            OutError))
     {
-        if (OutError)
-        {
-            *OutError = DuplicateFieldError.IsEmpty()
-                ? TEXT("Failed to validate UGC project document JSON fields.")
-                : MoveTemp(DuplicateFieldError);
-        }
         return false;
     }
 
@@ -520,6 +473,28 @@ bool FAkUGCDocumentJson::Deserialize(
             *OutError = ConversionError.IsEmpty()
                 ? TEXT("Failed to deserialize UGC project document.")
                 : ConversionError.ToString();
+        }
+        return false;
+    }
+
+    const FAkUGCValidationResult InputBudgetValidation =
+        FAkUGCDocumentValidator::ValidateInputBudgets(MigratedDocument);
+    if (!InputBudgetValidation.IsValid())
+    {
+        if (OutError)
+        {
+            const FAkUGCValidationIssue* FirstError =
+                InputBudgetValidation.Issues.FindByPredicate(
+                    [](const FAkUGCValidationIssue& Issue)
+                    {
+                        return Issue.Severity == EAkUGCValidationSeverity::Error;
+                    });
+            *OutError = FirstError
+                ? FString::Printf(
+                    TEXT("%s: %s"),
+                    *FirstError->Path,
+                    *FirstError->Message)
+                : TEXT("UGC project document exceeds an input budget.");
         }
         return false;
     }

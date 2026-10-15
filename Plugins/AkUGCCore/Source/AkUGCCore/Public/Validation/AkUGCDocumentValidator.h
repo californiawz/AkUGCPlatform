@@ -30,6 +30,9 @@ struct AKUGCCORE_API FAkUGCValidationResult
 class AKUGCCORE_API FAkUGCDocumentValidator
 {
 public:
+    /** Resource-shape limits that every deserialized document must satisfy before use. */
+    static FAkUGCValidationResult ValidateInputBudgets(
+        const FAkUGCProjectDocument& Document);
     static FAkUGCValidationResult Validate(const FAkUGCProjectDocument& Document);
     static FAkUGCValidationResult ValidateLogicGraph(
         const FAkUGCLogicGraph& LogicGraph,
