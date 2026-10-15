@@ -7,6 +7,7 @@ import time
 import uuid
 import socket
 
+from unreal_automation_verdict import require_automation_success
 from verify_network_visuals import read_log, run_checked, verify_lua_startup, wait_for
 
 
@@ -212,6 +213,7 @@ def verify_recovery(engine, root, output, fault, packaged=False, cook=False, hos
         if fault == "leave":
             wait_for(*host, "[AkUGCRoomRecovery] HostLeaveIssued", 35)
             host_text = wait_for(*host, "Test Completed. Result={Success} Name={FaultRecovery}", 35)
+            wait_for(*host, "...Automation Test Queue Empty 1 tests performed.", 10)
             if "[AkUGCRoomRecovery] Passed CleanLocal=1 SoloStartReturn=1" not in host_text:
                 raise RuntimeError("Host did not recover to operable local preparation")
             if host_entry_ui:
@@ -220,13 +222,25 @@ def verify_recovery(engine, root, output, fault, packaged=False, cook=False, hos
         code = receiver[0].wait(timeout=20)
         if code:
             raise RuntimeError(f"Recovered receiver exited with code {code}")
+        require_automation_success(
+            read_log(receiver[1].with_suffix(".stdout.log")),
+            expected_selector="AkUGC.Runtime.Room.FaultRecovery",
+            expected_paths=("AkUGC.Runtime.Room.FaultRecovery",),
+            expected_total=1,
+            require_queue_empty=True,
+            require_test_exit=True,
+            return_code=code,
+        )
         text = read_log(receiver[1]) + "\n" + read_log(receiver[1].with_suffix(".stdout.log"))
-        if "Result={Fail}" in text or "Test Completed. Result={Success} Name={FaultRecovery}" not in text:
-            raise RuntimeError("Final receiver logs did not confirm automation success")
         if fault == "leave":
+            require_automation_success(
+                read_log(host[1].with_suffix(".stdout.log")),
+                expected_selector="AkUGC.Runtime.Room.FaultRecovery",
+                expected_paths=("AkUGC.Runtime.Room.FaultRecovery",),
+                expected_total=1,
+                require_queue_empty=True,
+            )
             host_text = read_log(host[1]) + "\n" + read_log(host[1].with_suffix(".stdout.log"))
-            if "Result={Fail}" in host_text or "Test Completed. Result={Success} Name={FaultRecovery}" not in host_text:
-                raise RuntimeError("Final host logs did not confirm automation success")
         if "[AkUGCRoomRecovery] Passed CleanLocal=1 SoloStartReturn=1" not in text:
             raise RuntimeError("Missing clean operable local recovery evidence")
         if fault == "timeout" and ("BlackholeApplied" not in text or "FailureType = ConnectionTimeout" not in text):
@@ -519,7 +533,7 @@ def verify_keyboard_rounds(engine, root, output, cook=False, render=False):
             checkpoint(p, "finish")
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
-            if all("Test Completed. Result={Success} Name={OSKeyboardTwoRounds}" in logs(p) for p in players):
+            if all("...Automation Test Queue Empty 1 tests performed." in logs(p) for p in players):
                 break
             time.sleep(0.1)
         else:
@@ -529,6 +543,13 @@ def verify_keyboard_rounds(engine, root, output, cook=False, render=False):
         for p in players:
             if p["process"].poll() is not None or "Result={Fail}" in logs(p):
                 raise RuntimeError("Process exited or failed before final evidence")
+            require_automation_success(
+                read_log(p["dir"] / "stdout.log"),
+                expected_selector="AkUGC.Runtime.Room.OSKeyboardTwoRounds",
+                expected_paths=("AkUGC.Runtime.Room.OSKeyboardTwoRounds",),
+                expected_total=1,
+                require_queue_empty=True,
+            )
             result = json.loads((p["state_dir"] / "result.json").read_text(encoding="utf-8"))
             checks = result.get("checkpoints", [])
             if not result.get("passed") or [c.get("tag") for c in checks] != expected or not all(c.get("passed") for c in checks):
@@ -754,8 +775,16 @@ def main():
             evidence, settlements, lua_startup = [], {}, {}
             for process, log in players:
                 text = wait_for(process, log, "Test Completed. Result={Success} Name={RealNetwork}", 170)
-                if "Result={Fail}" in text:
-                    raise RuntimeError(f"Room test failed: {log}")
+                text = wait_for(process, log, "...Automation Test Queue Empty 1 tests performed.", 10)
+                require_automation_success(
+                    read_log(log.with_suffix(".stdout.log")),
+                    expected_selector="AkUGC.Runtime.Room.RealNetwork",
+                    expected_paths=("AkUGC.Runtime.Room.RealNetwork",),
+                    expected_total=1,
+                    require_queue_empty=True,
+                )
+                if process.poll() is not None:
+                    raise RuntimeError(f"Room process exited before final evidence: {log}")
                 matches = re.findall(r"\[AkUGCRoomTest\] Passed .*", text)
                 if not matches:
                     raise RuntimeError(f"Missing room Passed evidence: {log}")

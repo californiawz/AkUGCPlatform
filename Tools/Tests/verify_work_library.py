@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import uuid
 
+from unreal_automation_verdict import require_automation_success
 from verify_network_visuals import run_checked
 
 
@@ -49,13 +50,23 @@ def main():
         else:
             args.remove("-nullrhi")
             args += ["-windowed", "-ResX=1280", "-ResY=720", f"-AkUGCHUDCapture={output / 'settlement.png'}"]
-        run_checked(args, output / f"play_{index}.stdout.log", 190)
+        stdout_log = output / f"play_{index}.stdout.log"
+        run_checked(args, stdout_log, 190)
         raw = log.read_bytes()
         try:
             text = raw.decode("utf-8")
         except UnicodeDecodeError:
             text = raw.decode("gb18030", errors="replace")
-        if "[AkUGCWorkPlay] Passed" not in text or "Result={Fail}" in text or "Test Completed. Result={Success} Name={SharedPlayable}" not in text:
+        require_automation_success(
+            stdout_log.read_text(encoding="utf-8", errors="replace"),
+            expected_selector="AkUGC.Runtime.WorkLibrary.SharedPlayable",
+            expected_paths=("AkUGC.Runtime.WorkLibrary.SharedPlayable",),
+            expected_total=1,
+            require_queue_empty=True,
+            require_test_exit=True,
+            return_code=0,
+        )
+        if "[AkUGCWorkPlay] Passed" not in text:
             raise RuntimeError(f"Shared work play failed: {log}")
         if index == 1 and not (output / "settlement.png").is_file():
             raise RuntimeError("Rendered shared work did not produce settlement capture.")

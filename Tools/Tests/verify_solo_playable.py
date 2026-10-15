@@ -4,6 +4,8 @@ from pathlib import Path
 import subprocess
 import uuid
 
+from unreal_automation_verdict import require_automation_success
+
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--output", type=Path, help="Fresh output directory; existing evidence is never overwritten")
@@ -63,7 +65,7 @@ with (output / "stdout.log").open("w", encoding="utf-8") as stream:
         deadline = time.monotonic() + 180
         while process.poll() is None:
             current = log.read_text(encoding="utf-8", errors="replace") if log.exists() else ""
-            if "Test Completed. Result=" in current and "Path={AkUGC.Runtime.Solo.PlayableSmoke}" in current:
+            if "...Automation Test Queue Empty 1 tests performed." in current:
                 close_action = close_game_window(process)
                 (output / "close_action.json").write_text(json.dumps(close_action, indent=2), encoding="utf-8")
                 break
@@ -76,7 +78,15 @@ with (output / "stdout.log").open("w", encoding="utf-8") as stream:
             process.terminate()
             process.wait(timeout=15)
 text = log.read_text(encoding="utf-8", errors="replace")
-if code or "[AkUGCSoloSmoke] Passed" not in text or "Result={Fail}" in text or not capture.exists():
+require_automation_success(
+    (output / "stdout.log").read_text(encoding="utf-8", errors="replace"),
+    expected_selector="AkUGC.Runtime.Solo.PlayableSmoke",
+    expected_paths=("AkUGC.Runtime.Solo.PlayableSmoke",),
+    expected_total=1,
+    require_queue_empty=True,
+    return_code=code,
+)
+if "[AkUGCSoloSmoke] Passed" not in text or not capture.exists():
     raise RuntimeError(f"Playable solo verification failed: {log}\n{text[-5000:]}")
 lua_events = [line for line in text.splitlines() if "[AkUGCPlatform]" in line or "LogAkLua:" in line]
 lua_checks = {

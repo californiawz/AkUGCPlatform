@@ -16,6 +16,11 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
+from unreal_automation_verdict import (
+    AutomationVerdictError,
+    require_automation_success,
+)
+
 
 def slider_evidence_diagnostics(evidence):
     if not isinstance(evidence, dict):
@@ -1070,8 +1075,34 @@ def _run_verification(args, root, output, user_dir):
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
         text = raw.decode("gb18030", errors="replace")
+    automation_text = (output / "stdout.log").read_text(
+        encoding="utf-8", errors="replace"
+    )
     completed = re.findall(r"\[AkUGCCopilotHTTP\] Case=([\w-]+) Complete=1", text)
     counts = Counter(event["path"] for event in events)
+    actual_selector = (
+        "AkUGC.Editor.Copilot.OSMouseInteraction" if args.mouse_ui else selector
+    )
+    expected_path = (
+        actual_selector
+        if args.mouse_ui or not args.all_tests
+        else "AkUGC.Editor.Copilot.RealHttpProtocol"
+    )
+    automation_verdict = None
+    automation_error = ""
+    try:
+        automation_verdict = require_automation_success(
+            automation_text,
+            expected_selector=actual_selector,
+            expected_paths=(expected_path,),
+            expected_total=None if args.all_tests and not args.mouse_ui else 1,
+            minimum_total=134 if args.all_tests and not args.mouse_ui else None,
+            require_queue_empty=True,
+            require_test_exit=True,
+            return_code=code,
+        )
+    except AutomationVerdictError as error:
+        automation_error = str(error)
     if args.mouse_ui:
         result = json.loads((output / "ui-result.json").read_text(encoding="utf-8"))
         if args.menu_entry or args.parameter_ui or args.library_ui:
@@ -1087,7 +1118,11 @@ def _run_verification(args, root, output, user_dir):
             mode_passed = result.get("last_http_code") == 200 and not events and sum(a.get("label") == "发送需求并生成预览" for a in actions) == 1
         else:
             mode_passed = all(counts[path] == 1 for path in ("/ok", "/delayed", "/ui-invalid", "/explain-ok"))
-        result["passed"] = result["passed"] and code == 0 and "Result={Fail}" not in text and mode_passed
+        result["passed"] = result["passed"] and not automation_error and mode_passed
+        result["automation_verdict_error"] = automation_error
+        result["automation_tests_completed"] = (
+            len(automation_verdict.completions) if automation_verdict else 0
+        )
         result["http_requests"] = events
         result["real_model_called"] = args.mouse_live_authorized
         result["model_calls_budget"] = 1 if args.mouse_live_authorized else 0
@@ -1102,7 +1137,7 @@ def _run_verification(args, root, output, user_dir):
         if not result["passed"]:
             raise RuntimeError("Mouse UI validation failed")
         return
-    result = {"kind": "local_http_protocol_fixture_not_real_ai", "passed": code == 0 and "Result={Fail}" not in text
+    result = {"kind": "local_http_protocol_fixture_not_real_ai", "passed": not automation_error
               and "[AkUGCCopilotHTTP] Passed Cases=42 FixtureOnly=1" in text,
               "cases": completed, "http_requests": events,
               "credentials_only_sent_over_verified_tls": all(not event["authorization_present"] or event["tls"] for event in events)
@@ -1119,7 +1154,8 @@ def _run_verification(args, root, output, user_dir):
               "outer_duplicate_response_rejected": all(case in completed for case in ("outer-duplicate-choices", "outer-duplicate-content")),
               "unsent_generation_preservation_tested": "ok" in completed and "explain-ok" in completed,
               "real_model_validated": False,
-              "automation_passed": len(re.findall(r"Test Completed\. Result=\{Success\}", text)),
+              "automation_passed": len(automation_verdict.completions) if automation_verdict else 0,
+              "automation_verdict_error": automation_error,
               "log": str(log)}
     if args.generated_document:
         runtime_path = output / "generated-runtime.json"

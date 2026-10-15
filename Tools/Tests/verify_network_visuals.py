@@ -7,6 +7,8 @@ import subprocess
 import time
 import uuid
 
+from unreal_automation_verdict import require_automation_success
+
 
 def read_log(path):
     return path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
@@ -131,12 +133,28 @@ def main():
         for name, process, log in (("client1", first, first_log), ("client2_late", second, second_log)):
             code = process.wait(timeout=110)
             text = read_log(log)
-            if code or "[AkUGCNetworkVisual] ClientPassed" not in text or "Result={Fail}" in text:
+            require_automation_success(
+                read_log(log.with_suffix(".stdout.log")),
+                expected_selector="AkUGC.Runtime.Network.ClientVisualReplication",
+                expected_paths=("AkUGC.Runtime.Network.ClientVisualReplication",),
+                expected_total=1,
+                require_queue_empty=True,
+                require_test_exit=True,
+                return_code=code,
+            )
+            if "[AkUGCNetworkVisual] ClientPassed" not in text:
                 raise RuntimeError(f"{name} failed, code={code}: {log}\n{text[-4000:]}")
             results[name] = re.findall(r"\[AkUGCNetworkVisual\].*", text)
             results["lua_startup"][name] = verify_lua_startup(text, log)
-        text = wait_for(ds, ds_log, "Result={Success} Name={ServerVisualBaseline}", 15)
-        if "[AkUGCNetworkVisual] ServerPassed" not in text or "Result={Fail}" in text:
+        text = wait_for(ds, ds_log, "...Automation Test Queue Empty 1 tests performed.", 15)
+        require_automation_success(
+            read_log(ds_log.with_suffix(".stdout.log")),
+            expected_selector="AkUGC.Runtime.Network.ServerVisualBaseline",
+            expected_paths=("AkUGC.Runtime.Network.ServerVisualBaseline",),
+            expected_total=1,
+            require_queue_empty=True,
+        )
+        if ds.poll() is not None or "[AkUGCNetworkVisual] ServerPassed" not in text:
             raise RuntimeError(f"Server verification failed: {ds_log}")
         results["server"] = re.findall(r"\[AkUGCNetworkVisual\].*", text)
         results["lua_startup"]["server"] = verify_lua_startup(text, ds_log)

@@ -397,7 +397,15 @@ class JournalAndResultTests(unittest.TestCase):
 
             def complete(*arguments):
                 self.assertTrue(arguments[-1])
-                (output / "editor.log").write_text("", encoding="utf-8")
+                automation_log = "\n".join((
+                    "Found 1 automation tests based on 'AkUGC.Editor.Copilot.OSMouseInteraction'",
+                    "Test Started. Name={OSMouseInteraction} Path={AkUGC.Editor.Copilot.OSMouseInteraction}",
+                    "Test Completed. Result={Success} Name={OSMouseInteraction} Path={AkUGC.Editor.Copilot.OSMouseInteraction}",
+                    "...Automation Test Queue Empty 1 tests performed.",
+                    "**** TestExit: Automation Test Queue Empty ****",
+                ))
+                for name in ("editor.log", "stdout.log"):
+                    (output / name).write_text(automation_log, encoding="utf-8")
                 driver.write_json(output / "ui-result.json", {"passed": True})
                 driver.write_json(output / "os-input-actions.json", [])
                 driver.write_json(output / "slider-evidence.json", VALID_EVIDENCE)
