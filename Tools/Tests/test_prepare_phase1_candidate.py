@@ -259,6 +259,30 @@ class PreparePhase1CandidateTests(unittest.TestCase):
             self.prepare(output)
         self.assertFalse(output.exists())
 
+    def test_rejects_encrypted_publisher_recovery_bundle(self):
+        recovery = self.project / "Content" / "author.akugcrecovery"
+        recovery.write_text(
+            '{"protection":"scrypt-aes-256-gcm-v1","ciphertext":"secret"}',
+            encoding="utf-8",
+        )
+        output = self.root / "candidate"
+
+        with self.assertRaisesRegex(ValueError, "private-key"):
+            self.prepare(output)
+        self.assertFalse(output.exists())
+
+    def test_rejects_stale_recovery_bundle_temporary(self):
+        recovery = (
+            self.project / "Content" /
+            "author.akugcrecovery.deadbeef.tmp"
+        )
+        recovery.write_text("encrypted-credential-fragment", encoding="utf-8")
+        output = self.root / "candidate"
+
+        with self.assertRaisesRegex(ValueError, "private-key"):
+            self.prepare(output)
+        self.assertFalse(output.exists())
+
     def test_requires_clean_matching_source_commit(self):
         output = self.root / "candidate"
         with patch.object(

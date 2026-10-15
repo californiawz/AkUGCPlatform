@@ -32,7 +32,7 @@ $Python = ".\.venv-phase1-acceptance\Scripts\python.exe"
 ```
 
 1. 为 Creator、Listen Game、Client 和 Dedicated Server 生成最终候选构建。测试中途不得替换任何一项。
-2. 将完整 Creator 候选目录（项目 Content/Config/Lua、实际插件模块及引擎 BuildId 清单）、Game、Client 和 Server 分别压缩为归档文件。归档中不得包含旧版 `private.key`、DPAPI 保护的 `publisher-identity.json`、模型 API Key、Publisher 私钥目录或个人配置；密钥已加密不代表可以收集或分发。
+2. 将完整 Creator 候选目录（项目 Content/Config/Lua、实际插件模块及引擎 BuildId 清单）、Game、Client 和 Server 分别压缩为归档文件。归档中不得包含旧版 `private.key`、DPAPI 保护的 `publisher-identity.json`、任何 `.akugcrecovery` 身份恢复包、模型 API Key、Publisher 私钥目录或个人配置；密钥已加密不代表可以收集或分发。
 3. Creator 标识文件必须使用本轮实际加载的 `Plugins/AkUGCEditor/Binaries/Win64/UnrealEditor-AkUGCEditor.dll`；人工滑块报告会重新计算该文件摘要。
 4. 在项目 `Saved` 下建立全新的会话目录，将 Creator 完整归档、Creator 模块标识和三个运行包共五个文件复制到该目录的 `baseline/`；初始化工具拒绝引用目录外文件、空文件、`.key` 或符号链接。
 5. 提交候选源码并确认工作区完全干净，再初始化清单。工具会拒绝 `--source-commit` 与当前 HEAD 不同、存在已跟踪修改，或存在任何未被 `.gitignore` 排除的未跟踪文件；五个文件必须同时提供，工具会保存相对路径、随机会话 nonce 和 SHA-256，最终校验时重新读取文件核对：

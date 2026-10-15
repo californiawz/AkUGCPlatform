@@ -59,7 +59,7 @@ CREATOR_EXCLUDED_SUFFIXES = {
     ".sdf",
     ".suo",
 }
-PRIVATE_KEY_SUFFIXES = {".key", ".p12", ".pfx"}
+PRIVATE_KEY_SUFFIXES = {".akugcrecovery", ".key", ".p12", ".pfx"}
 PRIVATE_KEY_NAMES = {
     "id_rsa",
     "id_dsa",
@@ -88,6 +88,8 @@ def is_private_key_name(name: str) -> bool:
     folded = name.casefold()
     return (
         folded in PRIVATE_KEY_NAMES
+        or folded.endswith(".akugcrecovery")
+        or ".akugcrecovery." in folded
         or any(folded.startswith(private_name + ".")
                for private_name in PRIVATE_KEY_NAMES)
     )

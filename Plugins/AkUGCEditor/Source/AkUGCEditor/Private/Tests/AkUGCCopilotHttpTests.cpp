@@ -613,7 +613,13 @@ struct FAkUGCWorkLibraryTestAccess
         Panel->ConfirmDelete();
         const bool ConfirmRejected = Panel->PendingDeleteId == Entry.ReleaseId;
         Panel->CancelDelete();
-        return RequestRejected && ConfirmRejected && !Panel->PendingDeleteId.IsValid();
+        Panel->bConfirmedIdentityRotation = true;
+        Panel->RotateIdentity();
+        const bool RotationRejected =
+            !Panel->bConfirmedIdentityRotation
+            && Panel->Status.Contains(TEXT("当前身份未改变"));
+        return RequestRejected && ConfirmRejected
+            && !Panel->PendingDeleteId.IsValid() && RotationRejected;
     }
 };
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAkUGCWorkDeleteUnattendedTest, "AkUGC.Editor.WorkLibrary.UnattendedDeleteGuard",

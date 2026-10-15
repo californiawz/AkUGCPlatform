@@ -44,6 +44,8 @@ def is_sensitive_identity_name(name: str) -> bool:
     folded = name.casefold()
     return (
         folded in SENSITIVE_IDENTITY_NAMES
+        or folded.endswith(".akugcrecovery")
+        or ".akugcrecovery." in folded
         or any(folded.startswith(identity + ".")
                for identity in SENSITIVE_IDENTITY_NAMES)
     )
@@ -143,7 +145,8 @@ def normalized_archive(package: zipfile.ZipFile, label: str):
             continue
         pure = PurePosixPath(name)
         lowered = pure.name.casefold()
-        if (pure.suffix.casefold() in {".key", ".p12", ".pfx"}
+        if (pure.suffix.casefold() in {
+                    ".akugcrecovery", ".key", ".p12", ".pfx"}
                 or lowered in {"id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"}
                 or is_sensitive_identity_name(lowered)):
             raise ValueError(f"{label} contains a private-key file: {name}")
@@ -803,7 +806,7 @@ class Validator:
             self.diagnostics.append(f"{label} must be a regular in-directory file")
             return None
         lowered = resolved.name.lower()
-        if (resolved.suffix.lower() == ".key"
+        if (resolved.suffix.lower() in {".akugcrecovery", ".key"}
                 or is_sensitive_identity_name(lowered)
                 or lowered == "fixture-tls.key"):
             self.diagnostics.append(f"{label} must not collect a private key")

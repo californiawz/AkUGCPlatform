@@ -13,9 +13,29 @@
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
 
+namespace
+{
+    void SecureResetString(FString& Value)
+    {
+        TArray<TCHAR>& Characters = Value.GetCharArray();
+        if (!Characters.IsEmpty())
+        {
+            FMemory::Memzero(Characters.GetData(), Characters.Num() * sizeof(TCHAR));
+        }
+        Value.Reset();
+    }
+}
+
 void SAkUGCWorkLibraryPanel::Construct(const FArguments& InArgs, UAkUGCEditorSubsystem* InSubsystem)
 {
     Subsystem = InSubsystem;
+    RecoveryPath = FPaths::Combine(
+        FPaths::ProjectSavedDir(),
+        TEXT("UGC/Recovery"),
+        FString::Printf(
+            TEXT("publisher-%s-%s.akugcrecovery"),
+            *FDateTime::UtcNow().ToString(TEXT("%Y%m%d-%H%M%S")),
+            *FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8)));
     ChildSlot
     [
         SNew(SVerticalBox)
@@ -35,6 +55,41 @@ void SAkUGCWorkLibraryPanel::Construct(const FArguments& InArgs, UAkUGCEditorSub
             [SNew(SButton).Text(FText::FromString(TEXT("打开分享目录"))).OnClicked_Lambda([]
                 { FPlatformProcess::ExploreFolder(*FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("UGC/Share")))); return FReply::Handled(); })]
         ]
+        + SVerticalBox::Slot().AutoHeight().Padding(0, 8, 0, 2)
+        [SNew(STextBlock).Text(FText::FromString(TEXT("发布身份恢复与轮换")))]
+        + SVerticalBox::Slot().AutoHeight()
+        [SNew(STextBlock).Text(FText::FromString(TEXT("恢复包使用 scrypt + AES-256-GCM 加密，可跨 Windows 用户恢复，但仍是敏感凭据。请与密码分开保存，禁止提交仓库或归档到候选包。恢复只允许空目录或完全相同的身份；轮换会生成双签名历史并同时备份新身份。"))).AutoWrapText(true)]
+        + SVerticalBox::Slot().AutoHeight().Padding(0, 2)
+        [SNew(SEditableTextBox)
+            .HintText(FText::FromString(TEXT("身份恢复包完整路径（.akugcrecovery）")))
+            .Text_Lambda([this] { return FText::FromString(RecoveryPath); })
+            .OnTextChanged_Lambda([this](const FText& Text) { RecoveryPath = Text.ToString(); })]
+        + SVerticalBox::Slot().AutoHeight().Padding(0, 2)
+        [SAssignNew(RecoveryPassphraseBox, SEditableTextBox)
+            .IsPassword(true)
+            .HintText(FText::FromString(TEXT("身份恢复密码（至少12字节，不保存）")))]
+        + SVerticalBox::Slot().AutoHeight().Padding(0, 2)
+        [SAssignNew(RecoveryPassphraseConfirmBox, SEditableTextBox)
+            .IsPassword(true)
+            .HintText(FText::FromString(TEXT("再次输入恢复密码（导出/轮换必填）")))]
+        + SVerticalBox::Slot().AutoHeight()
+        [SNew(SHorizontalBox)
+            + SHorizontalBox::Slot().AutoWidth().Padding(2)
+            [SNew(SButton).Text(FText::FromString(TEXT("导出加密身份备份")))
+                .OnClicked(this, &SAkUGCWorkLibraryPanel::BackupIdentity)]
+            + SHorizontalBox::Slot().AutoWidth().Padding(2)
+            [SNew(SButton).Text(FText::FromString(TEXT("从加密备份恢复")))
+                .OnClicked(this, &SAkUGCWorkLibraryPanel::RestoreIdentity)]
+            + SHorizontalBox::Slot().AutoWidth().Padding(2)
+            [SNew(SButton).Text(FText::FromString(TEXT("轮换身份并备份")))
+                .IsEnabled_Lambda([this] { return bConfirmedIdentityRotation; })
+                .OnClicked(this, &SAkUGCWorkLibraryPanel::RotateIdentity)]
+        ]
+        + SVerticalBox::Slot().AutoHeight()
+        [SNew(SCheckBox)
+            .IsChecked_Lambda([this] { return bConfirmedIdentityRotation ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
+            .OnCheckStateChanged_Lambda([this](ECheckBoxState State) { bConfirmedIdentityRotation = State == ECheckBoxState::Checked; })
+            [SNew(STextBlock).Text(FText::FromString(TEXT("我理解轮换后新作品使用新公钥；旧作品仍由历史公钥验签，旧恢复包不能回退当前身份"))).AutoWrapText(true)]]
         + SVerticalBox::Slot().AutoHeight().Padding(0, 2)
         [SNew(SEditableTextBox).HintText(FText::FromString(TEXT("接收的 .akugc 分享文件完整路径")))
             .Text_Lambda([this] { return FText::FromString(SharePath); })
@@ -89,6 +144,162 @@ FReply SAkUGCWorkLibraryPanel::Publish()
             *Entry.ReleaseId.ToString(EGuidFormats::Digits), *Path, *Entry.TrustedPublicKey);
     }
     else { Status = Error.IsEmpty() ? TEXT("请先打开项目。") : Error; }
+    return FReply::Handled();
+}
+
+bool SAkUGCWorkLibraryPanel::ReadRecoveryPassphrase(
+    bool bRequireConfirmation,
+    TArray<uint8>& OutPassphrase,
+    FString& OutError) const
+{
+    OutPassphrase.Reset();
+    OutError.Reset();
+    if (!RecoveryPassphraseBox.IsValid()
+        || (bRequireConfirmation && !RecoveryPassphraseConfirmBox.IsValid()))
+    {
+        OutError = TEXT("身份恢复密码输入控件不可用。");
+        return false;
+    }
+
+    FString Password = RecoveryPassphraseBox->GetText().ToString();
+    FString Confirmation = RecoveryPassphraseConfirmBox.IsValid()
+        ? RecoveryPassphraseConfirmBox->GetText().ToString()
+        : FString();
+    if (bRequireConfirmation && Password != Confirmation)
+    {
+        SecureResetString(Password);
+        SecureResetString(Confirmation);
+        OutError = TEXT("两次输入的身份恢复密码不一致。");
+        return false;
+    }
+    FTCHARToUTF8 PasswordUtf8(*Password);
+    if (PasswordUtf8.Length() > 0)
+    {
+        OutPassphrase.Append(
+            reinterpret_cast<const uint8*>(PasswordUtf8.Get()),
+            PasswordUtf8.Length());
+        FMemory::Memzero(
+            const_cast<ANSICHAR*>(PasswordUtf8.Get()),
+            PasswordUtf8.Length());
+    }
+    SecureResetString(Password);
+    SecureResetString(Confirmation);
+    if (OutPassphrase.Num() < 12 || OutPassphrase.Num() > 1024)
+    {
+        if (!OutPassphrase.IsEmpty())
+        {
+            FMemory::Memzero(OutPassphrase.GetData(), OutPassphrase.Num());
+        }
+        OutPassphrase.Reset();
+        OutError = TEXT("身份恢复密码必须是 12 至 1024 字节的 UTF-8 文本。");
+        return false;
+    }
+    return true;
+}
+
+void SAkUGCWorkLibraryPanel::ClearRecoveryPassphrase()
+{
+    if (RecoveryPassphraseBox.IsValid())
+    {
+        RecoveryPassphraseBox->SetText(FText::GetEmpty());
+    }
+    if (RecoveryPassphraseConfirmBox.IsValid())
+    {
+        RecoveryPassphraseConfirmBox->SetText(FText::GetEmpty());
+    }
+}
+
+FReply SAkUGCWorkLibraryPanel::BackupIdentity()
+{
+    TArray<uint8> Passphrase;
+    FString Error;
+    const bool bPassphraseReady =
+        ReadRecoveryPassphrase(true, Passphrase, Error);
+    const bool bExported = bPassphraseReady
+        && FAkUGCPublisherKeyStore(
+            FAkUGCPublisherKeyStore::DefaultDirectory()).ExportRecoveryBundle(
+                RecoveryPath,
+                Passphrase,
+                &Error);
+    if (!Passphrase.IsEmpty())
+    {
+        FMemory::Memzero(Passphrase.GetData(), Passphrase.Num());
+    }
+    Passphrase.Reset();
+    ClearRecoveryPassphrase();
+    Status = bExported
+        ? TEXT("发布身份加密备份已导出：") + FPaths::ConvertRelativePathToFull(RecoveryPath)
+            + TEXT("\n请将恢复包与密码分开保存；两者缺一均无法恢复。")
+        : Error;
+    return FReply::Handled();
+}
+
+FReply SAkUGCWorkLibraryPanel::RestoreIdentity()
+{
+    TArray<uint8> Passphrase;
+    FString Error;
+    FAkUGCPublisherIdentityInfo Info;
+    const bool bPassphraseReady =
+        ReadRecoveryPassphrase(false, Passphrase, Error);
+    const bool bRestored = bPassphraseReady
+        && FAkUGCPublisherKeyStore(
+            FAkUGCPublisherKeyStore::DefaultDirectory()).ImportRecoveryBundle(
+                RecoveryPath,
+                Passphrase,
+                Info,
+                &Error);
+    if (!Passphrase.IsEmpty())
+    {
+        FMemory::Memzero(Passphrase.GetData(), Passphrase.Num());
+    }
+    Passphrase.Reset();
+    ClearRecoveryPassphrase();
+    Status = bRestored
+        ? FString::Printf(
+            TEXT("发布身份恢复完成：公钥 %s，密钥版本 %d。"),
+            *Info.PublicKey,
+            Info.KeyVersion)
+        : Error;
+    return FReply::Handled();
+}
+
+FReply SAkUGCWorkLibraryPanel::RotateIdentity()
+{
+    if ((FApp::IsUnattended() && !FApp::AllowUnattendedInput())
+        || !bConfirmedIdentityRotation)
+    {
+        bConfirmedIdentityRotation = false;
+        ClearRecoveryPassphrase();
+        Status = TEXT("轮换需要交互环境并显式确认；当前身份未改变。");
+        return FReply::Handled();
+    }
+
+    TArray<uint8> Passphrase;
+    FString Error;
+    FAkUGCPublisherIdentityInfo Info;
+    const bool bPassphraseReady =
+        ReadRecoveryPassphrase(true, Passphrase, Error);
+    const bool bRotated = bPassphraseReady
+        && FAkUGCPublisherKeyStore(
+            FAkUGCPublisherKeyStore::DefaultDirectory()).RotateWithRecovery(
+                RecoveryPath,
+                Passphrase,
+                Info,
+                &Error);
+    if (!Passphrase.IsEmpty())
+    {
+        FMemory::Memzero(Passphrase.GetData(), Passphrase.Num());
+    }
+    Passphrase.Reset();
+    ClearRecoveryPassphrase();
+    bConfirmedIdentityRotation = false;
+    Status = bRotated
+        ? FString::Printf(
+            TEXT("发布身份已轮换到版本 %d：%s\n新身份恢复包：%s\n旧作品继续使用历史公钥验签；请先向 Registry 提交轮换链再发布新作品。"),
+            Info.KeyVersion,
+            *Info.PublicKey,
+            *FPaths::ConvertRelativePathToFull(RecoveryPath))
+        : Error;
     return FReply::Handled();
 }
 

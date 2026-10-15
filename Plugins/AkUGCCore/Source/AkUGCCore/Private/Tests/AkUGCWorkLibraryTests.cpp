@@ -144,6 +144,206 @@ bool FAkUGCWorkLibraryTest::RunTest(const FString& Parameters)
     TestFalse(TEXT("Migrated envelope does not contain plaintext private key"), MigratedEnvelope.Contains(LegacyIdentity.PrivateKey));
     LegacyIdentity.PrivateKey.Reset();
 
+    const FTCHARToUTF8 RecoveryPassphraseUtf8(TEXT("correct horse battery staple"));
+    TArray<uint8> RecoveryPassphrase;
+    RecoveryPassphrase.Append(
+        reinterpret_cast<const uint8*>(RecoveryPassphraseUtf8.Get()),
+        RecoveryPassphraseUtf8.Length());
+    const FTCHARToUTF8 WrongPassphraseUtf8(TEXT("wrong recovery password"));
+    TArray<uint8> WrongPassphrase;
+    WrongPassphrase.Append(
+        reinterpret_cast<const uint8*>(WrongPassphraseUtf8.Get()),
+        WrongPassphraseUtf8.Length());
+
+    const FString RecoverySourceDirectory = FPaths::Combine(Root, TEXT("RecoverySource"));
+    const FAkUGCPublisherKeyStore RecoverySource(RecoverySourceDirectory);
+    FAkUGCPublisherIdentityInfo RecoverySourceInfo;
+    TestTrue(TEXT("Recovery source identity creates"),
+        RecoverySource.GetIdentityInfo(RecoverySourceInfo, &Error));
+    const FString StaleRecoveryTarget =
+        FPaths::Combine(Root, TEXT("Recovery/stale.akugcrecovery"));
+    const FString StaleRecoveryTemporary =
+        StaleRecoveryTarget + TEXT(".deadbeef.tmp");
+    IFileManager::Get().MakeDirectory(*FPaths::GetPath(StaleRecoveryTarget), true);
+    TestTrue(TEXT("Stale recovery temporary fixture writes"),
+        FFileHelper::SaveStringToFile(
+            TEXT("encrypted-credential-fragment"),
+            *StaleRecoveryTemporary,
+            FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM));
+    TestFalse(TEXT("Stale recovery temporary blocks backup creation"),
+        RecoverySource.ExportRecoveryBundle(
+            StaleRecoveryTarget, RecoveryPassphrase, &Error));
+    TestFalse(TEXT("Blocked recovery export creates no final bundle"),
+        IFileManager::Get().FileExists(*StaleRecoveryTarget));
+    IFileManager::Get().Delete(*StaleRecoveryTemporary, false, false, true);
+    const FString RecoveryBundle = FPaths::Combine(Root, TEXT("Recovery/source.akugcrecovery"));
+    TestTrue(TEXT("Password-encrypted recovery bundle exports"),
+        RecoverySource.ExportRecoveryBundle(RecoveryBundle, RecoveryPassphrase, &Error));
+    FString RecoveryJson;
+    TestTrue(TEXT("Recovery bundle is readable as bounded JSON"),
+        FFileHelper::LoadFileToString(RecoveryJson, *RecoveryBundle));
+    TestFalse(TEXT("Recovery bundle does not contain a plaintext private-key field"),
+        RecoveryJson.Contains(TEXT("\"privateKey\"")));
+    TestTrue(TEXT("Recovery bundle declares scrypt and AES-GCM"),
+        RecoveryJson.Contains(TEXT("\"protection\":\"scrypt-aes-256-gcm-v1\"")));
+
+    const FString WrongRestoreDirectory = FPaths::Combine(Root, TEXT("WrongRestore"));
+    FAkUGCPublisherIdentityInfo WrongRestoreInfo;
+    TestFalse(TEXT("Wrong recovery password is rejected"),
+        FAkUGCPublisherKeyStore(WrongRestoreDirectory).ImportRecoveryBundle(
+            RecoveryBundle, WrongPassphrase, WrongRestoreInfo, &Error));
+    TestFalse(TEXT("Wrong password creates no local identity"),
+        IFileManager::Get().FileExists(*FPaths::Combine(
+            WrongRestoreDirectory, TEXT("publisher-identity.json"))));
+
+    FString TamperedRecoveryJson = RecoveryJson;
+    const FString RecoveryCiphertextField = TEXT("\"ciphertext\":\"");
+    const int32 RecoveryCiphertextIndex =
+        TamperedRecoveryJson.Find(RecoveryCiphertextField) + RecoveryCiphertextField.Len();
+    TestTrue(TEXT("Recovery bundle contains ciphertext"),
+        RecoveryCiphertextIndex >= RecoveryCiphertextField.Len());
+    if (RecoveryCiphertextIndex >= RecoveryCiphertextField.Len()
+        && RecoveryCiphertextIndex < TamperedRecoveryJson.Len())
+    {
+        TamperedRecoveryJson[RecoveryCiphertextIndex] =
+            TamperedRecoveryJson[RecoveryCiphertextIndex] == TEXT('A') ? TEXT('B') : TEXT('A');
+    }
+    const FString TamperedRecoveryBundle =
+        FPaths::Combine(Root, TEXT("Recovery/tampered.akugcrecovery"));
+    TestTrue(TEXT("Tampered recovery fixture writes"),
+        FFileHelper::SaveStringToFile(
+            TamperedRecoveryJson,
+            *TamperedRecoveryBundle,
+            FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM));
+    const FString TamperedRestoreDirectory = FPaths::Combine(Root, TEXT("TamperedRestore"));
+    TestFalse(TEXT("Tampered recovery ciphertext is rejected"),
+        FAkUGCPublisherKeyStore(TamperedRestoreDirectory).ImportRecoveryBundle(
+            TamperedRecoveryBundle, RecoveryPassphrase, WrongRestoreInfo, &Error));
+    TestFalse(TEXT("Tampered recovery creates no local identity"),
+        IFileManager::Get().FileExists(*FPaths::Combine(
+            TamperedRestoreDirectory, TEXT("publisher-identity.json"))));
+
+    const FString RestoredDirectory = FPaths::Combine(Root, TEXT("RestoredPublisher"));
+    const FAkUGCPublisherKeyStore RestoredPublisher(RestoredDirectory);
+    FAkUGCPublisherIdentityInfo RestoredInfo;
+    TestTrue(TEXT("Recovery bundle restores into an empty identity directory"),
+        RestoredPublisher.ImportRecoveryBundle(
+            RecoveryBundle, RecoveryPassphrase, RestoredInfo, &Error));
+    TestEqual(TEXT("Restored identity preserves public key"),
+        RestoredInfo.PublicKey, RecoverySourceInfo.PublicKey);
+    TestEqual(TEXT("Restored identity preserves key version"),
+        RestoredInfo.KeyVersion, RecoverySourceInfo.KeyVersion);
+    TestTrue(TEXT("Repeated import of the same recovery bundle is idempotent"),
+        RestoredPublisher.ImportRecoveryBundle(
+            RecoveryBundle, RecoveryPassphrase, RestoredInfo, &Error));
+    FString UndecryptableIdentity;
+    TestTrue(TEXT("Restored DPAPI identity fixture is readable"),
+        FFileHelper::LoadFileToString(
+            UndecryptableIdentity,
+            *RestoredPublisher.IdentityPath()));
+    const FString ProtectedPrivateKeyField = TEXT("\"protectedPrivateKey\":\"");
+    const int32 ProtectedPrivateKeyIndex =
+        UndecryptableIdentity.Find(ProtectedPrivateKeyField)
+        + ProtectedPrivateKeyField.Len();
+    TestTrue(TEXT("Restored identity contains DPAPI ciphertext"),
+        ProtectedPrivateKeyIndex >= ProtectedPrivateKeyField.Len());
+    if (ProtectedPrivateKeyIndex >= ProtectedPrivateKeyField.Len()
+        && ProtectedPrivateKeyIndex < UndecryptableIdentity.Len())
+    {
+        UndecryptableIdentity[ProtectedPrivateKeyIndex] =
+            UndecryptableIdentity[ProtectedPrivateKeyIndex] == TEXT('A')
+                ? TEXT('B')
+                : TEXT('A');
+    }
+    TestTrue(TEXT("Undecryptable DPAPI fixture writes"),
+        FFileHelper::SaveStringToFile(
+            UndecryptableIdentity,
+            *RestoredPublisher.IdentityPath(),
+            FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM));
+    FString UnavailablePublicKey;
+    TestFalse(TEXT("Tampered DPAPI identity cannot load normally"),
+        RestoredPublisher.GetOrCreatePublicKey(UnavailablePublicKey, &Error));
+    TestTrue(TEXT("Matching recovery bundle can rewrap an undecryptable DPAPI identity"),
+        RestoredPublisher.ImportRecoveryBundle(
+            RecoveryBundle, RecoveryPassphrase, RestoredInfo, &Error));
+    TestTrue(TEXT("Rewrapped DPAPI identity loads normally"),
+        RestoredPublisher.GetOrCreatePublicKey(UnavailablePublicKey, &Error));
+    TestEqual(TEXT("Rewrapped identity preserves public key"),
+        UnavailablePublicKey, RecoverySourceInfo.PublicKey);
+
+    FAkUGCLogicPackSignature SourceSignature, RestoredSignature;
+    const FAkUGCLogicPackManifest RecoveryFixtureManifest = Loaded.Pack.Manifest;
+    TestTrue(TEXT("Recovery source signs fixture"),
+        RecoverySource.Sign(RecoveryFixtureManifest, SourceSignature, &Error));
+    TestTrue(TEXT("Restored identity signs fixture"),
+        RestoredPublisher.Sign(RecoveryFixtureManifest, RestoredSignature, &Error));
+    TestEqual(TEXT("Restored Ed25519 identity produces the same deterministic signature"),
+        RestoredSignature.Signature, SourceSignature.Signature);
+
+    const FString ConflictDirectory = FPaths::Combine(Root, TEXT("ConflictPublisher"));
+    const FAkUGCPublisherKeyStore ConflictPublisher(ConflictDirectory);
+    FString ConflictPublicKeyBefore, ConflictPublicKeyAfter;
+    TestTrue(TEXT("Conflicting identity fixture creates"),
+        ConflictPublisher.GetOrCreatePublicKey(ConflictPublicKeyBefore, &Error));
+    TestFalse(TEXT("Recovery cannot overwrite another identity"),
+        ConflictPublisher.ImportRecoveryBundle(
+            RecoveryBundle, RecoveryPassphrase, WrongRestoreInfo, &Error));
+    TestTrue(TEXT("Conflicting identity remains readable after rejection"),
+        ConflictPublisher.GetOrCreatePublicKey(ConflictPublicKeyAfter, &Error));
+    TestEqual(TEXT("Rejected recovery does not rotate conflicting identity"),
+        ConflictPublicKeyAfter, ConflictPublicKeyBefore);
+
+    const FString RotatedRecoveryBundle =
+        FPaths::Combine(Root, TEXT("Recovery/rotated.akugcrecovery"));
+    FAkUGCPublisherIdentityInfo RotatedInfo;
+    TestTrue(TEXT("Explicit rotation creates a new identity and immediate recovery bundle"),
+        RestoredPublisher.RotateWithRecovery(
+            RotatedRecoveryBundle, RecoveryPassphrase, RotatedInfo, &Error));
+    TestEqual(TEXT("Rotation increments key version"), RotatedInfo.KeyVersion, 2);
+    TestEqual(TEXT("Rotation appends one history record"), RotatedInfo.Rotations.Num(), 1);
+    TestNotEqual(TEXT("Rotation changes current public key"),
+        RotatedInfo.PublicKey, RecoverySourceInfo.PublicKey);
+    TestTrue(TEXT("Rotation history has valid old/new signatures"),
+        FAkUGCPublisherKeyStore::VerifyIdentityHistory(RotatedInfo, &Error));
+    TestTrue(TEXT("Rotation recovery bundle exists"),
+        IFileManager::Get().FileExists(*RotatedRecoveryBundle));
+    FString RotatedPublicKey;
+    TestTrue(TEXT("Rotated identity reloads"),
+        RestoredPublisher.GetOrCreatePublicKey(RotatedPublicKey, &Error));
+    TestEqual(TEXT("Reloaded identity uses rotated public key"),
+        RotatedPublicKey, RotatedInfo.PublicKey);
+    TestTrue(TEXT("Pre-rotation signature remains verifiable by historical key"),
+        FAkUGCLogicPackVerifier::Verify(
+            RecoveryFixtureManifest,
+            SourceSignature,
+            RecoverySourceInfo.PublicKey,
+            &Error));
+    TestFalse(TEXT("Old recovery bundle cannot roll a rotated store back"),
+        RestoredPublisher.ImportRecoveryBundle(
+            RecoveryBundle, RecoveryPassphrase, WrongRestoreInfo, &Error));
+
+    const FString RotatedRestoreDirectory = FPaths::Combine(Root, TEXT("RotatedRestore"));
+    FAkUGCPublisherIdentityInfo RotatedRestoreInfo;
+    TestTrue(TEXT("Rotated recovery bundle restores full history"),
+        FAkUGCPublisherKeyStore(RotatedRestoreDirectory).ImportRecoveryBundle(
+            RotatedRecoveryBundle, RecoveryPassphrase, RotatedRestoreInfo, &Error));
+    TestEqual(TEXT("Restored rotation keeps current public key"),
+        RotatedRestoreInfo.PublicKey, RotatedInfo.PublicKey);
+    TestEqual(TEXT("Restored rotation keeps key version"),
+        RotatedRestoreInfo.KeyVersion, RotatedInfo.KeyVersion);
+    TestTrue(TEXT("Restored rotation history verifies"),
+        FAkUGCPublisherKeyStore::VerifyIdentityHistory(RotatedRestoreInfo, &Error));
+
+    const FString ReusedRotationPath = RotatedRecoveryBundle;
+    const FString PublicKeyBeforeRejectedRotation = RotatedPublicKey;
+    TestFalse(TEXT("Rotation refuses to overwrite an existing recovery bundle"),
+        RestoredPublisher.RotateWithRecovery(
+            ReusedRotationPath, RecoveryPassphrase, WrongRestoreInfo, &Error));
+    TestTrue(TEXT("Identity reloads after rejected rotation"),
+        RestoredPublisher.GetOrCreatePublicKey(RotatedPublicKey, &Error));
+    TestEqual(TEXT("Rejected rotation leaves current key unchanged"),
+        RotatedPublicKey, PublicKeyBeforeRejectedRotation);
+
     FString TamperedIdentity = IdentityBefore;
     const FString CiphertextField = TEXT("\"protectedPrivateKey\":\"");
     const int32 CiphertextIndex = TamperedIdentity.Find(CiphertextField) + CiphertextField.Len();

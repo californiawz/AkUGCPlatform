@@ -4,7 +4,7 @@ AkStudio 的 Unreal Engine UGC 创作与运行平台。
 
 ## 当前阶段
 
-Phase 2 准备阶段：Phase 0 与 Phase 1 的 Win64 本机技术闭环已完成；Phase 1 真人及独立物理设备外部门禁延期，不记为通过。当前先完成发布身份安全化，再进入 Go + PostgreSQL Release Registry。
+Phase 2 基础加固阶段：Phase 0 与 Phase 1 的 Win64 本机技术闭环已完成；Phase 1 真人及独立物理设备外部门禁延期，不记为通过。当前已完成 DPAPI 发布身份、密码加密跨用户恢复和双签名轮换历史，下一步收紧产品预算与最终测试判定，再进入 Go + PostgreSQL Release Registry。
 
 首个垂直切片为“三波合作塔防”。首期只使用官方 Prefab，不开放玩家 C++、插件、任意 Blueprint、任意 UObject 反射或外部网络访问。
 

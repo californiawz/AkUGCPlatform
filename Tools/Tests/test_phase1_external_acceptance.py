@@ -560,6 +560,20 @@ class ExternalAcceptanceTests(unittest.TestCase):
         self.assertIn("must not collect a private key", joined)
         self.assertIn("does not exist", joined)
 
+    def test_encrypted_recovery_bundle_cannot_be_collected_as_evidence(self):
+        manifest = self.valid_manifest()
+        recovery = self.evidence(
+            "usability/author.akugcrecovery",
+            b'{"ciphertext":"encrypted-private-key"}',
+        )
+        manifest["physical_slider"]["manual_slider_report"] = recovery
+        result = self.validate(manifest)
+        self.assertFalse(result["passed"])
+        self.assertIn(
+            "must not collect a private key",
+            "\n".join(result["diagnostics"]),
+        )
+
     def test_candidate_archives_require_formats_exclude_keys_and_bind_snapshot(self):
         manifest = self.valid_manifest()
         creator_data = (self.root / manifest["baseline"]["creator_build_file"]).read_bytes()
@@ -567,6 +581,35 @@ class ExternalAcceptanceTests(unittest.TestCase):
             manifest["baseline"]["creator_package_file"],
             self.creator_entries(
                 creator_data, {"Saved/UGC/Publisher/private.key": b"publisher-secret"}))
+        manifest["baseline"]["creator_package_sha256"] = creator_hash
+        result = self.validate(manifest)
+        self.assertFalse(result["passed"])
+        self.assertIn("contains a private-key file", "\n".join(result["diagnostics"]))
+
+        manifest = self.valid_manifest()
+        creator_data = (self.root / manifest["baseline"]["creator_build_file"]).read_bytes()
+        _, creator_hash = self.archive(
+            manifest["baseline"]["creator_package_file"],
+            self.creator_entries(
+                creator_data, {
+                    "Saved/UGC/Recovery/"
+                    "author.akugcrecovery.deadbeef.tmp":
+                        b"encrypted-credential-fragment",
+                }))
+        manifest["baseline"]["creator_package_sha256"] = creator_hash
+        result = self.validate(manifest)
+        self.assertFalse(result["passed"])
+        self.assertIn("contains a private-key file", "\n".join(result["diagnostics"]))
+
+        manifest = self.valid_manifest()
+        creator_data = (self.root / manifest["baseline"]["creator_build_file"]).read_bytes()
+        _, creator_hash = self.archive(
+            manifest["baseline"]["creator_package_file"],
+            self.creator_entries(
+                creator_data, {
+                    "Saved/UGC/Recovery/author.akugcrecovery":
+                        b'{"ciphertext":"encrypted-private-key"}',
+                }))
         manifest["baseline"]["creator_package_sha256"] = creator_hash
         result = self.validate(manifest)
         self.assertFalse(result["passed"])
