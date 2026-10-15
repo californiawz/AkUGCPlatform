@@ -33,18 +33,23 @@ struct FAkUGCSandboxImpl
 	bool bCallDepthExceeded = false;
 	bool bEffectLimitExceeded = false;
 	int32 EffectCount = 0;
+	int32 MessageCount = 0;
+	int32 DamageCount = 0;
+	int32 SpawnCount = 0;
+	int32 TimerRegistrationCount = 0;
+	int32 HostQueryCount = 0;
 	double RunStartTime = 0.0;
 
 	// 受控定时器：脚本通过 ugc.timer_after 注册，宿主通过 AdvanceTimers 驱动。
 	// 回调函数以 luaL_ref 存入注册表 timer 回调表，到期后由 AdvanceTimers 执行。
 	struct FAkUGCSandboxPendingTimer
 	{
-		int32 Id = 0;
+		int64 Id = 0;
 		double RemainingSeconds = 0.0;
 		int32 CallbackRef = LUA_NOREF;
 	};
 	TArray<FAkUGCSandboxPendingTimer> PendingTimers;
-	int32 NextTimerId = 1;
+	int64 NextTimerId = 1;
 };
 
 namespace
@@ -116,22 +121,287 @@ namespace
 		}
 	}
 
-	/**
-	 * 记录一次受控副作用并检查 Effect 配额，超限即终止当前脚本。
-	 * 返回 0 表示未超限（配额未启用或仍有剩余），超限时经 luaL_error 长跳转、不会返回。
-	 */
-	int CheckEffectLimit(lua_State* L, FAkUGCSandboxImpl* Impl)
+	enum class EAkUGCSandboxEffectType : uint8
 	{
-		if (Impl->Config.MaxEffectCount > 0)
+		Message,
+		Damage,
+		Spawn,
+		Timer
+	};
+
+	/** 重置单次 RunScript 或单个 timer callback 的执行配额。 */
+	void ResetExecutionCounters(FAkUGCSandboxImpl& Impl)
+	{
+		Impl.InstructionsExecuted = 0;
+		Impl.bInstructionLimitExceeded = false;
+		Impl.bMemoryLimitExceeded = false;
+		Impl.bTimeout = false;
+		Impl.bCallDepthExceeded = false;
+		Impl.bEffectLimitExceeded = false;
+		Impl.EffectCount = 0;
+		Impl.MessageCount = 0;
+		Impl.DamageCount = 0;
+		Impl.SpawnCount = 0;
+		Impl.TimerRegistrationCount = 0;
+		Impl.HostQueryCount = 0;
+		Impl.RunStartTime = FPlatformTime::Seconds();
+	}
+
+	/** 严格校验规范 UTF-8：拒绝截断、孤立续字节、过长编码、代理项和越界码点。 */
+	bool IsValidUtf8(const uint8* Data, const size_t Length)
+	{
+		size_t Index = 0;
+		while (Index < Length)
 		{
-			++Impl->EffectCount;
-			if (Impl->EffectCount > Impl->Config.MaxEffectCount)
+			const uint8 First = Data[Index++];
+			if (First <= 0x7f)
 			{
-				Impl->bEffectLimitExceeded = true;
-				return luaL_error(L, "effect limit exceeded");
+				continue;
+			}
+
+			int32 ContinuationCount = 0;
+			uint8 SecondMin = 0x80;
+			uint8 SecondMax = 0xbf;
+			if (First >= 0xc2 && First <= 0xdf)
+			{
+				ContinuationCount = 1;
+			}
+			else if (First >= 0xe0 && First <= 0xef)
+			{
+				ContinuationCount = 2;
+				if (First == 0xe0)
+				{
+					SecondMin = 0xa0;
+				}
+				else if (First == 0xed)
+				{
+					SecondMax = 0x9f;
+				}
+			}
+			else if (First >= 0xf0 && First <= 0xf4)
+			{
+				ContinuationCount = 3;
+				if (First == 0xf0)
+				{
+					SecondMin = 0x90;
+				}
+				else if (First == 0xf4)
+				{
+					SecondMax = 0x8f;
+				}
+			}
+			else
+			{
+				return false;
+			}
+
+			if (Index + static_cast<size_t>(ContinuationCount) > Length)
+			{
+				return false;
+			}
+			const uint8 Second = Data[Index++];
+			if (Second < SecondMin || Second > SecondMax)
+			{
+				return false;
+			}
+			for (int32 ContinuationIndex = 1;
+				ContinuationIndex < ContinuationCount;
+				++ContinuationIndex)
+			{
+				const uint8 Continuation = Data[Index++];
+				if (Continuation < 0x80 || Continuation > 0xbf)
+				{
+					return false;
+				}
 			}
 		}
-		return 0;
+		return true;
+	}
+
+	/** 位级有限性检查，不受模块浮点优化模式对 NaN/Inf 假设的影响。 */
+	bool IsFiniteDouble(const double Value)
+	{
+		uint64 Bits = 0;
+		static_assert(sizeof(Bits) == sizeof(Value));
+		FMemory::Memcpy(&Bits, &Value, sizeof(Bits));
+		return (Bits & 0x7ff0000000000000ULL) != 0x7ff0000000000000ULL;
+	}
+
+	/** 精确读取并验证有界 UTF-8，避免 luaL_checkstring 的 NUL 截断与无界转换。 */
+	bool ReadBoundedUtf8(
+		lua_State* L,
+		const int32 StackIndex,
+		const int32 MaxBytes,
+		const TCHAR* ArgumentName,
+		FString& OutValue,
+		FString& OutError)
+	{
+		size_t Length = 0;
+		if (lua_type(L, StackIndex) != LUA_TSTRING)
+		{
+			OutError = FString::Printf(TEXT("%s must be a string"), ArgumentName);
+			return false;
+		}
+		const char* Value = lua_tolstring(L, StackIndex, &Length);
+		if (!Value)
+		{
+			OutError = FString::Printf(TEXT("%s could not be read"), ArgumentName);
+			return false;
+		}
+		if (Length > static_cast<size_t>(MaxBytes))
+		{
+			OutError = FString::Printf(
+				TEXT("%s exceeds UTF-8 byte limit (%llu > %d)"),
+				ArgumentName,
+				static_cast<uint64>(Length),
+				MaxBytes);
+			return false;
+		}
+		bool bContainsNul = false;
+		for (size_t Index = 0; Index < Length; ++Index)
+		{
+			if (Value[Index] == '\0')
+			{
+				bContainsNul = true;
+				break;
+			}
+		}
+		if (bContainsNul)
+		{
+			OutError = FString::Printf(TEXT("%s contains an embedded NUL byte"), ArgumentName);
+			return false;
+		}
+		if (!IsValidUtf8(reinterpret_cast<const uint8*>(Value), Length))
+		{
+			OutError = FString::Printf(TEXT("%s is not valid UTF-8"), ArgumentName);
+			return false;
+		}
+		if (Length == 0)
+		{
+			OutValue.Reset();
+			return true;
+		}
+
+		const FUTF8ToTCHAR Converted(Value, static_cast<int32>(Length));
+		OutValue = FString(Converted.Length(), Converted.Get());
+
+		// 非法序列会在转换时被替换；回转比较确保宿主只收到完整、规范的 UTF-8。
+		const FTCHARToUTF8 RoundTrip(*OutValue, OutValue.Len());
+		if (RoundTrip.Length() != static_cast<int32>(Length)
+			|| FMemory::Memcmp(RoundTrip.Get(), Value, Length) != 0)
+		{
+			OutValue.Reset();
+			OutError = FString::Printf(TEXT("%s is not valid UTF-8"), ArgumentName);
+			return false;
+		}
+		return true;
+	}
+
+	/** 在调用宿主前原子消费总副作用与分类型配额。 */
+	bool TryConsumeEffect(
+		FAkUGCSandboxImpl& Impl,
+		const EAkUGCSandboxEffectType EffectType,
+		FString& OutError)
+	{
+		if (Impl.bEffectLimitExceeded)
+		{
+			OutError = TEXT("sandbox quota rejection is already latched for this execution");
+			return false;
+		}
+
+		int32* TypeCount = nullptr;
+		int32 TypeLimit = 0;
+		const TCHAR* TypeName = nullptr;
+		switch (EffectType)
+		{
+		case EAkUGCSandboxEffectType::Message:
+			TypeCount = &Impl.MessageCount;
+			TypeLimit = Impl.Config.MaxMessageCount;
+			TypeName = TEXT("message");
+			break;
+		case EAkUGCSandboxEffectType::Damage:
+			TypeCount = &Impl.DamageCount;
+			TypeLimit = Impl.Config.MaxDamageCount;
+			TypeName = TEXT("damage");
+			break;
+		case EAkUGCSandboxEffectType::Spawn:
+			TypeCount = &Impl.SpawnCount;
+			TypeLimit = Impl.Config.MaxSpawnCount;
+			TypeName = TEXT("spawn");
+			break;
+		case EAkUGCSandboxEffectType::Timer:
+			TypeCount = &Impl.TimerRegistrationCount;
+			TypeLimit = Impl.Config.MaxTimerRegistrationCount;
+			TypeName = TEXT("timer registration");
+			break;
+		default:
+			checkNoEntry();
+			return false;
+		}
+
+		if (Impl.EffectCount >= Impl.Config.MaxEffectCount)
+		{
+			Impl.bEffectLimitExceeded = true;
+			OutError = FString::Printf(
+				TEXT("sandbox total effect quota exceeded (%d)"),
+				Impl.Config.MaxEffectCount);
+			return false;
+		}
+		if (*TypeCount >= TypeLimit)
+		{
+			Impl.bEffectLimitExceeded = true;
+			OutError = FString::Printf(
+				TEXT("sandbox %s quota exceeded (%d)"),
+				TypeName,
+				TypeLimit);
+			return false;
+		}
+
+		++Impl.EffectCount;
+		++(*TypeCount);
+		return true;
+	}
+
+	/** 在调用宿主前消费只读查询配额。 */
+	bool TryConsumeHostQuery(FAkUGCSandboxImpl& Impl, FString& OutError)
+	{
+		if (Impl.bEffectLimitExceeded)
+		{
+			OutError = TEXT("sandbox quota rejection is already latched for this execution");
+			return false;
+		}
+		if (Impl.HostQueryCount >= Impl.Config.MaxHostQueryCount)
+		{
+			Impl.bEffectLimitExceeded = true;
+			OutError = FString::Printf(
+				TEXT("sandbox host query quota exceeded (%d)"),
+				Impl.Config.MaxHostQueryCount);
+			return false;
+		}
+		++Impl.HostQueryCount;
+		return true;
+	}
+
+	/**
+	 * 原始 C API 不跨 native 回调边界抛 Lua 错误，而是返回 ok, values...。
+	 * CreateSandboxEnv 安装的 Lua 包装器会在 C 回调正常返回后把失败转换为 Lua error。
+	 */
+	int PushControlledApiFailure(lua_State* L, const FString& Error)
+	{
+		const FString SafeError = Error.IsEmpty()
+			? FString(TEXT("controlled API request failed"))
+			: Error;
+		const FTCHARToUTF8 ErrorUtf8(*SafeError, SafeError.Len());
+		lua_pushboolean(L, 0);
+		lua_pushlstring(L, ErrorUtf8.Get(), ErrorUtf8.Length());
+		return 2;
+	}
+
+	int PushControlledApiFailure(lua_State* L, const ANSICHAR* Error)
+	{
+		lua_pushboolean(L, 0);
+		lua_pushstring(L, Error);
+		return 2;
 	}
 
 	/**
@@ -140,7 +410,18 @@ namespace
 	 */
 	int LuaUgcMessage(lua_State* L)
 	{
-		const char* Msg = luaL_checkstring(L, 1);
+		FString Message;
+		FString Error;
+		if (!ReadBoundedUtf8(
+			L,
+			1,
+			FAkUGCSandbox::MaxMessageBytes,
+			TEXT("message"),
+			Message,
+			Error))
+		{
+			return PushControlledApiFailure(L, Error);
+		}
 
 		lua_getfield(L, LUA_REGISTRYINDEX, SandboxImplRegistryKey);
 		FAkUGCSandboxImpl* Impl = static_cast<FAkUGCSandboxImpl*>(lua_touserdata(L, -1));
@@ -148,12 +429,16 @@ namespace
 
 		if (!Impl || !Impl->Host)
 		{
-			return luaL_error(L, "ugc.message is unavailable without a host");
+			return PushControlledApiFailure(L, "ugc.message is unavailable without a host");
 		}
 
-		CheckEffectLimit(L, Impl);
-		Impl->Host->EmitMessage(UTF8_TO_TCHAR(Msg));
-		return 0;
+		if (!TryConsumeEffect(*Impl, EAkUGCSandboxEffectType::Message, Error))
+		{
+			return PushControlledApiFailure(L, Error);
+		}
+		Impl->Host->EmitMessage(Message);
+		lua_pushboolean(L, 1);
+		return 1;
 	}
 
 	/**
@@ -162,7 +447,22 @@ namespace
 	 */
 	int LuaUgcGetHealth(lua_State* L)
 	{
-		const FString EntityId = UTF8_TO_TCHAR(luaL_checkstring(L, 1));
+		FString EntityId;
+		FString Error;
+		if (!ReadBoundedUtf8(
+			L,
+			1,
+			FAkUGCSandbox::MaxIdentifierBytes,
+			TEXT("entity id"),
+			EntityId,
+			Error))
+		{
+			return PushControlledApiFailure(L, Error);
+		}
+		if (EntityId.IsEmpty())
+		{
+			return PushControlledApiFailure(L, "entity id must not be empty");
+		}
 
 		lua_getfield(L, LUA_REGISTRYINDEX, SandboxImplRegistryKey);
 		FAkUGCSandboxImpl* Impl = static_cast<FAkUGCSandboxImpl*>(lua_touserdata(L, -1));
@@ -170,20 +470,26 @@ namespace
 
 		if (!Impl || !Impl->Host)
 		{
-			return luaL_error(L, "ugc.get_health is unavailable without a host");
+			return PushControlledApiFailure(L, "ugc.get_health is unavailable without a host");
+		}
+		if (!TryConsumeHostQuery(*Impl, Error))
+		{
+			return PushControlledApiFailure(L, Error);
 		}
 
 		double Current = 0.0;
 		double Maximum = 0.0;
 		if (!Impl->Host->QueryEntityHealth(EntityId, Current, Maximum))
 		{
+			lua_pushboolean(L, 1);
 			lua_pushnil(L);
-			return 1;
+			return 2;
 		}
 
+		lua_pushboolean(L, 1);
 		lua_pushnumber(L, Current);
 		lua_pushnumber(L, Maximum);
-		return 2;
+		return 3;
 	}
 
 	/**
@@ -192,9 +498,44 @@ namespace
 	 */
 	int LuaUgcApplyDamage(lua_State* L)
 	{
-		const FString SourceId = UTF8_TO_TCHAR(luaL_checkstring(L, 1));
-		const FString TargetId = UTF8_TO_TCHAR(luaL_checkstring(L, 2));
-		const double Damage = static_cast<double>(luaL_checknumber(L, 3));
+		if (lua_type(L, 3) != LUA_TNUMBER)
+		{
+			return PushControlledApiFailure(L, "damage must be a number");
+		}
+		const double Damage = static_cast<double>(lua_tonumber(L, 3));
+		if (!IsFiniteDouble(Damage)
+			|| !(Damage > 0.0)
+			|| Damage > FAkUGCSandbox::MaxDamagePerCall)
+		{
+			return PushControlledApiFailure(
+				L,
+				"damage must be finite and in the range (0, 1000000]");
+		}
+
+		FString SourceId;
+		FString TargetId;
+		FString Error;
+		if (!ReadBoundedUtf8(
+			L,
+			1,
+			FAkUGCSandbox::MaxIdentifierBytes,
+			TEXT("source id"),
+			SourceId,
+			Error)
+			|| !ReadBoundedUtf8(
+				L,
+				2,
+				FAkUGCSandbox::MaxIdentifierBytes,
+				TEXT("target id"),
+				TargetId,
+				Error))
+		{
+			return PushControlledApiFailure(L, Error);
+		}
+		if (SourceId.IsEmpty() || TargetId.IsEmpty())
+		{
+			return PushControlledApiFailure(L, "source id and target id must not be empty");
+		}
 
 		lua_getfield(L, LUA_REGISTRYINDEX, SandboxImplRegistryKey);
 		FAkUGCSandboxImpl* Impl = static_cast<FAkUGCSandboxImpl*>(lua_touserdata(L, -1));
@@ -202,22 +543,25 @@ namespace
 
 		if (!Impl || !Impl->Host)
 		{
-			return luaL_error(L, "ugc.apply_damage is unavailable without a host");
+			return PushControlledApiFailure(L, "ugc.apply_damage is unavailable without a host");
+		}
+		if (!TryConsumeEffect(*Impl, EAkUGCSandboxEffectType::Damage, Error))
+		{
+			return PushControlledApiFailure(L, Error);
 		}
 
 		double Applied = 0.0;
 		double HealthAfter = 0.0;
 		bool bKilled = false;
-		FString Error;
 		if (!Impl->Host->ApplyDamage(SourceId, TargetId, Damage, Applied, HealthAfter, bKilled, Error))
 		{
-			return luaL_error(L, TCHAR_TO_UTF8(*Error));
+			return PushControlledApiFailure(L, Error);
 		}
 
-		CheckEffectLimit(L, Impl);
+		lua_pushboolean(L, 1);
 		lua_pushnumber(L, Applied);
 		lua_pushnumber(L, HealthAfter);
-		return 2;
+		return 3;
 		}
 
 		/**
@@ -226,10 +570,39 @@ namespace
 		*/
 		int LuaUgcSpawn(lua_State* L)
 		{
-		const FString PrefabId = UTF8_TO_TCHAR(luaL_checkstring(L, 1));
-		const FString AnchorId = (lua_gettop(L) >= 2 && !lua_isnil(L, 2))
-			? UTF8_TO_TCHAR(luaL_checkstring(L, 2))
-			: FString();
+		FString PrefabId;
+		FString AnchorId;
+		FString Error;
+		if (!ReadBoundedUtf8(
+			L,
+			1,
+			FAkUGCSandbox::MaxIdentifierBytes,
+			TEXT("prefab id"),
+			PrefabId,
+			Error))
+		{
+			return PushControlledApiFailure(L, Error);
+		}
+		if (PrefabId.IsEmpty())
+		{
+			return PushControlledApiFailure(L, "prefab id must not be empty");
+		}
+		if (lua_gettop(L) >= 2
+			&& !lua_isnil(L, 2)
+			&& !ReadBoundedUtf8(
+				L,
+				2,
+				FAkUGCSandbox::MaxIdentifierBytes,
+				TEXT("anchor id"),
+				AnchorId,
+				Error))
+		{
+			return PushControlledApiFailure(L, Error);
+		}
+		if (lua_gettop(L) >= 2 && !lua_isnil(L, 2) && AnchorId.IsEmpty())
+		{
+			return PushControlledApiFailure(L, "anchor id must not be empty when provided");
+		}
 
 		lua_getfield(L, LUA_REGISTRYINDEX, SandboxImplRegistryKey);
 		FAkUGCSandboxImpl* Impl = static_cast<FAkUGCSandboxImpl*>(lua_touserdata(L, -1));
@@ -237,19 +610,29 @@ namespace
 
 		if (!Impl || !Impl->Host)
 		{
-			return luaL_error(L, "ugc.spawn is unavailable without a host");
+			return PushControlledApiFailure(L, "ugc.spawn is unavailable without a host");
+		}
+		if (!TryConsumeEffect(*Impl, EAkUGCSandboxEffectType::Spawn, Error))
+		{
+			return PushControlledApiFailure(L, Error);
 		}
 
 		FString EntityId;
-		FString Error;
 		if (!Impl->Host->SpawnEntity(PrefabId, AnchorId, EntityId, Error))
 		{
-			return luaL_error(L, TCHAR_TO_UTF8(*Error));
+			return PushControlledApiFailure(L, Error);
 		}
 
-		CheckEffectLimit(L, Impl);
-		lua_pushstring(L, TCHAR_TO_UTF8(*EntityId));
-		return 1;
+		const FTCHARToUTF8 EntityIdUtf8(*EntityId, EntityId.Len());
+		if (EntityIdUtf8.Length() > FAkUGCSandbox::MaxIdentifierBytes)
+		{
+			return PushControlledApiFailure(
+				L,
+				"host returned an entity id above the UTF-8 byte limit");
+		}
+		lua_pushboolean(L, 1);
+		lua_pushlstring(L, EntityIdUtf8.Get(), EntityIdUtf8.Length());
+		return 2;
 		}
 
 		/**
@@ -264,16 +647,23 @@ namespace
 
 		if (!Impl || !Impl->Host)
 		{
-			return luaL_error(L, "ugc.get_wave_state is unavailable without a host");
+			return PushControlledApiFailure(L, "ugc.get_wave_state is unavailable without a host");
+		}
+		FString Error;
+		if (!TryConsumeHostQuery(*Impl, Error))
+		{
+			return PushControlledApiFailure(L, Error);
 		}
 
 		FAkUGCSandboxWaveState State;
 		if (!Impl->Host->QueryWaveState(State))
 		{
+			lua_pushboolean(L, 1);
 			lua_pushnil(L);
-			return 1;
+			return 2;
 		}
 
+		lua_pushboolean(L, 1);
 		lua_createtable(L, 0, 5);
 		lua_pushinteger(L, State.WaveIndex);
 		lua_setfield(L, -2, "wave_index");
@@ -285,21 +675,33 @@ namespace
 		lua_setfield(L, -2, "result");
 		lua_pushnumber(L, State.SecondsUntilNextBoundary);
 		lua_setfield(L, -2, "seconds_until_boundary");
-		return 1;
+		return 2;
 		}
 
 		/**
 		* ugc.timer_after(delay, callback)：注册受控延迟回调，返回 timer id。
-		* delay 必须为正数；callback 存入注册表，由宿主通过 AdvanceTimers 驱动触发。
+		* delay 必须为有限正数且不超过 MaxTimerDelaySeconds；
+		* callback 存入注册表，由宿主通过 AdvanceTimers 驱动触发。
 		*/
 		int LuaUgcTimerAfter(lua_State* L)
 		{
-		const double Delay = static_cast<double>(luaL_checknumber(L, 1));
-		luaL_checktype(L, 2, LUA_TFUNCTION);
-
-		if (!(Delay > 0.0))
+		if (lua_type(L, 1) != LUA_TNUMBER)
 		{
-			return luaL_error(L, "delay must be positive");
+			return PushControlledApiFailure(L, "delay must be a number");
+		}
+		if (lua_type(L, 2) != LUA_TFUNCTION)
+		{
+			return PushControlledApiFailure(L, "timer callback must be a function");
+		}
+		const double Delay = static_cast<double>(lua_tonumber(L, 1));
+
+		if (!IsFiniteDouble(Delay)
+			|| !(Delay > 0.0)
+			|| Delay > FAkUGCSandbox::MaxTimerDelaySeconds)
+		{
+			return PushControlledApiFailure(
+				L,
+				"delay must be finite and in the range (0, 3600]");
 		}
 
 		lua_getfield(L, LUA_REGISTRYINDEX, SandboxImplRegistryKey);
@@ -308,7 +710,21 @@ namespace
 
 		if (!Impl)
 		{
-			return luaL_error(L, "ugc.timer_after is unavailable without a sandbox");
+			return PushControlledApiFailure(L, "ugc.timer_after is unavailable without a sandbox");
+		}
+		FString Error;
+		if (!TryConsumeEffect(*Impl, EAkUGCSandboxEffectType::Timer, Error))
+		{
+			return PushControlledApiFailure(L, Error);
+		}
+		if (Impl->PendingTimers.Num() >= Impl->Config.MaxPendingTimerCount)
+		{
+			Impl->bEffectLimitExceeded = true;
+			return PushControlledApiFailure(
+				L,
+				FString::Printf(
+					TEXT("sandbox pending timer quota exceeded (%d)"),
+					Impl->Config.MaxPendingTimerCount));
 		}
 
 		// 将回调函数存入注册表 timer 回调表，取得整数引用。
@@ -323,8 +739,9 @@ namespace
 		Timer.CallbackRef = CallbackRef;
 		Impl->PendingTimers.Add(Timer);
 
+		lua_pushboolean(L, 1);
 		lua_pushinteger(L, Timer.Id);
-		return 1;
+		return 2;
 		}
 
 		/**
@@ -336,7 +753,7 @@ namespace
 	 *   - 注入 Host 时，额外注册 `ugc` 命名空间承载受控 API；
 	 *   - 宿主 _G 保持完整，AkLuaRuntime/slua 内部机制不受影响。
 	 */
-	void CreateSandboxEnv(lua_State* L, IAkUGCSandboxHost* Host)
+	bool CreateSandboxEnv(lua_State* L, IAkUGCSandboxHost* Host, FString& OutError)
 	{
 		// 安全全局白名单（base 精简子集 + 安全标准库）。
 		static const char* SafeGlobalNames[] = {
@@ -359,19 +776,46 @@ namespace
 		// 2) 受控 API 命名空间 ugc（仅当宿主注入时可用）。
 		if (Host)
 		{
+			static const ANSICHAR* WrapperFactorySource =
+				"local pack, unpack, raise = table.pack, table.unpack, error\n"
+				"return function(raw)\n"
+				"  return function(...)\n"
+				"    local values = pack(raw(...))\n"
+				"    if not values[1] then raise(values[2], 2) end\n"
+				"    return unpack(values, 2, values.n)\n"
+				"  end\n"
+				"end\n";
+			if (luaL_loadbuffer(
+				L,
+				WrapperFactorySource,
+				FCStringAnsi::Strlen(WrapperFactorySource),
+				"=controlled_api_wrapper") != LUA_OK
+				|| lua_pcall(L, 0, 1, 0) != LUA_OK)
+			{
+				OutError = TEXT("failed to create controlled API Lua wrappers");
+				lua_pop(L, 1);
+				return false;
+			}
+			const int WrapperFactory = lua_gettop(L);
+
 			lua_newtable(L);
-			lua_pushcfunction(L, &LuaUgcMessage);
-			lua_setfield(L, -2, "message");
-			lua_pushcfunction(L, &LuaUgcGetHealth);
-			lua_setfield(L, -2, "get_health");
-			lua_pushcfunction(L, &LuaUgcApplyDamage);
-			lua_setfield(L, -2, "apply_damage");
-			lua_pushcfunction(L, &LuaUgcSpawn);
-			lua_setfield(L, -2, "spawn");
-			lua_pushcfunction(L, &LuaUgcGetWaveState);
-			lua_setfield(L, -2, "get_wave_state");
-			lua_pushcfunction(L, &LuaUgcTimerAfter);
-			lua_setfield(L, -2, "timer_after");
+			const int UgcTable = lua_gettop(L);
+			const auto RegisterControlledApi =
+				[L, WrapperFactory, UgcTable](lua_CFunction RawFunction, const ANSICHAR* Name)
+				{
+					lua_pushvalue(L, WrapperFactory);
+					lua_pushcfunction(L, RawFunction);
+					lua_call(L, 1, 1);
+					lua_setfield(L, UgcTable, Name);
+				};
+			RegisterControlledApi(&LuaUgcMessage, "message");
+			RegisterControlledApi(&LuaUgcGetHealth, "get_health");
+			RegisterControlledApi(&LuaUgcApplyDamage, "apply_damage");
+			RegisterControlledApi(&LuaUgcSpawn, "spawn");
+			RegisterControlledApi(&LuaUgcGetWaveState, "get_wave_state");
+			RegisterControlledApi(&LuaUgcTimerAfter, "timer_after");
+
+			lua_remove(L, WrapperFactory);
 			lua_setfield(L, SafeGlobals, "ugc");
 		}
 
@@ -394,6 +838,7 @@ namespace
 		// 受控定时器回调表：ugc.timer_after 把回调引用存到这里，供 AdvanceTimers 取用。
 		lua_newtable(L);
 		lua_setfield(L, LUA_REGISTRYINDEX, SandboxTimerCallbacksKey);
+		return true;
 		}
 
 	/** 将栈顶 chunk 的 _ENV 上值替换为沙盒 env（无 _ENV 上值时弹出多余值）。 */
@@ -434,16 +879,26 @@ bool FAkUGCSandbox::Initialize(
 {
 	Shutdown();
 
+	if (InConfig.MaxEffectCount <= 0
+		|| InConfig.MaxMessageCount <= 0
+		|| InConfig.MaxDamageCount <= 0
+		|| InConfig.MaxSpawnCount <= 0
+		|| InConfig.MaxTimerRegistrationCount <= 0
+		|| InConfig.MaxHostQueryCount <= 0
+		|| InConfig.MaxPendingTimerCount <= 0
+		|| InConfig.MaxTimerCallbacksPerAdvance <= 0)
+	{
+		if (OutError)
+		{
+			*OutError = TEXT("sandbox effect, query, and timer quotas must all be positive");
+		}
+		return false;
+	}
+
 	Impl->Config = InConfig;
 	Impl->Host = InHost;
-	Impl->InstructionsExecuted = 0;
 	Impl->BaseMemoryBytes = 0;
-	Impl->bInstructionLimitExceeded = false;
-	Impl->bMemoryLimitExceeded = false;
-	Impl->bTimeout = false;
-	Impl->bCallDepthExceeded = false;
-	Impl->bEffectLimitExceeded = false;
-	Impl->EffectCount = 0;
+	ResetExecutionCounters(*Impl);
 
 	// 复用 AkLuaRuntime 的 FLuaVirtualMachine 创建并初始化 Lua VM。
 	Impl->VirtualMachine = MakeShared<FLuaVirtualMachine>();
@@ -459,7 +914,16 @@ bool FAkUGCSandbox::Initialize(
 	Impl->State = Impl->VirtualMachine->GetRawState();
 
 	// 创建独立沙盒 env（不侵入宿主 _G），并注入受控 API 宿主（若提供）。
-	CreateSandboxEnv(Impl->State, InHost.Get());
+	FString EnvironmentError;
+	if (!CreateSandboxEnv(Impl->State, InHost.Get(), EnvironmentError))
+	{
+		Shutdown();
+		if (OutError)
+		{
+			*OutError = MoveTemp(EnvironmentError);
+		}
+		return false;
+	}
 
 	// 记录基线内存，作为脚本增量配额基准（slua 初始化本身占用较大）。
 	Impl->BaseMemoryBytes = GetLuaMemoryBytes(Impl->State);
@@ -500,6 +964,8 @@ void FAkUGCSandbox::Shutdown()
 	Impl->State = nullptr;
 	Impl->BaseMemoryBytes = 0;
 	Impl->Host.Reset();
+	Impl->PendingTimers.Reset();
+	Impl->NextTimerId = 1;
 }
 
 bool FAkUGCSandbox::IsInitialized() const
@@ -554,18 +1020,19 @@ FAkUGCSandboxResult FAkUGCSandbox::RunScript(const FString& Source, const FStrin
 	SetChunkEnv(L);
 
 	// 运行。
-	Impl->InstructionsExecuted = 0;
-	Impl->bInstructionLimitExceeded = false;
-	Impl->bMemoryLimitExceeded = false;
-	Impl->bTimeout = false;
-	Impl->bCallDepthExceeded = false;
-	Impl->bEffectLimitExceeded = false;
-	Impl->EffectCount = 0;
-	Impl->RunStartTime = FPlatformTime::Seconds();
+	ResetExecutionCounters(*Impl);
 
 	const int RunStatus = lua_pcall(L, 0, 0, 0);
 	if (RunStatus == LUA_OK)
 	{
+		// Lua 可以用 pcall 捕获受控 API 错误，但不能把配额拒绝伪装成成功执行。
+		if (Impl->bEffectLimitExceeded)
+		{
+			Result.Status = EAkUGCSandboxStatus::EffectLimitExceeded;
+			Result.ErrorMessage = TEXT("sandbox effect, query, or timer quota exceeded");
+			return Result;
+		}
+
 		// slua 未提供可注入的硬内存分配器，单次大分配（如 string.rep）无法被
 		// hook 打断，只能在运行结束后检测增量内存是否越界。
 		if (Impl->Config.MaxMemoryBytes > 0)
@@ -614,7 +1081,7 @@ FAkUGCSandboxResult FAkUGCSandbox::RunScript(const FString& Source, const FStrin
 
 int32 FAkUGCSandbox::AdvanceTimers(double DeltaSeconds)
 {
-	if (!Impl->State)
+	if (!Impl->State || !FMath::IsFinite(DeltaSeconds) || !(DeltaSeconds > 0.0))
 	{
 		return 0;
 	}
@@ -622,30 +1089,33 @@ int32 FAkUGCSandbox::AdvanceTimers(double DeltaSeconds)
 	lua_State* L = Impl->State;
 	FLuaCallScope Scope(L);
 
-	int32 FiredCount = 0;
-	for (int32 Index = Impl->PendingTimers.Num() - 1; Index >= 0; --Index)
+	// 先统一推进本 Tick 已存在的 timer；回调中新注册的 timer 从下一 Tick 开始计时。
+	for (FAkUGCSandboxImpl::FAkUGCSandboxPendingTimer& Timer : Impl->PendingTimers)
 	{
-		FAkUGCSandboxImpl::FAkUGCSandboxPendingTimer& Timer = Impl->PendingTimers[Index];
 		Timer.RemainingSeconds -= DeltaSeconds;
+	}
+
+	int32 FiredCount = 0;
+	for (int32 Index = Impl->PendingTimers.Num() - 1;
+		Index >= 0 && FiredCount < Impl->Config.MaxTimerCallbacksPerAdvance;
+		--Index)
+	{
+		const FAkUGCSandboxImpl::FAkUGCSandboxPendingTimer Timer = Impl->PendingTimers[Index];
 		if (Timer.RemainingSeconds > 0.0)
 		{
 			continue;
 		}
 
-		// 取出回调函数（绝对索引记录 callbacks 表位置，避免栈操作漂移）。
+		// 先移除 pending 项和注册表引用，避免回调注册新 timer 时令数组引用失效。
+		Impl->PendingTimers.RemoveAt(Index);
 		lua_getfield(L, LUA_REGISTRYINDEX, SandboxTimerCallbacksKey);
 		const int CallbacksTable = lua_gettop(L);
 		lua_rawgeti(L, CallbacksTable, Timer.CallbackRef);
+		luaL_unref(L, CallbacksTable, Timer.CallbackRef);
+		lua_remove(L, CallbacksTable); // 仅保留待调用函数。
 
 		// 重置单次回调执行的配额状态（复用 RunScript 的 hook 语义）。
-		Impl->InstructionsExecuted = 0;
-		Impl->bInstructionLimitExceeded = false;
-		Impl->bMemoryLimitExceeded = false;
-		Impl->bTimeout = false;
-		Impl->bCallDepthExceeded = false;
-		Impl->bEffectLimitExceeded = false;
-		Impl->EffectCount = 0;
-		Impl->RunStartTime = FPlatformTime::Seconds();
+		ResetExecutionCounters(*Impl);
 
 		const int RunStatus = lua_pcall(L, 0, 0, 0);
 		++FiredCount;
@@ -653,11 +1123,6 @@ int32 FAkUGCSandbox::AdvanceTimers(double DeltaSeconds)
 		{
 			lua_pop(L, 1); // 丢弃错误信息，单个回调失败不阻断其余定时器。
 		}
-
-		// 释放回调引用并移除到期的 timer。
-		luaL_unref(L, CallbacksTable, Timer.CallbackRef);
-		lua_pop(L, 1); // 弹出 callbacks 表。
-		Impl->PendingTimers.RemoveAt(Index);
 	}
 
 	return FiredCount;

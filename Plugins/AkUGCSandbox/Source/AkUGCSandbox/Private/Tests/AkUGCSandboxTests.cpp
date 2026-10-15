@@ -204,6 +204,7 @@ namespace
 
 		virtual bool QueryEntityHealth(const FString& EntityId, double& OutCurrent, double& OutMaximum) override
 		{
+			++HealthQueryCount;
 			const double* Current = HealthByEntity.Find(EntityId);
 			const double* Maximum = MaxHealthByEntity.Find(EntityId);
 			if (!Current || !Maximum)
@@ -224,6 +225,7 @@ namespace
 			bool& OutKilled,
 			FString& OutError) override
 		{
+			++DamageCallCount;
 			double* Current = HealthByEntity.Find(TargetEntityId);
 			if (!Current)
 			{
@@ -252,6 +254,7 @@ namespace
 
 		virtual bool QueryWaveState(FAkUGCSandboxWaveState& OutState) override
 		{
+			++WaveQueryCount;
 			OutState = WaveState;
 			return bHasWaveState;
 		}
@@ -271,6 +274,9 @@ namespace
 		FAkUGCSandboxWaveState WaveState;
 		bool bHasWaveState = false;
 		int32 SpawnCounter = 0;
+		int32 HealthQueryCount = 0;
+		int32 DamageCallCount = 0;
+		int32 WaveQueryCount = 0;
 	};
 }
 
@@ -518,6 +524,261 @@ bool FAkUGCSandboxEffectLimitTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("effect quota resets between runs"), UnderLimit.Status, EAkUGCSandboxStatus::Success);
 	TestEqual(TEXT("under-limit message forwarded"), Host->Messages.Num(), 3);
 
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAkUGCSandboxQuotaConfigurationTest,
+	"AkUGC.Sandbox.VM.QuotaConfigurationRequired",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCSandboxQuotaConfigurationTest::RunTest(const FString& Parameters)
+{
+	FAkUGCSandbox Sandbox;
+	FString Error;
+
+	FAkUGCSandboxConfig DisabledEffectConfig;
+	DisabledEffectConfig.MaxEffectCount = 0;
+	TestFalse(
+		TEXT("total effect quota cannot be disabled"),
+		Sandbox.Initialize(DisabledEffectConfig, &Error));
+	TestFalse(TEXT("invalid quota config leaves sandbox closed"), Sandbox.IsInitialized());
+
+	FAkUGCSandboxConfig DisabledPendingTimerConfig;
+	DisabledPendingTimerConfig.MaxPendingTimerCount = 0;
+	Error.Reset();
+	TestFalse(
+		TEXT("pending timer quota cannot be disabled"),
+		Sandbox.Initialize(DisabledPendingTimerConfig, &Error));
+	TestTrue(TEXT("invalid quota config explains rejection"), !Error.IsEmpty());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAkUGCSandboxEffectTypeLimitsTest,
+	"AkUGC.Sandbox.VM.EffectTypeLimits",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCSandboxEffectTypeLimitsTest::RunTest(const FString& Parameters)
+{
+	const TSharedPtr<FMockSandboxHost> Host = MakeShared<FMockSandboxHost>();
+	Host->HealthByEntity.Add(TEXT("enemy"), 100.0);
+	Host->MaxHealthByEntity.Add(TEXT("enemy"), 100.0);
+
+	FAkUGCSandboxConfig Config;
+	Config.MaxEffectCount = 16;
+	Config.MaxMessageCount = 1;
+	Config.MaxDamageCount = 1;
+	Config.MaxSpawnCount = 1;
+
+	FAkUGCSandbox Sandbox;
+	TestTrue(TEXT("sandbox initializes"), Sandbox.Initialize(Config, nullptr, Host));
+
+	const FAkUGCSandboxResult DamageResult = Sandbox.RunScript(TEXT(
+		"ugc.apply_damage('tower', 'enemy', 10)\n"
+		"assert(not pcall(function() ugc.apply_damage('tower', 'enemy', 10) end))\n"
+		"assert(not pcall(function() ugc.message('after rejection') end))\n"));
+
+	TestEqual(
+		TEXT("caught quota errors still make the run an explicit rejection"),
+		DamageResult.Status,
+		EAkUGCSandboxStatus::EffectLimitExceeded);
+	TestEqual(TEXT("damage host is not called above its type quota"), Host->DamageCallCount, 1);
+	TestEqual(TEXT("rejected damage has no host side effect"), Host->HealthByEntity[TEXT("enemy")], 90.0);
+	TestEqual(TEXT("quota rejection latches all later host effects"), Host->Messages.Num(), 0);
+
+	TestTrue(TEXT("sandbox reinitializes for spawn quota"), Sandbox.Initialize(Config, nullptr, Host));
+	const FAkUGCSandboxResult SpawnResult = Sandbox.RunScript(TEXT(
+		"ugc.spawn('prefab')\n"
+		"assert(not pcall(function() ugc.spawn('prefab') end))\n"));
+	TestEqual(TEXT("spawn type quota rejects the run"), SpawnResult.Status, EAkUGCSandboxStatus::EffectLimitExceeded);
+	TestEqual(TEXT("spawn host is not called above its type quota"), Host->SpawnCounter, 1);
+
+	TestTrue(TEXT("sandbox reinitializes for message quota"), Sandbox.Initialize(Config, nullptr, Host));
+	const FAkUGCSandboxResult MessageResult = Sandbox.RunScript(TEXT(
+		"ugc.message('accepted')\n"
+		"assert(not pcall(function() ugc.message('rejected') end))\n"));
+	TestEqual(TEXT("message type quota rejects the run"), MessageResult.Status, EAkUGCSandboxStatus::EffectLimitExceeded);
+	TestEqual(TEXT("message host is not called above its type quota"), Host->Messages.Num(), 1);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAkUGCSandboxHostQueryLimitTest,
+	"AkUGC.Sandbox.VM.HostQueryLimit",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCSandboxHostQueryLimitTest::RunTest(const FString& Parameters)
+{
+	const TSharedPtr<FMockSandboxHost> Host = MakeShared<FMockSandboxHost>();
+	Host->HealthByEntity.Add(TEXT("entity"), 10.0);
+	Host->MaxHealthByEntity.Add(TEXT("entity"), 10.0);
+	Host->bHasWaveState = true;
+
+	FAkUGCSandboxConfig Config;
+	Config.MaxHostQueryCount = 2;
+
+	FAkUGCSandbox Sandbox;
+	Sandbox.Initialize(Config, nullptr, Host);
+	const FAkUGCSandboxResult Result = Sandbox.RunScript(TEXT(
+		"assert(ugc.get_health('entity') == 10)\n"
+		"assert(ugc.get_wave_state() ~= nil)\n"
+		"assert(not pcall(function() ugc.get_health('entity') end))\n"));
+
+	TestEqual(
+		TEXT("host query quota is reported even when Lua catches the API error"),
+		Result.Status,
+		EAkUGCSandboxStatus::EffectLimitExceeded);
+	TestEqual(TEXT("only one health query reaches the host"), Host->HealthQueryCount, 1);
+	TestEqual(TEXT("one wave query reaches the host"), Host->WaveQueryCount, 1);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAkUGCSandboxControlledApiInputLimitsTest,
+	"AkUGC.Sandbox.VM.ControlledApiInputLimits",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCSandboxControlledApiInputLimitsTest::RunTest(const FString& Parameters)
+{
+	const TSharedPtr<FMockSandboxHost> Host = MakeShared<FMockSandboxHost>();
+	Host->HealthByEntity.Add(TEXT("enemy"), 100.0);
+	Host->MaxHealthByEntity.Add(TEXT("enemy"), 100.0);
+
+	FAkUGCSandbox Sandbox;
+	Sandbox.Initialize(FAkUGCSandboxConfig(), nullptr, Host);
+
+	const FAkUGCSandboxResult InfiniteDamage =
+		Sandbox.RunScript(TEXT("ugc.apply_damage('tower', 'enemy', math.huge)"));
+	TestEqual(TEXT("infinite damage is rejected"), InfiniteDamage.Status, EAkUGCSandboxStatus::RuntimeError);
+	TestEqual(TEXT("invalid damage never reaches the host"), Host->DamageCallCount, 0);
+
+	const FAkUGCSandboxResult LongMessage = Sandbox.RunScript(FString::Printf(
+		TEXT("ugc.message(string.rep('x', %d))"),
+		FAkUGCSandbox::MaxMessageBytes + 1));
+	TestEqual(TEXT("oversized message is rejected"), LongMessage.Status, EAkUGCSandboxStatus::RuntimeError);
+
+	const FAkUGCSandboxResult EmbeddedNul =
+		Sandbox.RunScript(TEXT("ugc.message('prefix\\0suffix')"));
+	TestEqual(TEXT("embedded NUL is rejected"), EmbeddedNul.Status, EAkUGCSandboxStatus::RuntimeError);
+
+	const FAkUGCSandboxResult InvalidUtf8 =
+		Sandbox.RunScript(TEXT("ugc.message(string.char(255))"));
+	TestEqual(TEXT("invalid UTF-8 is rejected"), InvalidUtf8.Status, EAkUGCSandboxStatus::RuntimeError);
+	TestEqual(TEXT("invalid messages never reach the host"), Host->Messages.Num(), 0);
+
+	const FAkUGCSandboxResult WrongMessageType =
+		Sandbox.RunScript(TEXT("ugc.message({})"));
+	TestEqual(TEXT("non-string message is rejected"), WrongMessageType.Status, EAkUGCSandboxStatus::RuntimeError);
+
+	const FAkUGCSandboxResult LongPrefab = Sandbox.RunScript(FString::Printf(
+		TEXT("ugc.spawn(string.rep('p', %d))"),
+		FAkUGCSandbox::MaxIdentifierBytes + 1));
+	TestEqual(TEXT("oversized identifier is rejected"), LongPrefab.Status, EAkUGCSandboxStatus::RuntimeError);
+	TestEqual(TEXT("invalid spawn never reaches the host"), Host->SpawnCounter, 0);
+
+	const FAkUGCSandboxResult WrongDamageType =
+		Sandbox.RunScript(TEXT("ugc.apply_damage('tower', 'enemy', '10')"));
+	TestEqual(TEXT("non-number damage is rejected"), WrongDamageType.Status, EAkUGCSandboxStatus::RuntimeError);
+	TestEqual(TEXT("invalid damage types never reach the host"), Host->DamageCallCount, 0);
+
+	const FAkUGCSandboxResult InfiniteTimer =
+		Sandbox.RunScript(TEXT("ugc.timer_after(math.huge, function() end)"));
+	TestEqual(TEXT("infinite timer delay is rejected"), InfiniteTimer.Status, EAkUGCSandboxStatus::RuntimeError);
+	const FAkUGCSandboxResult WrongTimerCallback =
+		Sandbox.RunScript(TEXT("ugc.timer_after(1, 'callback')"));
+	TestEqual(TEXT("non-function timer callback is rejected"), WrongTimerCallback.Status, EAkUGCSandboxStatus::RuntimeError);
+	TestEqual(TEXT("invalid timer is not retained"), Sandbox.AdvanceTimers(1.0), 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAkUGCSandboxTimerResourceLimitsTest,
+	"AkUGC.Sandbox.VM.TimerResourceLimits",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCSandboxTimerResourceLimitsTest::RunTest(const FString& Parameters)
+{
+	FAkUGCSandboxConfig PerRunConfig;
+	PerRunConfig.MaxEffectCount = 8;
+	PerRunConfig.MaxTimerRegistrationCount = 2;
+	PerRunConfig.MaxPendingTimerCount = 8;
+
+	const TSharedPtr<FMockSandboxHost> PerRunHost = MakeShared<FMockSandboxHost>();
+	FAkUGCSandbox PerRunSandbox;
+	PerRunSandbox.Initialize(PerRunConfig, nullptr, PerRunHost);
+	const FAkUGCSandboxResult PerRunResult = PerRunSandbox.RunScript(TEXT(
+		"ugc.timer_after(0.1, function() ugc.message('one') end)\n"
+		"ugc.timer_after(0.1, function() ugc.message('two') end)\n"
+		"ugc.timer_after(0.1, function() ugc.message('rejected') end)\n"));
+	TestEqual(
+		TEXT("timer registration type quota is enforced"),
+		PerRunResult.Status,
+		EAkUGCSandboxStatus::EffectLimitExceeded);
+	TestEqual(TEXT("only retained timers fire"), PerRunSandbox.AdvanceTimers(1.0), 2);
+	TestEqual(TEXT("rejected timer callback never runs"), PerRunHost->Messages.Num(), 2);
+
+	FAkUGCSandboxConfig PendingConfig;
+	PendingConfig.MaxEffectCount = 8;
+	PendingConfig.MaxTimerRegistrationCount = 8;
+	PendingConfig.MaxPendingTimerCount = 2;
+
+	const TSharedPtr<FMockSandboxHost> PendingHost = MakeShared<FMockSandboxHost>();
+	FAkUGCSandbox PendingSandbox;
+	PendingSandbox.Initialize(PendingConfig, nullptr, PendingHost);
+	TestEqual(
+		TEXT("two timers can be retained"),
+		PendingSandbox.RunScript(TEXT(
+			"ugc.timer_after(1, function() end)\n"
+			"ugc.timer_after(1, function() end)\n")).Status,
+		EAkUGCSandboxStatus::Success);
+	TestEqual(
+		TEXT("pending quota persists across RunScript calls"),
+		PendingSandbox.RunScript(TEXT("ugc.timer_after(1, function() end)")).Status,
+		EAkUGCSandboxStatus::EffectLimitExceeded);
+	TestEqual(TEXT("pending quota rejection creates no hidden timer"), PendingSandbox.AdvanceTimers(2.0), 2);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAkUGCSandboxTimerCallbackBatchLimitTest,
+	"AkUGC.Sandbox.VM.TimerCallbackBatchLimit",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCSandboxTimerCallbackBatchLimitTest::RunTest(const FString& Parameters)
+{
+	const TSharedPtr<FMockSandboxHost> Host = MakeShared<FMockSandboxHost>();
+	FAkUGCSandboxConfig Config;
+	Config.MaxEffectCount = 16;
+	Config.MaxTimerRegistrationCount = 8;
+	Config.MaxPendingTimerCount = 8;
+	Config.MaxTimerCallbacksPerAdvance = 2;
+
+	FAkUGCSandbox Sandbox;
+	Sandbox.Initialize(Config, nullptr, Host);
+	TestEqual(
+		TEXT("five timers register"),
+		Sandbox.RunScript(TEXT(
+			"for i = 1, 5 do\n"
+			"  ugc.timer_after(0.1, function() ugc.message('fired') end)\n"
+			"end\n")).Status,
+		EAkUGCSandboxStatus::Success);
+
+	TestEqual(TEXT("first advance fires at most two callbacks"), Sandbox.AdvanceTimers(1.0), 2);
+	TestEqual(TEXT("second advance retains and fires two callbacks"), Sandbox.AdvanceTimers(0.1), 2);
+	TestEqual(TEXT("third advance fires final callback"), Sandbox.AdvanceTimers(0.1), 1);
+	TestEqual(TEXT("all callbacks eventually run"), Host->Messages.Num(), 5);
+
+	TestEqual(
+		TEXT("nested timer registers safely"),
+		Sandbox.RunScript(TEXT(
+			"ugc.timer_after(0.1, function()\n"
+			"  ugc.timer_after(0.1, function() ugc.message('nested') end)\n"
+			"end)\n")).Status,
+		EAkUGCSandboxStatus::Success);
+	TestEqual(TEXT("new timer does not fire in its parent's advance"), Sandbox.AdvanceTimers(1.0), 1);
+	TestEqual(TEXT("new timer fires on a later advance"), Sandbox.AdvanceTimers(1.0), 1);
+	TestEqual(TEXT("nested callback ran once"), Host->Messages.Num(), 6);
 	return true;
 }
 

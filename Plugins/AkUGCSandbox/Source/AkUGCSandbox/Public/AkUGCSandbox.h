@@ -20,7 +20,7 @@ enum class EAkUGCSandboxStatus : uint8
 	Timeout,
 	/** 调用深度配额超限。 */
 	CallDepthExceeded,
-	/** Effect 配额超限（受控副作用次数超出上限）。 */
+	/** 副作用、宿主查询或挂起资源配额超限。 */
 	EffectLimitExceeded,
 	/** 脚本源码或 chunk 名称超过解析前输入预算。 */
 	InputLimitExceeded,
@@ -45,10 +45,31 @@ struct AKUGCSANDBOX_API FAkUGCSandboxConfig
 	int32 MaxCallDepth = 0;
 
 	/**
-	 * Effect 配额上限：单次脚本执行（RunScript 或单次定时器回调）最多产生的
-	 * 受控副作用次数（ugc.message / ugc.apply_damage / ugc.spawn），0 表示不限制。
+	 * 单次执行（RunScript 或一个定时器回调）允许的受控副作用尝试总数。
+	 * 包括 message / apply_damage / spawn / timer_after；必须为正数。
 	 */
-	int32 MaxEffectCount = 0;
+	int32 MaxEffectCount = 64;
+
+	/** 单次执行允许的消息副作用尝试数；必须为正数。 */
+	int32 MaxMessageCount = 32;
+
+	/** 单次执行允许的伤害副作用尝试数；必须为正数。 */
+	int32 MaxDamageCount = 32;
+
+	/** 单次执行允许的生成副作用尝试数；必须为正数。 */
+	int32 MaxSpawnCount = 16;
+
+	/** 单次执行允许注册的定时器数；必须为正数。 */
+	int32 MaxTimerRegistrationCount = 16;
+
+	/** 单次执行允许的只读宿主查询数；必须为正数。 */
+	int32 MaxHostQueryCount = 128;
+
+	/** 单个沙箱同时保留的定时器上限；跨 RunScript 生效，必须为正数。 */
+	int32 MaxPendingTimerCount = 64;
+
+	/** 一次 AdvanceTimers 最多触发的回调数；其余到期回调留待下次，必须为正数。 */
+	int32 MaxTimerCallbacksPerAdvance = 16;
 };
 
 /** 沙箱执行结果。 */
@@ -69,7 +90,8 @@ struct FAkUGCSandboxImpl;
  *   - env 的 __index 仅指向安全库白名单（base 精简 / table / string / math / utf8），
  *     无法访问 io / os / debug / package / require / dofile / loadfile / load 等；
  *   - 宿主 _G 保持完整，slua 内部机制不受影响。
- * 提供指令、内存与运行时间三类配额，超限即安全终止而不影响宿主。
+ * 提供指令、内存、时间、调用深度、受控副作用、宿主查询和定时器资源配额；
+ * 配额拒绝会在宿主调用前闭锁当前执行，不能被 Lua pcall 隐藏为成功。
  */
 class AKUGCSANDBOX_API FAkUGCSandbox
 {
@@ -79,6 +101,18 @@ public:
 
 	/** Lua 编译前允许的最大 UTF-8 chunk 名称字节数。 */
 	static constexpr int32 MaxChunkNameBytes = 256;
+
+	/** 受控 API 消息参数的最大 UTF-8 字节数。 */
+	static constexpr int32 MaxMessageBytes = 1024;
+
+	/** 受控 API 标识符参数的最大 UTF-8 字节数。 */
+	static constexpr int32 MaxIdentifierBytes = 128;
+
+	/** 受控定时器允许的最大延迟。 */
+	static constexpr double MaxTimerDelaySeconds = 3600.0;
+
+	/** 单次受控伤害请求允许的最大值。 */
+	static constexpr double MaxDamagePerCall = 1000000.0;
 
 	FAkUGCSandbox();
 	~FAkUGCSandbox();
@@ -108,7 +142,8 @@ public:
 
 	/**
 	 * 推进受控定时器：扣减剩余时间并触发到期回调，返回本次触发的回调数量。
-	 * 由宿主（如场景运行时 Tick）周期性调用；回调在沙箱 env 下执行，仍受各类配额约束。
+	 * 由宿主（如场景运行时 Tick）周期性调用；回调在沙箱 env 下执行，仍受各类配额约束，
+	 * 且每次调用最多触发 MaxTimerCallbacksPerAdvance 个回调。
 	 */
 	int32 AdvanceTimers(double DeltaSeconds);
 

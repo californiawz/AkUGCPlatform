@@ -136,27 +136,26 @@ bool AkUGCInputBudget::ValidateUtf8Text(
 	const TCHAR* Label,
 	FString* OutError)
 {
-	using namespace AkUGCInputBudgetPrivate;
 	if (MaxBytes <= 0
 		|| Text.IsEmpty()
 		|| static_cast<int64>(Text.Len()) > MaxBytes)
 	{
-		return Fail(
+		return AkUGCInputBudgetPrivate::Fail(
 			OutError,
 			FString::Printf(
 				TEXT("%s must contain 1 to %lld UTF-8 bytes."),
-				SafeLabel(Label),
+				AkUGCInputBudgetPrivate::SafeLabel(Label),
 				static_cast<long long>(MaxBytes)));
 	}
 	const FTCHARToUTF8 Utf8(*Text);
 	if (Utf8.Length() <= 0
 		|| static_cast<int64>(Utf8.Length()) > MaxBytes)
 	{
-		return Fail(
+		return AkUGCInputBudgetPrivate::Fail(
 			OutError,
 			FString::Printf(
 				TEXT("%s must contain 1 to %lld UTF-8 bytes."),
-				SafeLabel(Label),
+				AkUGCInputBudgetPrivate::SafeLabel(Label),
 				static_cast<long long>(MaxBytes)));
 	}
 	return true;
@@ -168,9 +167,8 @@ bool AkUGCInputBudget::ValidateJson(
 	const TCHAR* Label,
 	FString* OutError)
 {
-	using namespace AkUGCInputBudgetPrivate;
 	return ValidateUtf8Text(Json, MaxBytes, Label, OutError)
-		&& ValidateJsonStructure(Json, Label, OutError);
+		&& AkUGCInputBudgetPrivate::ValidateJsonStructure(Json, Label, OutError);
 }
 
 bool AkUGCInputBudget::LoadTextFile(
@@ -180,24 +178,25 @@ bool AkUGCInputBudget::LoadTextFile(
 	FString& OutText,
 	FString* OutError)
 {
-	using namespace AkUGCInputBudgetPrivate;
 	OutText.Reset();
 	if (Path.IsEmpty() || MaxBytes <= 0)
 	{
-		return Fail(
+		return AkUGCInputBudgetPrivate::Fail(
 			OutError,
-			FString::Printf(TEXT("%s path or byte budget is invalid."), SafeLabel(Label)));
+			FString::Printf(
+				TEXT("%s path or byte budget is invalid."),
+				AkUGCInputBudgetPrivate::SafeLabel(Label)));
 	}
 
 	TUniquePtr<FArchive> Reader(IFileManager::Get().CreateFileReader(*Path));
 	const int64 Size = Reader ? Reader->TotalSize() : -1;
 	if (Size <= 0 || Size > MaxBytes || Size > MAX_int32)
 	{
-		return Fail(
+		return AkUGCInputBudgetPrivate::Fail(
 			OutError,
 			FString::Printf(
 				TEXT("%s is missing, empty, or exceeds the %lld-byte input budget."),
-				SafeLabel(Label),
+				AkUGCInputBudgetPrivate::SafeLabel(Label),
 				static_cast<long long>(MaxBytes)));
 	}
 
@@ -206,9 +205,11 @@ bool AkUGCInputBudget::LoadTextFile(
 	Reader->Serialize(Bytes.GetData(), Size);
 	if (Reader->IsError() || Reader->Tell() != Size)
 	{
-		return Fail(
+		return AkUGCInputBudgetPrivate::Fail(
 			OutError,
-			FString::Printf(TEXT("%s could not be read completely."), SafeLabel(Label)));
+			FString::Printf(
+				TEXT("%s could not be read completely."),
+				AkUGCInputBudgetPrivate::SafeLabel(Label)));
 	}
 
 	FFileHelper::BufferToString(OutText, Bytes.GetData(), Bytes.Num());
