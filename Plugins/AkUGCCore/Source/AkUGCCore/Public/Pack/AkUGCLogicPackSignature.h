@@ -3,6 +3,8 @@
 #include "CoreMinimal.h"
 #include "Pack/AkUGCLogicPack.h"
 
+class FAkUGCPublisherKeyStore;
+
 /**
  * Logic Pack 签名器（发布方持有私钥）。
  *
@@ -21,6 +23,22 @@ public:
 		const FAkUGCLogicPackManifest& Manifest,
 		const FString& PrivateKeyHex,
 		FAkUGCLogicPackSignature& OutSignature,
+		FString* OutError = nullptr);
+
+private:
+	friend class FAkUGCPublisherKeyStore;
+
+	/** 仅供受保护密钥存储使用，避免将解密后的私钥转换为 FString。 */
+	static bool SignPrivateKeyBytes(
+		const FAkUGCLogicPackManifest& Manifest,
+		TConstArrayView<uint8> PrivateKeyBytes,
+		FAkUGCLogicPackSignature& OutSignature,
+		FString* OutError = nullptr);
+
+	/** 从原始 Ed25519 私钥导出公钥，用于迁移和身份完整性校验。 */
+	static bool DerivePublicKey(
+		TConstArrayView<uint8> PrivateKeyBytes,
+		FString& OutPublicKey,
 		FString* OutError = nullptr);
 };
 

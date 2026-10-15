@@ -29,6 +29,7 @@
 #include "Widgets/Input/SCheckBox.h"
 #include "HAL/FileManager.h"
 #include "Pack/AkUGCLogicPackCodec.h"
+#include "Pack/AkUGCPublisherKeyStore.h"
 #include "Misc/App.h"
 #include "Modules/ModuleManager.h"
 
@@ -1113,10 +1114,16 @@ namespace AkUGCCopilotMouseTest
                 PublishedPath = FPaths::Combine(ShareDir, Shares[0]);
                 if (!FFileHelper::LoadFileToString(PublishedJson, *PublishedPath)) { return false; }
                 const auto Loaded = FAkUGCLogicPackLoader::LoadVerified(PublishedJson, PublisherKey);
+                const FAkUGCPublisherKeyStore Publisher(FAkUGCPublisherKeyStore::DefaultDirectory());
+                FString CompatibilityFence;
+                const bool RollbackFenced =
+                    FFileHelper::LoadFileToString(CompatibilityFence, *Publisher.LegacyPrivateKeyPath())
+                    && CompatibilityFence.Contains(TEXT("\"containsPrivateKey\":false"));
                 return Loaded.bSucceeded && Loaded.Pack.Manifest.ReleaseId == PublishedId
                     && !FAkUGCWorkLibraryTestAccess::Trusted(*WorkPanel)
                     && FAkUGCLogicPackHasher::HashDocument(Loaded.Pack.Document) == Before
-                    && IFileManager::Get().FileSize(*FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("UGC/Publisher/private.key"))) > 0;
+                    && IFileManager::Get().FileSize(*Publisher.IdentityPath()) > 0
+                    && RollbackFenced;
             }
             if (!PublishedId.IsValid()) { return false; }
             if (Tag == TEXT("exported"))

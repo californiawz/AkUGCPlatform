@@ -4,7 +4,7 @@ AkStudio 的 Unreal Engine UGC 创作与运行平台。
 
 ## 当前阶段
 
-Phase 0：技术风险验证。当前优先验证统一内容模型、Prefab、Command、Logic IR、沙箱、Logic Pack，以及 Win64/Android/DS 一致运行。
+Phase 2 准备阶段：Phase 0 与 Phase 1 的 Win64 本机技术闭环已完成；Phase 1 真人及独立物理设备外部门禁延期，不记为通过。当前先完成发布身份安全化，再进入 Go + PostgreSQL Release Registry。
 
 首个垂直切片为“三波合作塔防”。首期只使用官方 Prefab，不开放玩家 C++、插件、任意 Blueprint、任意 UObject 反射或外部网络访问。
 
@@ -15,7 +15,7 @@ Phase 0：技术风险验证。当前优先验证统一内容模型、Prefab、C
 - Player：Win64，随后 Android
 - Authority：Win64 Dedicated Server
 - 脚本：Lua 5.3.4；玩家脚本必须使用独立沙箱
-- 后端：Go + PostgreSQL，云端控制面延后到本地闭环完成后
+- 后端：Go + PostgreSQL；首个控制面切片见 `Docs/Phase2/ImplementationPlan.md`
 
 ## 目录
 

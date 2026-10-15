@@ -31,9 +31,22 @@ HEX_32 = re.compile(r"^[0-9a-fA-F]{32}$")
 HEX_40 = re.compile(r"^[0-9a-fA-F]{40}$")
 HEX_64 = re.compile(r"^[0-9a-fA-F]{64}$")
 RESILIENCE_CASES = {"client_leave", "network_loss", "host_terminated", "reconnect"}
+SENSITIVE_IDENTITY_NAMES = {
+    "private.key",
+    "publisher-identity.json",
+}
 PAK_MAGIC = b"\xe1\x12\x6f\x5a"
 PAK_VERSION_LATEST = 12
 PAK_COMPRESSION_METHOD_BYTES = 32 * 5
+
+
+def is_sensitive_identity_name(name: str) -> bool:
+    folded = name.casefold()
+    return (
+        folded in SENSITIVE_IDENTITY_NAMES
+        or any(folded.startswith(identity + ".")
+               for identity in SENSITIVE_IDENTITY_NAMES)
+    )
 
 
 def sha256_stream(stream) -> str:
@@ -131,7 +144,8 @@ def normalized_archive(package: zipfile.ZipFile, label: str):
         pure = PurePosixPath(name)
         lowered = pure.name.casefold()
         if (pure.suffix.casefold() in {".key", ".p12", ".pfx"}
-                or lowered in {"id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"}):
+                or lowered in {"id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"}
+                or is_sensitive_identity_name(lowered)):
             raise ValueError(f"{label} contains a private-key file: {name}")
         if pure.suffix.casefold() == ".pem" and entry.file_size <= 1024 * 1024:
             payload = package.read(entry)
@@ -789,7 +803,9 @@ class Validator:
             self.diagnostics.append(f"{label} must be a regular in-directory file")
             return None
         lowered = resolved.name.lower()
-        if resolved.suffix.lower() == ".key" or lowered in {"private.key", "fixture-tls.key"}:
+        if (resolved.suffix.lower() == ".key"
+                or is_sensitive_identity_name(lowered)
+                or lowered == "fixture-tls.key"):
             self.diagnostics.append(f"{label} must not collect a private key")
             return None
         if not resolved.is_file() or resolved.stat().st_size <= 0:

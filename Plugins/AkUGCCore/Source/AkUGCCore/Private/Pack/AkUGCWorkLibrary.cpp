@@ -7,6 +7,7 @@
 #include "Pack/AkUGCLogicPackBuilder.h"
 #include "Pack/AkUGCLogicPackCodec.h"
 #include "Pack/AkUGCLogicPackSignature.h"
+#include "Pack/AkUGCPublisherKeyStore.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 
@@ -70,27 +71,6 @@ FString FAkUGCWorkLibrary::EntryPath(const FGuid& ReleaseId) const
     return ReleaseId.IsValid() ? FPaths::Combine(Root, ReleaseId.ToString(EGuidFormats::Digits) + TEXT(".ugcwork")) : FString();
 }
 
-bool FAkUGCWorkLibrary::GetOrCreatePublisherKey(const FString& FilePath, FString& OutPrivateKey, FString* OutError)
-{
-    OutPrivateKey.Reset();
-    if (IFileManager::Get().FileExists(*FilePath))
-    {
-        if (!AkUGCWorkFiles::Read(FilePath, OutPrivateKey, OutError, 512)) { return false; }
-        OutPrivateKey.TrimStartAndEndInline();
-        if (OutPrivateKey.Len() != 64)
-        { OutPrivateKey.Reset(); return AkUGCWorkFiles::Fail(OutError, TEXT("发布私钥格式错误，禁止自动替换。")); }
-        for (TCHAR Character : OutPrivateKey)
-        {
-            if (!FChar::IsHexDigit(Character)) { OutPrivateKey.Reset(); return AkUGCWorkFiles::Fail(OutError, TEXT("发布私钥格式错误，禁止自动替换。")); }
-        }
-        return true;
-    }
-    FAkUGCLogicPackKeyPair Pair;
-    if (!FAkUGCLogicPackSigner::GenerateKeyPair(Pair, OutError) || !AkUGCWorkFiles::WriteNew(FilePath, Pair.PrivateKey, OutError)) { return false; }
-    OutPrivateKey = Pair.PrivateKey;
-    return true;
-}
-
 bool FAkUGCWorkLibrary::Store(const FString& Json, const FString& TrustedKey, FAkUGCWorkEntry& OutEntry, FString* OutError) const
 {
     const FString Key = TrustedKey.TrimStartAndEnd().ToLower();
@@ -120,16 +100,15 @@ bool FAkUGCWorkLibrary::Store(const FString& Json, const FString& TrustedKey, FA
     return true;
 }
 
-bool FAkUGCWorkLibrary::Publish(const FAkUGCProjectDocument& Document, const FString& PrivateKey,
-    const FString& ShareDirectory, FAkUGCWorkEntry& OutEntry, FString& OutSharePath, FString* OutError) const
+bool FAkUGCWorkLibrary::CommitPublishedPack(
+    const FAkUGCLogicPack& Pack,
+    const FString& ShareDirectory,
+    FAkUGCWorkEntry& OutEntry,
+    FString& OutSharePath,
+    FString* OutError) const
 {
-    OutSharePath.Reset();
-    const auto Build = FAkUGCLogicPackBuilder::Build(Document);
-    if (!Build.bSucceeded) { return AkUGCWorkFiles::Fail(OutError, Build.ErrorMessage); }
-    FAkUGCLogicPack Pack = Build.Pack;
     FString Json;
-    if (!FAkUGCLogicPackSigner::Sign(Pack.Manifest, PrivateKey, Pack.Signature, OutError)
-        || !FAkUGCLogicPackCodec::Serialize(Pack, Json, OutError)) { return false; }
+    if (!FAkUGCLogicPackCodec::Serialize(Pack, Json, OutError)) { return false; }
     const auto Verified = FAkUGCLogicPackLoader::LoadVerified(Json, Pack.Signature.PublicKey);
     if (!Verified.bSucceeded) { return AkUGCWorkFiles::Fail(OutError, Verified.ErrorMessage); }
     const FString Path = FPaths::Combine(ShareDirectory, Pack.Manifest.ReleaseId.ToString(EGuidFormats::Digits) + TEXT(".akugc"));
@@ -142,6 +121,34 @@ bool FAkUGCWorkLibrary::Publish(const FAkUGCProjectDocument& Document, const FSt
     }
     OutSharePath = FPaths::ConvertRelativePathToFull(Path);
     return true;
+}
+
+bool FAkUGCWorkLibrary::PublishWithPublisherIdentity(
+    const FAkUGCProjectDocument& Document,
+    const FString& PublisherDirectory,
+    const FString& ShareDirectory,
+    FAkUGCWorkEntry& OutEntry,
+    FString& OutSharePath,
+    FString* OutError) const
+{
+    OutSharePath.Reset();
+    const auto Build = FAkUGCLogicPackBuilder::Build(Document);
+    if (!Build.bSucceeded) { return AkUGCWorkFiles::Fail(OutError, Build.ErrorMessage); }
+    FAkUGCLogicPack Pack = Build.Pack;
+    const FAkUGCPublisherKeyStore Publisher(PublisherDirectory);
+    if (!Publisher.Sign(Pack.Manifest, Pack.Signature, OutError)) { return false; }
+    return CommitPublishedPack(Pack, ShareDirectory, OutEntry, OutSharePath, OutError);
+}
+
+bool FAkUGCWorkLibrary::Publish(const FAkUGCProjectDocument& Document, const FString& PrivateKey,
+    const FString& ShareDirectory, FAkUGCWorkEntry& OutEntry, FString& OutSharePath, FString* OutError) const
+{
+    OutSharePath.Reset();
+    const auto Build = FAkUGCLogicPackBuilder::Build(Document);
+    if (!Build.bSucceeded) { return AkUGCWorkFiles::Fail(OutError, Build.ErrorMessage); }
+    FAkUGCLogicPack Pack = Build.Pack;
+    if (!FAkUGCLogicPackSigner::Sign(Pack.Manifest, PrivateKey, Pack.Signature, OutError)) { return false; }
+    return CommitPublishedPack(Pack, ShareDirectory, OutEntry, OutSharePath, OutError);
 }
 
 bool FAkUGCWorkLibrary::Import(const FString& SharePath, const FString& IndependentlyTrustedPublicKey,

@@ -4,6 +4,7 @@
 #include "HAL/PlatformApplicationMisc.h"
 #include "Misc/App.h"
 #include "Misc/Paths.h"
+#include "Pack/AkUGCPublisherKeyStore.h"
 #include "Subsystem/AkUGCEditorSubsystem.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
@@ -21,7 +22,7 @@ void SAkUGCWorkLibraryPanel::Construct(const FArguments& InArgs, UAkUGCEditorSub
         + SVerticalBox::Slot().AutoHeight().Padding(0, 4)
         [SNew(STextBlock).Text(FText::FromString(TEXT("本地发布 / 分享 / 作品库")))]
         + SVerticalBox::Slot().AutoHeight()
-        [SNew(STextBlock).Text(FText::FromString(TEXT("分享文件不含私钥。公钥须通过独立渠道核对；确认的是密钥，不是作者实名。发布私钥仅保存在本机 Saved/UGC/Publisher，未加密，请勿分享此目录。"))).AutoWrapText(true)]
+        [SNew(STextBlock).Text(FText::FromString(TEXT("分享文件不含私钥。公钥须通过独立渠道核对；确认的是密钥，不是作者实名。发布私钥由当前 Windows 用户的 DPAPI 加密保存在 Saved/UGC/Publisher；该目录仍属敏感凭据，请勿分享或归档。"))).AutoWrapText(true)]
         + SVerticalBox::Slot().AutoHeight().Padding(0, 4)
         [SNew(SHorizontalBox)
             + SHorizontalBox::Slot().AutoWidth().Padding(2)
@@ -74,11 +75,11 @@ void SAkUGCWorkLibraryPanel::Construct(const FArguments& InArgs, UAkUGCEditorSub
 
 FReply SAkUGCWorkLibraryPanel::Publish()
 {
-    FString PrivateKey, Error, Path;
+    FString Error, Path;
     FAkUGCWorkEntry Entry;
     if (Subsystem.IsValid() && Subsystem->HasOpenProject()
-        && FAkUGCWorkLibrary::GetOrCreatePublisherKey(FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("UGC/Publisher/private.key")), PrivateKey, &Error)
-        && FAkUGCWorkLibrary(FAkUGCWorkLibrary::DefaultDirectory()).Publish(Subsystem->GetDocument(), PrivateKey,
+        && FAkUGCWorkLibrary(FAkUGCWorkLibrary::DefaultDirectory()).PublishWithPublisherIdentity(
+            Subsystem->GetDocument(), FAkUGCPublisherKeyStore::DefaultDirectory(),
             FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("UGC/Share")), Entry, Path, &Error))
     {
         SharePath = Path;
@@ -88,7 +89,6 @@ FReply SAkUGCWorkLibraryPanel::Publish()
             *Entry.ReleaseId.ToString(EGuidFormats::Digits), *Path, *Entry.TrustedPublicKey);
     }
     else { Status = Error.IsEmpty() ? TEXT("请先打开项目。") : Error; }
-    PrivateKey.Reset();
     return FReply::Handled();
 }
 

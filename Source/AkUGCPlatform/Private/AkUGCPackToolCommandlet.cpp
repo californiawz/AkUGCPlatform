@@ -87,13 +87,28 @@ int32 UAkUGCPackToolCommandlet::Main(const FString& Params)
 
     if (FParse::Param(*Params, TEXT("PublishWork")))
     {
-        FString Directory, PrivateKey, Share;
+        FString Directory, Share;
         if (!FParse::Value(*Params, TEXT("Library="), Directory)) { return 10; }
+        const FString PublisherDirectory = FPaths::Combine(Directory, TEXT("Publisher"));
+        FString FullOutputPath = FPaths::ConvertRelativePathToFull(OutputPath);
+        FString FullPublisherDirectory = FPaths::ConvertRelativePathToFull(PublisherDirectory);
+        FPaths::NormalizeFilename(FullOutputPath);
+        FPaths::NormalizeDirectoryName(FullPublisherDirectory);
+        if (FullOutputPath.Equals(FullPublisherDirectory, ESearchCase::IgnoreCase)
+            || FullOutputPath.StartsWith(FullPublisherDirectory + TEXT("/"), ESearchCase::IgnoreCase))
+        {
+            UE_LOG(LogTemp, Error, TEXT("[AkUGCPackTool] -Output must not target the publisher credential directory."));
+            return 10;
+        }
         FAkUGCWorkEntry Entry;
-        if (!FAkUGCWorkLibrary::GetOrCreatePublisherKey(FPaths::Combine(Directory, TEXT("Publisher/private.key")), PrivateKey, &Error)
-            || !FAkUGCWorkLibrary(Directory).Publish(Document, PrivateKey, FPaths::Combine(Directory, TEXT("Share")), Entry, Share, &Error))
+        if (!FAkUGCWorkLibrary(Directory).PublishWithPublisherIdentity(
+                Document,
+                PublisherDirectory,
+                FPaths::Combine(Directory, TEXT("Share")),
+                Entry,
+                Share,
+                &Error))
         { UE_LOG(LogTemp, Error, TEXT("[AkUGCPackTool] Publish failed: %s"), *Error); return 11; }
-        PrivateKey.Reset();
         const FString Result = FString::Printf(TEXT("{\"releaseId\":\"%s\",\"sharePath\":\"%s\",\"publicKey\":\"%s\"}"),
             *Entry.ReleaseId.ToString(EGuidFormats::Digits), *Share.Replace(TEXT("\\"), TEXT("/")), *Entry.TrustedPublicKey);
         if (!FFileHelper::SaveStringToFile(Result, *OutputPath, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM)) { return 12; }

@@ -65,6 +65,15 @@ namespace
 		return true;
 	}
 
+	void SecureReset(TArray<uint8>& Value)
+	{
+		if (Value.Num() > 0)
+		{
+			FMemory::Memzero(Value.GetData(), Value.Num());
+		}
+		Value.Reset();
+	}
+
 	/** 签名消息 = 发布清单的确定性 JSON（其内含 ContentHash，覆盖全部内容）。 */
 	bool ComputeSigningMessage(const FAkUGCLogicPackManifest& Manifest, FString& OutMessage, FString& Error)
 	{
@@ -74,6 +83,7 @@ namespace
 
 bool FAkUGCLogicPackSigner::GenerateKeyPair(FAkUGCLogicPackKeyPair& OutKeyPair, FString* OutError)
 {
+	OutKeyPair = FAkUGCLogicPackKeyPair();
 	EVP_PKEY_CTX* KeyCtx = EVP_PKEY_CTX_new_id(EVP_PKEY_ED25519, nullptr);
 	if (KeyCtx == nullptr)
 	{
@@ -86,6 +96,8 @@ bool FAkUGCLogicPackSigner::GenerateKeyPair(FAkUGCLogicPackKeyPair& OutKeyPair, 
 
 	bool bSucceeded = false;
 	EVP_PKEY* PKey = nullptr;
+	uint8 PrivateKey[Ed25519PrivateKeyBytes] = {};
+	uint8 PublicKey[Ed25519PublicKeyBytes] = {};
 	do
 	{
 		if (EVP_PKEY_keygen_init(KeyCtx) <= 0)
@@ -105,8 +117,6 @@ bool FAkUGCLogicPackSigner::GenerateKeyPair(FAkUGCLogicPackKeyPair& OutKeyPair, 
 			break;
 		}
 
-		uint8 PrivateKey[Ed25519PrivateKeyBytes];
-		uint8 PublicKey[Ed25519PublicKeyBytes];
 		size_t PrivateKeyLength = Ed25519PrivateKeyBytes;
 		size_t PublicKeyLength = Ed25519PublicKeyBytes;
 		if (EVP_PKEY_get_raw_private_key(PKey, PrivateKey, &PrivateKeyLength) <= 0
@@ -124,6 +134,7 @@ bool FAkUGCLogicPackSigner::GenerateKeyPair(FAkUGCLogicPackKeyPair& OutKeyPair, 
 		bSucceeded = true;
 	} while (false);
 
+	FMemory::Memzero(PrivateKey, sizeof(PrivateKey));
 	if (PKey != nullptr)
 	{
 		EVP_PKEY_free(PKey);
@@ -144,6 +155,74 @@ bool FAkUGCLogicPackSigner::Sign(
 		if (OutError)
 		{
 			*OutError = TEXT("签名失败：私钥格式非法（需 64 位 hex）。");
+		}
+		return false;
+	}
+	const bool bSigned = SignPrivateKeyBytes(
+		Manifest,
+		PrivateKeyBytes,
+		OutSignature,
+		OutError);
+	SecureReset(PrivateKeyBytes);
+	return bSigned;
+}
+
+bool FAkUGCLogicPackSigner::DerivePublicKey(
+	TConstArrayView<uint8> PrivateKeyBytes,
+	FString& OutPublicKey,
+	FString* OutError)
+{
+	OutPublicKey.Reset();
+	if (PrivateKeyBytes.Num() != Ed25519PrivateKeyBytes)
+	{
+		if (OutError)
+		{
+			*OutError = TEXT("签名失败：私钥长度非法。");
+		}
+		return false;
+	}
+
+	EVP_PKEY* PKey = EVP_PKEY_new_raw_private_key(
+		EVP_PKEY_ED25519, nullptr, PrivateKeyBytes.GetData(), PrivateKeyBytes.Num());
+	if (PKey == nullptr)
+	{
+		if (OutError)
+		{
+			*OutError = TEXT("签名失败：无法导入私钥。");
+		}
+		return false;
+	}
+
+	uint8 PublicKey[Ed25519PublicKeyBytes] = {};
+	size_t PublicKeyLength = Ed25519PublicKeyBytes;
+	const bool bSucceeded =
+		EVP_PKEY_get_raw_public_key(PKey, PublicKey, &PublicKeyLength) == 1
+		&& PublicKeyLength == Ed25519PublicKeyBytes;
+	EVP_PKEY_free(PKey);
+	if (!bSucceeded)
+	{
+		if (OutError)
+		{
+			*OutError = TEXT("签名失败：无法从私钥导出公钥。");
+		}
+		return false;
+	}
+	OutPublicKey = PackBytesToHex(PublicKey, static_cast<int32>(PublicKeyLength));
+	return true;
+}
+
+bool FAkUGCLogicPackSigner::SignPrivateKeyBytes(
+	const FAkUGCLogicPackManifest& Manifest,
+	TConstArrayView<uint8> PrivateKeyBytes,
+	FAkUGCLogicPackSignature& OutSignature,
+	FString* OutError)
+{
+	OutSignature = FAkUGCLogicPackSignature();
+	if (PrivateKeyBytes.Num() != Ed25519PrivateKeyBytes)
+	{
+		if (OutError)
+		{
+			*OutError = TEXT("签名失败：私钥长度非法。");
 		}
 		return false;
 	}

@@ -11,6 +11,7 @@
 #include "Widgets/SAkUGCCreatorPanel.h"
 #include "Widgets/SAkUGCWorkLibraryPanel.h"
 #include "Pack/AkUGCWorkLibrary.h"
+#include "Pack/AkUGCPublisherKeyStore.h"
 #include "Pack/AkUGCLogicPackHasher.h"
 #include "Template/AkUGCCopilotPreview.h"
 #include "Widgets/SAkUGCCopilotPanel.h"
@@ -652,17 +653,25 @@ bool FAkUGCCreatorPublishTest::RunTest(const FString& Parameters)
     const FString Hash = FAkUGCLogicPackHasher::HashDocument(Subsystem->GetDocument());
     const TSharedRef<SAkUGCWorkLibraryPanel> Panel = SNew(SAkUGCWorkLibraryPanel, Subsystem);
     const FString Root = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Automation/CreatorPublish"), FGuid::NewGuid().ToString(EGuidFormats::Digits));
-    FString PrivateKey, Share;
+#if !PLATFORM_WINDOWS
+    AddInfo(TEXT("Protected publisher identity is Win64-only; Creator publish snapshot is skipped on this platform."));
+    Subsystem->CloseProject();
+    IFileManager::Get().DeleteDirectory(*Root, false, true);
+    return true;
+#endif
+    const FString PublisherDirectory = FPaths::Combine(Root, TEXT("Publisher"));
+    FString PublicKey, Share;
     FAkUGCWorkEntry Entry;
-    TestTrue(TEXT("Publisher identity creates"), FAkUGCWorkLibrary::GetOrCreatePublisherKey(FPaths::Combine(Root, TEXT("private.key")), PrivateKey, &Error));
-    TestTrue(TEXT("Exact Creator snapshot publishes"), FAkUGCWorkLibrary(FPaths::Combine(Root, TEXT("Library"))).Publish(
-        Subsystem->GetDocument(), PrivateKey, FPaths::Combine(Root, TEXT("Share")), Entry, Share, &Error));
+    TestTrue(TEXT("Protected publisher identity creates"), FAkUGCPublisherKeyStore(PublisherDirectory).GetOrCreatePublicKey(PublicKey, &Error));
+    TestTrue(TEXT("Exact Creator snapshot publishes"), FAkUGCWorkLibrary(FPaths::Combine(Root, TEXT("Library"))).PublishWithPublisherIdentity(
+        Subsystem->GetDocument(), PublisherDirectory, FPaths::Combine(Root, TEXT("Share")), Entry, Share, &Error));
+    TestEqual(TEXT("Published snapshot uses protected publisher identity"), Entry.TrustedPublicKey, PublicKey);
     const auto Loaded = FAkUGCWorkLibrary(FPaths::Combine(Root, TEXT("Library"))).Load(Entry.ReleaseId);
     TestTrue(TEXT("Published Creator work re-verifies"), Loaded.bSucceeded);
     TestEqual(TEXT("Published snapshot matches Creator"), FAkUGCLogicPackHasher::HashDocument(Loaded.Pack.Document), Hash);
     TestEqual(TEXT("Publishing preserves revision"), Subsystem->GetDocumentRevision(), Revision);
     TestFalse(TEXT("Publishing does not create undo history"), Subsystem->CanUndo());
-    Subsystem->CloseProject(); PrivateKey.Reset();
+    Subsystem->CloseProject();
     IFileManager::Get().DeleteDirectory(*Root, false, true);
     return true;
 }

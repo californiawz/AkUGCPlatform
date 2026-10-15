@@ -18,7 +18,13 @@ class AKUGCCORE_API FAkUGCWorkLibrary
 public:
     explicit FAkUGCWorkLibrary(const FString& Directory);
     static FString DefaultDirectory();
-    static bool GetOrCreatePublisherKey(const FString& FilePath, FString& OutPrivateKey, FString* OutError = nullptr);
+
+    /** 产品发布入口：使用受保护的发布身份签名，不向调用方返回私钥。 */
+    bool PublishWithPublisherIdentity(const FAkUGCProjectDocument& Document,
+        const FString& PublisherDirectory, const FString& ShareDirectory,
+        FAkUGCWorkEntry& OutEntry, FString& OutSharePath, FString* OutError = nullptr) const;
+
+    /** 低层签名入口，供已有密钥的工具与测试夹具使用；不会把密钥写盘。 */
     bool Publish(const FAkUGCProjectDocument& Document, const FString& PrivateKey,
         const FString& ShareDirectory, FAkUGCWorkEntry& OutEntry, FString& OutSharePath, FString* OutError = nullptr) const;
     bool Import(const FString& SharePath, const FString& IndependentlyTrustedPublicKey,
@@ -32,5 +38,7 @@ public:
 
 private:
     bool Store(const FString& Json, const FString& TrustedKey, FAkUGCWorkEntry& OutEntry, FString* OutError) const;
+    bool CommitPublishedPack(const FAkUGCLogicPack& Pack, const FString& ShareDirectory,
+        FAkUGCWorkEntry& OutEntry, FString& OutSharePath, FString* OutError) const;
     FString Root;
 };

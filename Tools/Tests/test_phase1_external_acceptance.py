@@ -573,6 +573,35 @@ class ExternalAcceptanceTests(unittest.TestCase):
         self.assertIn("contains a private-key file", "\n".join(result["diagnostics"]))
 
         manifest = self.valid_manifest()
+        creator_data = (self.root / manifest["baseline"]["creator_build_file"]).read_bytes()
+        _, creator_hash = self.archive(
+            manifest["baseline"]["creator_package_file"],
+            self.creator_entries(
+                creator_data, {
+                    "Saved/UGC/Publisher/publisher-identity.json":
+                        b'{"protectedPrivateKey":"encrypted-secret"}',
+                }))
+        manifest["baseline"]["creator_package_sha256"] = creator_hash
+        result = self.validate(manifest)
+        self.assertFalse(result["passed"])
+        self.assertIn("contains a private-key file", "\n".join(result["diagnostics"]))
+
+        manifest = self.valid_manifest()
+        creator_data = (self.root / manifest["baseline"]["creator_build_file"]).read_bytes()
+        _, creator_hash = self.archive(
+            manifest["baseline"]["creator_package_file"],
+            self.creator_entries(
+                creator_data, {
+                    "Saved/UGC/Publisher/"
+                    "publisher-identity.json.deadbeef.tmp":
+                        b"encrypted-credential-fragment",
+                }))
+        manifest["baseline"]["creator_package_sha256"] = creator_hash
+        result = self.validate(manifest)
+        self.assertFalse(result["passed"])
+        self.assertIn("contains a private-key file", "\n".join(result["diagnostics"]))
+
+        manifest = self.valid_manifest()
         game_file = manifest["baseline"]["game_package_file"]
         _, game_hash = self.archive(
             game_file,

@@ -15,5 +15,10 @@ public class AkUGCCore : ModuleRules
         });
 
         PrivateDependencyModuleNames.Add("OpenSSL");
+
+        if (Target.Platform == UnrealTargetPlatform.Win64)
+        {
+            PublicSystemLibraries.Add("Crypt32.lib");
+        }
     }
 }

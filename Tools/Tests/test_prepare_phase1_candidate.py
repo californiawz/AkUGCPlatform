@@ -235,6 +235,30 @@ class PreparePhase1CandidateTests(unittest.TestCase):
             [],
         )
 
+    def test_rejects_protected_publisher_identity(self):
+        identity = self.project / "Content" / "publisher-identity.json"
+        identity.write_text(
+            '{"version":1,"protection":"windows-dpapi-current-user-v1"}',
+            encoding="utf-8",
+        )
+        output = self.root / "candidate"
+
+        with self.assertRaisesRegex(ValueError, "private-key"):
+            self.prepare(output)
+        self.assertFalse(output.exists())
+
+    def test_rejects_stale_publisher_identity_temporary(self):
+        identity = (
+            self.project / "Content" /
+            "publisher-identity.json.deadbeef.tmp"
+        )
+        identity.write_text("encrypted-credential-fragment", encoding="utf-8")
+        output = self.root / "candidate"
+
+        with self.assertRaisesRegex(ValueError, "private-key"):
+            self.prepare(output)
+        self.assertFalse(output.exists())
+
     def test_requires_clean_matching_source_commit(self):
         output = self.root / "candidate"
         with patch.object(

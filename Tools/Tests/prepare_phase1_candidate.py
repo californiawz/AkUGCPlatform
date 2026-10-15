@@ -60,7 +60,14 @@ CREATOR_EXCLUDED_SUFFIXES = {
     ".suo",
 }
 PRIVATE_KEY_SUFFIXES = {".key", ".p12", ".pfx"}
-PRIVATE_KEY_NAMES = {"id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"}
+PRIVATE_KEY_NAMES = {
+    "id_rsa",
+    "id_dsa",
+    "id_ecdsa",
+    "id_ed25519",
+    "private.key",
+    "publisher-identity.json",
+}
 CREATOR_MODULE_ARCHIVE_PATH = (
     "AkUGCPlatform/Plugins/AkUGCEditor/Binaries/Win64/"
     "UnrealEditor-AkUGCEditor.dll"
@@ -77,6 +84,15 @@ RUNTIME_PROJECT_ARCHIVE_PATH = "AkUGCPlatform/AkUGCPlatform.uproject"
 RUNTIME_EXCLUDED_DIRECTORIES = {"Saved"}
 
 
+def is_private_key_name(name: str) -> bool:
+    folded = name.casefold()
+    return (
+        folded in PRIVATE_KEY_NAMES
+        or any(folded.startswith(private_name + ".")
+               for private_name in PRIVATE_KEY_NAMES)
+    )
+
+
 def is_link_or_junction(path: Path) -> bool:
     is_junction = getattr(path, "is_junction", None)
     return path.is_symlink() or bool(is_junction and is_junction())
@@ -84,7 +100,7 @@ def is_link_or_junction(path: Path) -> bool:
 
 def reject_private_key(path: Path) -> None:
     lowered = path.name.casefold()
-    if path.suffix.casefold() in PRIVATE_KEY_SUFFIXES or lowered in PRIVATE_KEY_NAMES:
+    if path.suffix.casefold() in PRIVATE_KEY_SUFFIXES or is_private_key_name(lowered):
         raise ValueError(f"candidate input contains a private-key file: {path}")
     if path.suffix.casefold() == ".pem" and path.stat().st_size <= 1024 * 1024:
         payload = path.read_bytes()
