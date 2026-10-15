@@ -31,6 +31,7 @@ namespace AkUGCWorkPlay
             auto* Player = Cast<AAkUGCPlayerController>(World->GetFirstPlayerController());
             if (!Mode || !State || !Player || !Mode->HasPreparedProject()) { return false; }
             FString IdText, Share, Key, BadShare, RegistryBase, RegistryToken;
+            FString RegistryProjectId;
             FString RegistryBadToken, RegistryBadKey;
             FParse::Value(FCommandLine::Get(), TEXT("WorkId="), IdText);
             FParse::Value(FCommandLine::Get(), TEXT("WorkShare="), Share);
@@ -38,6 +39,10 @@ namespace AkUGCWorkPlay
             FParse::Value(FCommandLine::Get(), TEXT("WorkBadShare="), BadShare);
             FParse::Value(FCommandLine::Get(), TEXT("RegistryBase="), RegistryBase);
             FParse::Value(FCommandLine::Get(), TEXT("RegistryToken="), RegistryToken);
+            FParse::Value(
+                FCommandLine::Get(),
+                TEXT("RegistryProjectId="),
+                RegistryProjectId);
             FParse::Value(FCommandLine::Get(), TEXT("RegistryBadToken="), RegistryBadToken);
             FParse::Value(FCommandLine::Get(), TEXT("RegistryBadTrustedKey="), RegistryBadKey);
             if (RegistryToken.IsEmpty())
@@ -73,12 +78,42 @@ namespace AkUGCWorkPlay
                                 Test->AddError(TEXT("Registry rejection exercise arguments are missing."));
                                 return true;
                             }
-                            Player->FetchRegistryWork(RegistryBase, RegistryBadToken, IdText, Key);
+                            if (RegistryProjectId.IsEmpty())
+                            {
+                                Player->FetchRegistryWork(
+                                    RegistryBase,
+                                    RegistryBadToken,
+                                    IdText,
+                                    Key);
+                            }
+                            else
+                            {
+                                Player->FetchRegistryProjectWork(
+                                    RegistryBase,
+                                    RegistryBadToken,
+                                    RegistryProjectId,
+                                    Key);
+                            }
                             AcquisitionStage = 1;
                         }
                         else
                         {
-                            Player->FetchRegistryWork(RegistryBase, RegistryToken, IdText, Key);
+                            if (RegistryProjectId.IsEmpty())
+                            {
+                                Player->FetchRegistryWork(
+                                    RegistryBase,
+                                    RegistryToken,
+                                    IdText,
+                                    Key);
+                            }
+                            else
+                            {
+                                Player->FetchRegistryProjectWork(
+                                    RegistryBase,
+                                    RegistryToken,
+                                    RegistryProjectId,
+                                    Key);
+                            }
                             AcquisitionStage = 3;
                         }
                         if (!Player->HasPendingRegistryWork())
@@ -109,7 +144,22 @@ namespace AkUGCWorkPlay
                         Test->AddError(TEXT("Wrong Player token was not rejected without side effects."));
                         return true;
                     }
-                    Player->FetchRegistryWork(RegistryBase, RegistryToken, IdText, RegistryBadKey);
+                    if (RegistryProjectId.IsEmpty())
+                    {
+                        Player->FetchRegistryWork(
+                            RegistryBase,
+                            RegistryToken,
+                            IdText,
+                            RegistryBadKey);
+                    }
+                    else
+                    {
+                        Player->FetchRegistryProjectWork(
+                            RegistryBase,
+                            RegistryToken,
+                            RegistryProjectId,
+                            RegistryBadKey);
+                    }
                     AcquisitionStage = 2;
                     if (!Player->HasPendingRegistryWork())
                     {
@@ -128,7 +178,22 @@ namespace AkUGCWorkPlay
                         Test->AddError(TEXT("Wrong independent key was not rejected without side effects."));
                         return true;
                     }
-                    Player->FetchRegistryWork(RegistryBase, RegistryToken, IdText, Key);
+                    if (RegistryProjectId.IsEmpty())
+                    {
+                        Player->FetchRegistryWork(
+                            RegistryBase,
+                            RegistryToken,
+                            IdText,
+                            Key);
+                    }
+                    else
+                    {
+                        Player->FetchRegistryProjectWork(
+                            RegistryBase,
+                            RegistryToken,
+                            RegistryProjectId,
+                            Key);
+                    }
                     AcquisitionStage = 3;
                     if (!Player->HasPendingRegistryWork())
                     {

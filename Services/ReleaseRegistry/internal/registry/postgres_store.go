@@ -98,6 +98,7 @@ func (s *PostgresStore) CreateProject(
 			ProjectID:    creation.ProjectID,
 			DisplayName:  creation.DisplayName,
 			OwnerSubject: creation.OwnerSubject,
+			Visibility:   ProjectVisibilityPrivate,
 			Revision:     1,
 			CreatedAt:    creation.CreatedAt,
 			UpdatedAt:    creation.CreatedAt,
@@ -383,6 +384,62 @@ func (s *PostgresStore) RemoveProjectMember(
 	return project, true, nil
 }
 
+func (s *PostgresStore) SetProjectVisibility(
+	ctx context.Context,
+	change ProjectVisibilityChange,
+) (Project, bool, error) {
+	transaction, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return Project{}, false, unavailable("begin visibility change", err)
+	}
+	defer transaction.Rollback(ctx)
+	project, err := queryProject(ctx, transaction, change.ProjectID, "FOR UPDATE")
+	if err != nil {
+		return Project{}, false, err
+	}
+	if project.OwnerSubject != change.Actor {
+		return Project{}, false, ErrNotFound
+	}
+	if project.Visibility == change.Visibility {
+		if err := transaction.Commit(ctx); err != nil {
+			return Project{}, false, unavailable("commit idempotent visibility change", err)
+		}
+		return project, false, nil
+	}
+	previous := project.Visibility
+	project.Visibility = change.Visibility
+	project.Revision++
+	project.UpdatedAt = change.ChangedAt
+	if _, err := transaction.Exec(
+		ctx,
+		`UPDATE projects SET visibility = $2, revision = $3, updated_at = $4
+		 WHERE project_id = $1::uuid`,
+		project.ProjectID,
+		project.Visibility,
+		project.Revision,
+		project.UpdatedAt,
+	); err != nil {
+		return Project{}, false, unavailable("update project visibility", err)
+	}
+	if _, err := transaction.Exec(
+		ctx,
+		`INSERT INTO project_visibility_events (
+			project_id, actor_subject, from_visibility, to_visibility, occurred_at
+		) VALUES ($1::uuid, $2, $3, $4, $5)`,
+		project.ProjectID,
+		change.Actor,
+		previous,
+		project.Visibility,
+		change.ChangedAt,
+	); err != nil {
+		return Project{}, false, unavailable("insert visibility audit", err)
+	}
+	if err := transaction.Commit(ctx); err != nil {
+		return Project{}, false, unavailable("commit visibility change", err)
+	}
+	return project, true, nil
+}
+
 func (s *PostgresStore) ListProjectVersions(
 	ctx context.Context,
 	projectID string,
@@ -443,6 +500,25 @@ func (s *PostgresStore) ListProjectVersions(
 		page.NextCursor = page.Releases[len(page.Releases)-1].ReleaseID
 	}
 	return page, nil
+}
+
+func (s *PostgresStore) GetLatestPublishedRelease(
+	ctx context.Context,
+	projectID string,
+) (Release, error) {
+	query := `SELECT ` + releaseColumns + `
+		FROM releases
+		WHERE project_id = $1::uuid AND status = 'published'
+		ORDER BY submitted_at DESC, release_id DESC
+		LIMIT 1`
+	release, err := scanRelease(s.pool.QueryRow(ctx, query, projectID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Release{}, ErrNotFound
+	}
+	if err != nil {
+		return Release{}, unavailable("query latest published release", err)
+	}
+	return release, nil
 }
 
 func (s *PostgresStore) Submit(
@@ -696,7 +772,7 @@ func queryProject(
 	projectID string,
 	lockClause string,
 ) (Project, error) {
-	query := `SELECT project_id::text, display_name, owner_subject, revision,
+	query := `SELECT project_id::text, display_name, owner_subject, visibility, revision,
 	                 created_at, updated_at
 	          FROM projects WHERE project_id = $1::uuid`
 	if lockClause != "" {
@@ -707,6 +783,7 @@ func queryProject(
 		&project.ProjectID,
 		&project.DisplayName,
 		&project.OwnerSubject,
+		&project.Visibility,
 		&project.Revision,
 		&project.CreatedAt,
 		&project.UpdatedAt,

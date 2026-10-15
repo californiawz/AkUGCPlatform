@@ -278,4 +278,31 @@
 - 私人/公开作品页、构建任务与对象存储、DS 固定版本/回滚、运营观测和 Asset Pack 均留给后续 Creator Alpha 切片。
 - 四台真实物理设备验收继续按当前决策延期，不计入 P20.2 通过证据。
 
+### P20.3：私人/公开作品页与发布可见性
+
+**目标**：把“版本已发布”和“作品允许项目外 Player 访问”拆成两个独立状态；默认保护私人项目，同时让 Owner 能公开作品页，Player 可按 ProjectId 获取当前可玩的 published 版本并继续执行本地独立验签。
+
+**实现**：
+
+- Project 新增严格的 `private|public` Visibility。新项目与历史迁移默认 private；Owner 专用 `PUT /v1/projects/{projectId}/visibility` 在行锁事务内更新 Visibility、Revision、UpdatedAt 和不可变审计，相同目标幂等且并发重试只产生一次变化。
+- 新增 `GET /v1/works/{projectId}`。公开项目允许任意已认证 Player 读取，私人项目只允许同时具有 Player 角色的成员读取；作品页稳定选择最新仍为 published 的 Release，不包含制品字节，全部撤回后返回 404。
+- Release 元数据读取和下载同步加入 Visibility 门禁：项目外 Player 只有在 Project public 且 Release published 时可访问；私人项目成员 Player 仍可获取，未发布、已撤回和私人项目外访问统一隐藏。
+- PostgreSQL `003_project_visibility.sql` 回填安全默认值、约束合法枚举、创建可见性审计表和 published 作品查询索引；内存仓储与 PostgreSQL 仓储保持相同幂等、排序和权限语义。
+- Creator Registry 客户端严格解析 Project Visibility，作品库面板为 Owner 提供“设为私人作品/公开作品页”入口，完成后刷新 Project、Members 和 Versions，并明确公开元数据不能替代本地签名信任。
+- Packaged Player 新增 `FetchRegistryProjectWork` 两段式入口：先以 64 KiB 预算严格解析作品页并绑定请求 ProjectId、latest Release ProjectId 和 published 状态，再下载不超过 16 MiB 的制品。作品页公钥不会进入验签参数，最终仍只使用调用方独立提供的 Ed25519 公钥执行本地验签和原子入库。
+- 本机验收扩展 private 成员访问、private 项目外隐藏、Owner-only 切换、重复字段拒绝、幂等与并发切换、public 作品页、撤回后作品页隐藏，以及 Player 从 ProjectId 解析、下载、本地验签并完成一局。
+
+**已验证（2026-10-15）**：
+
+- AkUGCPlatformEditor、Client、Server Win64 Development 编译成功；Client 重新完成 Build/Cook/Stage/Package；Python 回归 120/120。
+- Editor `AkUGC` 完整自动化 141/141，Copilot HTTP/TLS 42/42；Creator Registry 产品链完成 20 个真实 loopback HTTP 操作并保持 Document Revision 与 Hash 不变。
+- Go 内存/HTTP 测试、`go vet` 和临时真实 PostgreSQL 隔离 Schema 集成测试通过；迁移默认 private、可见性行锁、并发幂等和审计均有数据库证据。
+- 最终本机隔离闭环完成 private 成员/项目外边界、public 作品页、8 路并发提交、审核发布、Player 按 ProjectId 获取、错误 token/独立公钥、篡改、超限、重定向、撤回拒绝，以及本地验签后一局结算。证据位于 `Saved/P20_3_Registry_Final1/result.json`；Editor 协议证据位于 `Saved/P20_3_Copilot_1/result.json`。
+
+**边界**：
+
+- public 仍要求已认证 Player token，不是匿名网页；正式账号、TLS、token 安全存储、作品发现列表/搜索和友好作者资料仍属于后续产品切片。
+- 本切片不引入构建任务、对象存储、DS 会话固定版本/回滚、运营观测或 Asset Pack。
+- 四台真实物理设备验收继续延期；Owner、Editor、Viewer、Reviewer、项目外 Player 与 PostgreSQL 仍在单机隔离环境验证。
+
 玩家 Asset Pack 白名单试点放在 Release Registry 稳定之后，避免同时扩大网络、内容与沙箱攻击面。

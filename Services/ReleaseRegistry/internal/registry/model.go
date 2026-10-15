@@ -85,13 +85,25 @@ func (r ProjectRole) ValidMemberRole() bool {
 	return r == ProjectRoleEditor || r == ProjectRoleViewer
 }
 
+type ProjectVisibility string
+
+const (
+	ProjectVisibilityPrivate ProjectVisibility = "private"
+	ProjectVisibilityPublic  ProjectVisibility = "public"
+)
+
+func (v ProjectVisibility) Valid() bool {
+	return v == ProjectVisibilityPrivate || v == ProjectVisibilityPublic
+}
+
 type Project struct {
-	ProjectID    string    `json:"projectId"`
-	DisplayName  string    `json:"displayName"`
-	OwnerSubject string    `json:"ownerSubject"`
-	Revision     int64     `json:"revision"`
-	CreatedAt    time.Time `json:"createdAt"`
-	UpdatedAt    time.Time `json:"updatedAt"`
+	ProjectID    string            `json:"projectId"`
+	DisplayName  string            `json:"displayName"`
+	OwnerSubject string            `json:"ownerSubject"`
+	Visibility   ProjectVisibility `json:"visibility"`
+	Revision     int64             `json:"revision"`
+	CreatedAt    time.Time         `json:"createdAt"`
+	UpdatedAt    time.Time         `json:"updatedAt"`
 }
 
 type ProjectMember struct {
@@ -125,6 +137,13 @@ type ProjectMemberRemoval struct {
 	ChangedAt time.Time
 }
 
+type ProjectVisibilityChange struct {
+	ProjectID  string
+	Actor      string
+	Visibility ProjectVisibility
+	ChangedAt  time.Time
+}
+
 type ProjectVersionPage struct {
 	Releases   []Release `json:"versions"`
 	NextCursor string    `json:"nextCursor,omitempty"`
@@ -149,6 +168,15 @@ type Release struct {
 	RevokedAt          *time.Time `json:"revokedAt,omitempty"`
 	UpdatedAt          time.Time  `json:"updatedAt"`
 	Artifact           []byte     `json:"-"`
+}
+
+type WorkPage struct {
+	ProjectID     string            `json:"projectId"`
+	DisplayName   string            `json:"displayName"`
+	Visibility    ProjectVisibility `json:"visibility"`
+	Revision      int64             `json:"revision"`
+	UpdatedAt     time.Time         `json:"updatedAt"`
+	LatestRelease Release           `json:"latestRelease"`
 }
 
 func (r Release) clone() Release {

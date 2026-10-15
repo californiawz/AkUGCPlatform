@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -55,7 +56,10 @@ func TestReleaseLifecyclePermissionsAndImmutability(t *testing.T) {
 	}
 	reviewer := Principal{Subject: "reviewer", Roles: []Role{RoleReviewer}}
 	player := Principal{Subject: "player-b", Roles: []Role{RolePlayer}}
-	createServiceTestProject(t, service, creator)
+	project := createServiceTestProject(t, service, creator)
+	if project.Visibility != ProjectVisibilityPrivate {
+		t.Fatalf("new project visibility = %q", project.Visibility)
+	}
 
 	release, created, err := service.Submit(
 		context.Background(),
@@ -113,6 +117,44 @@ func TestReleaseLifecyclePermissionsAndImmutability(t *testing.T) {
 	if err != nil || !changed || published.Status != StatusPublished {
 		t.Fatalf("publish failed: changed=%v release=%+v err=%v", changed, published, err)
 	}
+	if _, err := service.Download(context.Background(), player, release.ReleaseID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("private project download should be hidden: %v", err)
+	}
+	if _, _, err := service.SetProjectVisibility(
+		context.Background(),
+		player,
+		project.ProjectID,
+		ProjectVisibilityPublic,
+	); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("non-owner visibility change should be hidden: %v", err)
+	}
+	publicProject, changed, err := service.SetProjectVisibility(
+		context.Background(),
+		creator,
+		project.ProjectID,
+		ProjectVisibilityPublic,
+	)
+	if err != nil || !changed ||
+		publicProject.Visibility != ProjectVisibilityPublic ||
+		publicProject.Revision != project.Revision+1 {
+		t.Fatalf("public visibility failed: changed=%v project=%+v err=%v", changed, publicProject, err)
+	}
+	retriedProject, changed, err := service.SetProjectVisibility(
+		context.Background(),
+		creator,
+		project.ProjectID,
+		ProjectVisibilityPublic,
+	)
+	if err != nil || changed || retriedProject.Revision != publicProject.Revision {
+		t.Fatalf("visibility retry was not idempotent: changed=%v project=%+v err=%v", changed, retriedProject, err)
+	}
+	work, err := service.GetWorkPage(context.Background(), player, project.ProjectID)
+	if err != nil ||
+		work.Visibility != ProjectVisibilityPublic ||
+		work.LatestRelease.ReleaseID != release.ReleaseID ||
+		work.LatestRelease.Artifact != nil {
+		t.Fatalf("public work page mismatch: work=%+v err=%v", work, err)
+	}
 	downloaded, err := service.Download(context.Background(), player, release.ReleaseID)
 	if err != nil || !bytes.Equal(downloaded.Artifact, artifact) {
 		t.Fatalf("published download failed: release=%+v err=%v", downloaded, err)
@@ -138,6 +180,9 @@ func TestReleaseLifecyclePermissionsAndImmutability(t *testing.T) {
 	}
 	if _, err := service.Download(context.Background(), player, release.ReleaseID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("revoked download should be hidden: %v", err)
+	}
+	if _, err := service.GetWorkPage(context.Background(), player, project.ProjectID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("work page without a published release should be hidden: %v", err)
 	}
 }
 
@@ -189,6 +234,60 @@ func TestConcurrentSubmissionRetryCreatesOneRelease(t *testing.T) {
 	}
 }
 
+func TestConcurrentVisibilityRetryChangesOnce(t *testing.T) {
+	store := NewMemoryStore()
+	service := NewService(store, acceptingVerifier{}, func() time.Time {
+		return time.Date(2026, 10, 15, 10, 0, 0, 0, time.UTC)
+	})
+	owner := Principal{
+		Subject: "creator-a",
+		Roles:   []Role{RoleCreator},
+	}
+	project := createServiceTestProject(t, service, owner)
+	var changedCount atomic.Int32
+	var wait sync.WaitGroup
+	failures := make(chan error, 32)
+	for range 32 {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			visible, changed, err := service.SetProjectVisibility(
+				context.Background(),
+				owner,
+				project.ProjectID,
+				ProjectVisibilityPublic,
+			)
+			if err != nil {
+				failures <- err
+				return
+			}
+			if visible.Visibility != ProjectVisibilityPublic {
+				failures <- fmt.Errorf("visibility = %q", visible.Visibility)
+			}
+			if changed {
+				changedCount.Add(1)
+			}
+		}()
+	}
+	wait.Wait()
+	close(failures)
+	for err := range failures {
+		t.Errorf("visibility retry failed: %v", err)
+	}
+	if changedCount.Load() != 1 {
+		t.Fatalf("visibility changed count = %d", changedCount.Load())
+	}
+	stored, _, err := service.GetProject(context.Background(), owner, project.ProjectID)
+	if err != nil || stored.Revision != 2 || len(store.visibilityEvents) != 1 {
+		t.Fatalf(
+			"visibility final state mismatch: project=%+v events=%d err=%v",
+			stored,
+			len(store.visibilityEvents),
+			err,
+		)
+	}
+}
+
 func TestIdempotencyKeyCannotBindDifferentArtifact(t *testing.T) {
 	first, _, publicKey := signedArtifact(t, "51111111-2222-3333-4444-555555555555")
 	second, _, _ := signedArtifact(t, "61111111-2222-3333-4444-555555555555")
@@ -230,8 +329,8 @@ func TestProjectCollaborationAndVersionPermissions(t *testing.T) {
 		Roles:         []Role{RoleCreator, RolePublisher, RoleReviewer},
 		PublisherKeys: []string{publicKey},
 	}
-	viewer := Principal{Subject: "project-viewer"}
-	outsider := Principal{Subject: "project-outsider"}
+	viewer := Principal{Subject: "project-viewer", Roles: []Role{RolePlayer}}
+	outsider := Principal{Subject: "project-outsider", Roles: []Role{RolePlayer}}
 	reviewer := Principal{Subject: "independent-reviewer", Roles: []Role{RoleReviewer}}
 
 	project, created, err := service.CreateProject(
@@ -352,6 +451,18 @@ func TestProjectCollaborationAndVersionPermissions(t *testing.T) {
 	}
 	if _, err := service.Get(context.Background(), outsider, firstRelease.ReleaseID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("outsider release lookup was not hidden: %v", err)
+	}
+	if _, err := service.Download(context.Background(), viewer, firstRelease.ReleaseID); err != nil {
+		t.Fatalf("private project player member could not download: %v", err)
+	}
+	if _, err := service.Download(context.Background(), outsider, firstRelease.ReleaseID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("private project outsider download was not hidden: %v", err)
+	}
+	if work, err := service.GetWorkPage(context.Background(), viewer, project.ProjectID); err != nil || work.LatestRelease.ReleaseID != firstRelease.ReleaseID {
+		t.Fatalf("private member work page mismatch: work=%+v err=%v", work, err)
+	}
+	if _, err := service.GetWorkPage(context.Background(), outsider, project.ProjectID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("private outsider work page was not hidden: %v", err)
 	}
 
 	secondRelease, created, err := service.Submit(

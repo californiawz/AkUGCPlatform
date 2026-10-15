@@ -320,6 +320,7 @@ namespace AkUGCReleaseRegistryClientPrivate
 					TEXT("projectId"),
 					TEXT("displayName"),
 					TEXT("ownerSubject"),
+					TEXT("visibility"),
 					TEXT("revision"),
 					TEXT("createdAt"),
 					TEXT("updatedAt")
@@ -339,6 +340,9 @@ namespace AkUGCReleaseRegistryClientPrivate
 			|| !Object->TryGetStringField(
 				TEXT("ownerSubject"),
 				OutProject.OwnerSubject)
+			|| !Object->TryGetStringField(
+				TEXT("visibility"),
+				OutProject.Visibility)
 			|| !Object->TryGetNumberField(TEXT("revision"), Revision)
 			|| !Object->TryGetStringField(
 				TEXT("createdAt"),
@@ -352,6 +356,8 @@ namespace AkUGCReleaseRegistryClientPrivate
 				OutProject.DisplayName,
 				OutError)
 			|| !IsSafeSubject(OutProject.OwnerSubject)
+			|| (OutProject.Visibility != TEXT("private")
+				&& OutProject.Visibility != TEXT("public"))
 			|| !FMath::IsFinite(Revision)
 			|| Revision < 1
 			|| Revision > MaxJsonSafeInteger
@@ -891,6 +897,43 @@ FAkUGCReleaseRegistryClient::StartListProjectVersions(
 		OutError);
 }
 
+FAkUGCEditorHttpRequestPtr
+FAkUGCReleaseRegistryClient::StartSetProjectVisibility(
+	const FString& BaseUrl,
+	const FString& BearerToken,
+	const FGuid& ProjectId,
+	const FString& Visibility,
+	float TimeoutSeconds,
+	FString& OutError)
+{
+	using namespace AkUGCReleaseRegistryClientPrivate;
+	OutError.Reset();
+	if (Visibility != TEXT("private") && Visibility != TEXT("public"))
+	{
+		OutError = TEXT("Project 可见性必须为 private 或 public。");
+		return nullptr;
+	}
+	const TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+	Object->SetStringField(TEXT("visibility"), Visibility);
+	TArray<uint8> Body;
+	if (!SerializeJsonObject(Object, Body, OutError))
+	{
+		return nullptr;
+	}
+	return StartProjectRequest(
+		BaseUrl,
+		BearerToken,
+		ProjectId,
+		EAkUGCEditorHttpMethod::Put,
+		TEXT("/visibility"),
+		MoveTemp(Body),
+		TEXT("application/json"),
+		TEXT(""),
+		false,
+		TimeoutSeconds,
+		OutError);
+}
+
 bool FAkUGCReleaseRegistryClient::ParseResponse(
 	EAkUGCReleaseRegistryOperation Operation,
 	const FAkUGCEditorHttpResult& Transport,
@@ -1268,6 +1311,28 @@ bool FAkUGCReleaseRegistryClient::ParseProjectResponse(
 				OutError))
 		{
 			return Fail(OutError, TEXT("Registry 移除协作者响应字段无效。"));
+		}
+		OutResponse.AccessRole = TEXT("owner");
+		break;
+	case EAkUGCProjectRegistryOperation::SetVisibility:
+		if (!ValidateFields(
+				Root,
+				{TEXT("changed"), TEXT("project")},
+				{},
+				TEXT("Registry set visibility response"),
+				OutError)
+			|| !Root->TryGetBoolField(TEXT("changed"), OutResponse.bChanged)
+			|| !Root->TryGetObjectField(TEXT("project"), ProjectObject)
+			|| !ProjectObject
+			|| !ParseProject(
+				*ProjectObject,
+				ExpectedProjectId,
+				OutResponse.Project,
+				OutError))
+		{
+			return Fail(
+				OutError,
+				TEXT("Registry 设置 Project 可见性响应字段无效。"));
 		}
 		OutResponse.AccessRole = TEXT("owner");
 		break;

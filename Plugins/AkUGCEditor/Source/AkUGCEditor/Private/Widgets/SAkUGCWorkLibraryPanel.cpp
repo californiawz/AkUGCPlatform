@@ -128,6 +128,35 @@ void SAkUGCWorkLibraryPanel::Construct(const FArguments& InArgs, UAkUGCEditorSub
         ]
         + SVerticalBox::Slot().AutoHeight().Padding(0, 2)
         [SNew(SHorizontalBox)
+            + SHorizontalBox::Slot().AutoWidth().Padding(2)
+            [SNew(SButton).Text(FText::FromString(TEXT("设为私人作品")))
+                .IsEnabled_Lambda([this]
+                    {
+                        return !PendingRegistryRequest.IsValid()
+                            && RegistryProjectAccessRole == TEXT("owner")
+                            && RegistryProject.Visibility == TEXT("public")
+                            && !RegistryToken.IsEmpty();
+                    })
+                .OnClicked_Lambda([this]
+                    { return SetRegistryVisibility(TEXT("private")); })]
+            + SHorizontalBox::Slot().AutoWidth().Padding(2)
+            [SNew(SButton).Text(FText::FromString(TEXT("公开作品页")))
+                .IsEnabled_Lambda([this]
+                    {
+                        return !PendingRegistryRequest.IsValid()
+                            && RegistryProjectAccessRole == TEXT("owner")
+                            && RegistryProject.Visibility == TEXT("private")
+                            && !RegistryToken.IsEmpty();
+                    })
+                .OnClicked_Lambda([this]
+                    { return SetRegistryVisibility(TEXT("public")); })]
+            + SHorizontalBox::Slot().FillWidth(1.0f).Padding(6, 2)
+            [SNew(STextBlock)
+                .Text(FText::FromString(TEXT("公开仅允许项目外 Player 读取仍为 published 的最新版本；下载后仍须独立公钥本地验签。")))
+                .AutoWrapText(true)]
+        ]
+        + SVerticalBox::Slot().AutoHeight().Padding(0, 2)
+        [SNew(SHorizontalBox)
             + SHorizontalBox::Slot().FillWidth(1.0f).Padding(2)
             [SNew(SEditableTextBox)
                 .IsEnabled_Lambda([this] { return !PendingRegistryRequest.IsValid(); })
@@ -523,6 +552,49 @@ FReply SAkUGCWorkLibraryPanel::RemoveRegistryMember()
     return FReply::Handled();
 }
 
+FReply SAkUGCWorkLibraryPanel::SetRegistryVisibility(
+    const FString& Visibility)
+{
+    if (PendingRegistryRequest.IsValid()
+        || RegistryProjectAccessRole != TEXT("owner"))
+    {
+        return FReply::Handled();
+    }
+    FString Error;
+    FGuid ProjectId;
+    FString ProjectName;
+    if (!CurrentProjectIdentity(ProjectId, ProjectName, Error)
+        || RegistryProject.ProjectId != ProjectId)
+    {
+        RegistryStatus = Error.IsEmpty()
+            ? TEXT("请先刷新当前云 Project。")
+            : Error;
+        return FReply::Handled();
+    }
+    const FAkUGCEditorHttpRequestPtr Request =
+        FAkUGCReleaseRegistryClient::StartSetProjectVisibility(
+            RegistryBaseUrl,
+            RegistryToken,
+            ProjectId,
+            Visibility,
+            RegistryRequestTimeoutSeconds,
+            Error);
+    RegistryRequestProjectId = ProjectId;
+    RegistryRequestProjectName = ProjectName;
+    RegistryRequestVisibility = Visibility;
+    PendingProjectOperation =
+        EAkUGCProjectRegistryOperation::SetVisibility;
+    bRegistryChainCancelled = false;
+    StartRegistryRequest(
+        EAkUGCRegistryPanelRequest::SetVisibility,
+        Request,
+        Error,
+        Visibility == TEXT("public")
+            ? TEXT("正在公开作品页；只有 published 版本会对项目外 Player 可见。")
+            : TEXT("正在关闭公开作品页；项目外 Player 的元数据与下载入口将被隐藏。"));
+    return FReply::Handled();
+}
+
 FReply SAkUGCWorkLibraryPanel::CancelRegistryRequest()
 {
     if (PendingRegistryRequest.IsValid())
@@ -564,6 +636,7 @@ void SAkUGCWorkLibraryPanel::CompleteRegistryRequest(
     case EAkUGCRegistryPanelRequest::ListVersions:
     case EAkUGCRegistryPanelRequest::SetMember:
     case EAkUGCRegistryPanelRequest::RemoveMember:
+    case EAkUGCRegistryPanelRequest::SetVisibility:
         CompleteProjectRegistryRequest(Result);
         break;
     default:
@@ -888,6 +961,23 @@ void SAkUGCWorkLibraryPanel::CompleteProjectRegistryRequest(
             : TEXT("协作者不存在；正在刷新云 Project。");
         StartRefreshProjectRequest(RegistryStatus);
         return;
+    case EAkUGCRegistryPanelRequest::SetVisibility:
+        if (Response.Project.Visibility != RegistryRequestVisibility)
+        {
+            RegistryStatus =
+                TEXT("Registry 可见性响应与请求目标不一致。");
+            PendingRegistryRequestKind = EAkUGCRegistryPanelRequest::None;
+            return;
+        }
+        RegistryProject = Response.Project;
+        RegistryProjectAccessRole = Response.AccessRole;
+        RegistryStatus = Response.bChanged
+            ? (RegistryProject.Visibility == TEXT("public")
+                ? TEXT("作品页已公开；正在刷新云 Project。")
+                : TEXT("作品页已设为私人；正在刷新云 Project。"))
+            : TEXT("作品可见性未变化；正在刷新云 Project。");
+        StartRefreshProjectRequest(RegistryStatus);
+        return;
     default:
         RegistryStatus = TEXT("Registry 返回了未知 Project 操作结果。");
         PendingRegistryRequestKind = EAkUGCRegistryPanelRequest::None;
@@ -916,12 +1006,13 @@ void SAkUGCWorkLibraryPanel::UpdateRegistryProjectSummary()
     else
     {
         RegistryProjectSummary = FString::Printf(
-            TEXT("云 Project：%s\nID：%s\nOwner：%s；当前权限：%s；修订：%lld"),
+            TEXT("云 Project：%s\nID：%s\nOwner：%s；当前权限：%s；可见性：%s；修订：%lld"),
             *RegistryProject.DisplayName,
             *RegistryProject.ProjectId.ToString(
                 EGuidFormats::DigitsWithHyphensLower),
             *RegistryProject.OwnerSubject,
             *RegistryProjectAccessRole,
+            *RegistryProject.Visibility,
             static_cast<long long>(RegistryProject.Revision));
     }
 

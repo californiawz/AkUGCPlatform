@@ -18,7 +18,8 @@ enum class EAkUGCProjectRegistryOperation : uint8
 	ListMembers,
 	SetMember,
 	RemoveMember,
-	ListVersions
+	ListVersions,
+	SetVisibility
 };
 
 struct FAkUGCReleaseRegistryView
@@ -47,6 +48,7 @@ struct FAkUGCRegistryProjectView
 	FGuid ProjectId;
 	FString DisplayName;
 	FString OwnerSubject;
+	FString Visibility;
 	FString CreatedAt;
 	FString UpdatedAt;
 	int64 Revision = 0;
@@ -153,6 +155,14 @@ public:
 		const FString& BearerToken,
 		const FGuid& ProjectId,
 		int32 Limit,
+		float TimeoutSeconds,
+		FString& OutError);
+
+	static FAkUGCEditorHttpRequestPtr StartSetProjectVisibility(
+		const FString& BaseUrl,
+		const FString& BearerToken,
+		const FGuid& ProjectId,
+		const FString& Visibility,
 		float TimeoutSeconds,
 		FString& OutError);
 

@@ -365,7 +365,6 @@ def main():
         45,
     )
     postgres_started = True
-
     server = None
     server_stream = None
     game_completed = False
@@ -377,6 +376,17 @@ def main():
     redirect_rejected = False
     revoked_product_rejected = False
     try:
+        test_environment = dict(os.environ)
+        test_environment["AKUGC_TEST_DATABASE_URL"] = (
+            f"postgres://postgres@127.0.0.1:{postgres_port}/postgres?sslmode=disable"
+        )
+        run_checked(
+            ["go", "test", "-count=1", "./..."],
+            output / "go-postgres-tests.log",
+            180,
+            root / "Services/ReleaseRegistry",
+            test_environment,
+        )
         port = free_port()
         base = f"http://127.0.0.1:{port}"
         validator_temp = output / "validator-temp"
@@ -424,7 +434,10 @@ def main():
         if status != 201:
             raise RuntimeError(f"Project creation returned {status}: {raw!r}")
         created_project = json.loads(raw)
-        if created_project["project"]["ownerSubject"] != "creator-a":
+        if (
+            created_project["project"]["ownerSubject"] != "creator-a"
+            or created_project["project"]["visibility"] != "private"
+        ):
             raise RuntimeError("Project owner binding mismatch")
         status, _, raw = request(
             base,
@@ -636,6 +649,142 @@ def main():
         if status != 200:
             raise RuntimeError(f"Publish returned {status}")
 
+        work_path = f"/v1/works/{project_id}"
+        status, _, _ = request(
+            base,
+            "GET",
+            work_path,
+            tokens["player"],
+        )
+        if status != 404:
+            raise RuntimeError(f"Private outsider work lookup returned {status}")
+        status, _, _ = request(
+            base,
+            "GET",
+            release_path + "/download",
+            tokens["player"],
+        )
+        if status != 404:
+            raise RuntimeError(f"Private outsider download returned {status}")
+
+        status, _, raw = request(
+            base,
+            "GET",
+            work_path,
+            tokens["viewer"],
+        )
+        private_work = json.loads(raw)["work"] if status == 200 else {}
+        if (
+            private_work.get("visibility") != "private"
+            or private_work.get("latestRelease", {}).get("releaseId") != release_id
+        ):
+            raise RuntimeError(
+                f"Private member work lookup mismatch: {status} {private_work!r}"
+            )
+        status, _, member_download = request(
+            base,
+            "GET",
+            release_path + "/download",
+            tokens["viewer"],
+        )
+        if status != 200 or member_download != artifact:
+            raise RuntimeError(f"Private member download mismatch: {status}")
+
+        status, _, _ = request(
+            base,
+            "PUT",
+            project_path + "/visibility",
+            tokens["player"],
+            json_body({"visibility": "public"}),
+            {"Content-Type": "application/json"},
+        )
+        if status != 404:
+            raise RuntimeError(f"Outsider visibility mutation returned {status}")
+        status, _, _ = request(
+            base,
+            "PUT",
+            project_path + "/visibility",
+            tokens["creator"],
+            b'{"visibility":"public","visibility":"private"}',
+            {"Content-Type": "application/json"},
+        )
+        if status != 400:
+            raise RuntimeError(f"Duplicate visibility request returned {status}")
+        status, _, raw = request(
+            base,
+            "PUT",
+            project_path + "/visibility",
+            tokens["creator"],
+            json_body({"visibility": "public"}),
+            {"Content-Type": "application/json"},
+        )
+        visibility_response = json.loads(raw) if status == 200 else {}
+        if (
+            not visibility_response.get("changed")
+            or visibility_response.get("project", {}).get("visibility") != "public"
+        ):
+            raise RuntimeError(
+                f"Public visibility transition mismatch: {status} {raw!r}"
+            )
+        status, _, raw = request(
+            base,
+            "PUT",
+            project_path + "/visibility",
+            tokens["creator"],
+            json_body({"visibility": "public"}),
+            {"Content-Type": "application/json"},
+        )
+        if status != 200 or json.loads(raw).get("changed"):
+            raise RuntimeError(f"Public visibility retry was not idempotent: {raw!r}")
+
+        status, _, raw = request(
+            base,
+            "GET",
+            work_path,
+            tokens["player"],
+        )
+        public_work = json.loads(raw)["work"] if status == 200 else {}
+        if (
+            public_work.get("visibility") != "public"
+            or public_work.get("latestRelease", {}).get("releaseId") != release_id
+            or "artifact" in public_work.get("latestRelease", {})
+        ):
+            raise RuntimeError(
+                f"Public work lookup mismatch: {status} {public_work!r}"
+            )
+
+        status, _, raw = request(
+            base,
+            "PUT",
+            project_path + "/visibility",
+            tokens["creator"],
+            json_body({"visibility": "private"}),
+            {"Content-Type": "application/json"},
+        )
+        if status != 200 or not json.loads(raw).get("changed"):
+            raise RuntimeError(f"Private visibility transition mismatch: {raw!r}")
+        for hidden_path in (work_path, release_path + "/download"):
+            status, _, _ = request(
+                base,
+                "GET",
+                hidden_path,
+                tokens["player"],
+            )
+            if status != 404:
+                raise RuntimeError(
+                    f"Private visibility did not hide {hidden_path}: {status}"
+                )
+        status, _, raw = request(
+            base,
+            "PUT",
+            project_path + "/visibility",
+            tokens["creator"],
+            json_body({"visibility": "public"}),
+            {"Content-Type": "application/json"},
+        )
+        if status != 200 or not json.loads(raw).get("changed"):
+            raise RuntimeError(f"Public visibility restore mismatch: {raw!r}")
+
         status, headers, downloaded = request(
             base,
             "GET",
@@ -776,6 +925,7 @@ def main():
                     f"-WorkId={release_digits}",
                     f"-WorkLibrary={output / 'player-b-library'}",
                     f"-RegistryBase={base}",
+                    f"-RegistryProjectId={project_id}",
                     f"-RegistryBadTrustedKey={bad_public_key}",
                     f"-WorkTrustedKey={public_key}",
                 ],
@@ -815,6 +965,14 @@ def main():
         )
         if status != 404:
             raise RuntimeError(f"Revoked download returned {status}")
+        status, _, _ = request(
+            base,
+            "GET",
+            work_path,
+            tokens["player"],
+        )
+        if status != 404:
+            raise RuntimeError(f"Revoked work page returned {status}")
         if not options.skip_play:
             run_client_automation(
                 client,
@@ -848,6 +1006,13 @@ def main():
             "project_member_listing_verified": True,
             "project_version_listing_bounded": True,
             "outsider_project_hidden": True,
+            "project_default_private": True,
+            "private_member_work_access": True,
+            "private_outsider_hidden": True,
+            "visibility_owner_only": True,
+            "visibility_strict_json": True,
+            "visibility_idempotent": True,
+            "public_work_page_verified": True,
             "removed_editor_upload_rejected": True,
             "unauthorized_upload_rejected": True,
             "tampered_upload_rejected": True,
@@ -855,7 +1020,7 @@ def main():
             "unpublished_download_rejected": True,
             "revoked_download_rejected": True,
             "player_local_validation": True,
-            "player_direct_registry_download": game_completed,
+            "player_project_work_page_download": game_completed,
             "player_unpublished_product_rejected": unpublished_product_rejected,
             "player_wrong_token_rejected": wrong_token_rejected,
             "player_wrong_key_rejected": wrong_key_rejected,

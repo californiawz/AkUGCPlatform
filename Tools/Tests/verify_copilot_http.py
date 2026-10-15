@@ -1051,6 +1051,7 @@ def _run_verification(args, root, output, user_dir):
                 "projectId": registry_project["project_id"],
                 "displayName": registry_project["display_name"],
                 "ownerSubject": "creator-a",
+                "visibility": registry_project["visibility"],
                 "revision": revision,
                 "createdAt": "2026-10-15T05:00:00Z",
                 "updatedAt": f"2026-10-15T05:0{revision - 1}:00Z",
@@ -1121,6 +1122,7 @@ def _run_verification(args, root, output, user_dir):
                     {
                         "project_id": project_id,
                         "display_name": display_name,
+                        "visibility": "private",
                         "revision": 1,
                     }
                 )
@@ -1163,6 +1165,36 @@ def _run_verification(args, root, output, user_dir):
                             )
                         )
                     self.send_json(200, {"versions": versions})
+                    return
+                if (
+                    self.command == "PUT"
+                    and self.path == project_path + "/visibility"
+                ):
+                    try:
+                        value = json.loads(body.decode("utf-8"))
+                        visibility = value["visibility"]
+                    except (
+                        KeyError,
+                        TypeError,
+                        UnicodeDecodeError,
+                        json.JSONDecodeError,
+                    ):
+                        self.send_json(400, {"error": {"code": "invalid_input"}})
+                        return
+                    if (
+                        event["content_type"] != "application/json"
+                        or visibility not in ("private", "public")
+                    ):
+                        self.send_json(400, {"error": {"code": "invalid_input"}})
+                        return
+                    changed = registry_project["visibility"] != visibility
+                    registry_project["visibility"] = visibility
+                    if changed:
+                        registry_project["revision"] += 1
+                    self.send_json(
+                        200,
+                        {"changed": changed, "project": self.project()},
+                    )
                     return
                 member_prefix = project_path + "/members/"
                 if self.path.startswith(member_prefix):
@@ -1441,11 +1473,15 @@ def _run_verification(args, root, output, user_dir):
         ("GET", registry_project_path + "/members"),
         ("GET", registry_project_path + "/versions?limit=100"),
         ("POST", registry_release_path + "/publish"),
+        ("PUT", registry_project_path + "/visibility"),
+        ("GET", registry_project_path),
+        ("GET", registry_project_path + "/members"),
+        ("GET", registry_project_path + "/versions?limit=100"),
     ]
     registry_protocol_passed = (
         not args.all_tests
         or (
-            "[AkUGCReleaseRegistryHTTP] Passed Operations=16 LoopbackOnly=1" in text
+            "[AkUGCReleaseRegistryHTTP] Passed Operations=20 LoopbackOnly=1 Visibility=public" in text
             and [
                 (event["method"], event["path"])
                 for event in registry_events

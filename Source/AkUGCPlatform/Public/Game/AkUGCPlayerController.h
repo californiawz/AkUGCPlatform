@@ -56,6 +56,10 @@ public:
         const FString& BearerToken, const FString& ReleaseId,
         const FString& IndependentlyTrustedPublicKey);
     UFUNCTION(Exec)
+    void FetchRegistryProjectWork(const FString& RegistryBaseUrl,
+        const FString& BearerToken, const FString& ProjectId,
+        const FString& IndependentlyTrustedPublicKey);
+    UFUNCTION(Exec)
     void CancelRegistryWork();
     UFUNCTION(Exec)
     void ExportWork(const FString& ReleaseId, const FString& Destination);

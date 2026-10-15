@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -87,6 +88,11 @@ func TestPostgresImmutableLifecycleAndConcurrentRetry(t *testing.T) {
 	})
 	if err != nil || !changed || published.Status != StatusPublished {
 		t.Fatalf("publish failed: changed=%v release=%+v err=%v", changed, published, err)
+	}
+	latest, err := store.GetLatestPublishedRelease(context.Background(), metadata.ProjectID)
+	if err != nil || latest.ReleaseID != metadata.ReleaseID ||
+		!bytes.Equal(latest.Artifact, artifact) {
+		t.Fatalf("latest published release mismatch: release=%+v err=%v", latest, err)
 	}
 
 	_, err = pool.Exec(
@@ -224,6 +230,10 @@ func TestPostgresProjectMembershipAndVersionPaging(t *testing.T) {
 	if created.Load() != 1 {
 		t.Fatalf("project created count = %d", created.Load())
 	}
+	storedProject, err := store.GetProject(context.Background(), creation.ProjectID)
+	if err != nil || storedProject.Visibility != ProjectVisibilityPrivate {
+		t.Fatalf("new PostgreSQL project visibility: project=%+v err=%v", storedProject, err)
+	}
 
 	member, project, changed, err := store.SetProjectMember(
 		context.Background(),
@@ -277,6 +287,55 @@ func TestPostgresProjectMembershipAndVersionPaging(t *testing.T) {
 	if err != nil || !changed || project.Revision != 3 {
 		t.Fatalf("remove editor failed: project=%+v changed=%v err=%v", project, changed, err)
 	}
+	var visibilityChanges atomic.Int32
+	failures = make(chan error, 12)
+	for index := 0; index < 12; index++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			visible, wasChanged, err := store.SetProjectVisibility(
+				context.Background(),
+				ProjectVisibilityChange{
+					ProjectID:  creation.ProjectID,
+					Actor:      creation.OwnerSubject,
+					Visibility: ProjectVisibilityPublic,
+					ChangedAt:  at.Add(4 * time.Minute),
+				},
+			)
+			if err != nil {
+				failures <- err
+				return
+			}
+			if visible.Visibility != ProjectVisibilityPublic {
+				failures <- fmt.Errorf("visibility mismatch")
+			}
+			if wasChanged {
+				visibilityChanges.Add(1)
+			}
+		}()
+	}
+	wait.Wait()
+	close(failures)
+	for err := range failures {
+		t.Errorf("concurrent visibility change: %v", err)
+	}
+	if visibilityChanges.Load() != 1 {
+		t.Fatalf("visibility changed count = %d", visibilityChanges.Load())
+	}
+	project, err = store.GetProject(context.Background(), creation.ProjectID)
+	if err != nil || project.Revision != 4 ||
+		project.Visibility != ProjectVisibilityPublic {
+		t.Fatalf("stored visibility mismatch: project=%+v err=%v", project, err)
+	}
+	var visibilityAuditCount int
+	if err := pool.QueryRow(
+		context.Background(),
+		`SELECT count(*) FROM project_visibility_events
+		 WHERE project_id = $1::uuid`,
+		creation.ProjectID,
+	).Scan(&visibilityAuditCount); err != nil || visibilityAuditCount != 1 {
+		t.Fatalf("visibility audit count=%d err=%v", visibilityAuditCount, err)
+	}
 	second, _, _ := signedArtifact(t, "e2111111-2222-3333-4444-555555555555")
 	secondMetadata, _ := InspectAndVerifyEnvelope(second)
 	if _, _, err := store.Submit(context.Background(), Submission{
@@ -305,6 +364,14 @@ func TestPostgresProjectMembershipAndVersionPaging(t *testing.T) {
 	); err == nil {
 		t.Fatal("database allowed immutable submitter update")
 	}
+	if _, err := pool.Exec(
+		context.Background(),
+		`UPDATE projects SET visibility = 'unlisted'
+		 WHERE project_id = $1::uuid`,
+		creation.ProjectID,
+	); err == nil {
+		t.Fatal("database allowed invalid project visibility")
+	}
 }
 
 func TestPostgresMigrationBackfillsLegacyProjectOwnership(t *testing.T) {
@@ -322,18 +389,21 @@ func TestPostgresMigrationBackfillsLegacyProjectOwnership(t *testing.T) {
 	}
 	var owner string
 	var submitter string
+	var visibility ProjectVisibility
 	if err := pool.QueryRow(
 		context.Background(),
-		`SELECT projects.owner_subject, releases.submitted_by_subject
+		`SELECT projects.owner_subject, releases.submitted_by_subject,
+		        projects.visibility
 		 FROM projects
 		 JOIN releases USING (project_id)
 		 WHERE releases.release_id = $1::uuid`,
 		metadata.ReleaseID,
-	).Scan(&owner, &submitter); err != nil {
+	).Scan(&owner, &submitter, &visibility); err != nil {
 		t.Fatal(err)
 	}
-	if owner != "legacy-owner" || submitter != "legacy-owner" {
-		t.Fatalf("legacy ownership backfill mismatch: owner=%q submitter=%q", owner, submitter)
+	if owner != "legacy-owner" || submitter != "legacy-owner" ||
+		visibility != ProjectVisibilityPrivate {
+		t.Fatalf("legacy backfill mismatch: owner=%q submitter=%q visibility=%q", owner, submitter, visibility)
 	}
 }
 

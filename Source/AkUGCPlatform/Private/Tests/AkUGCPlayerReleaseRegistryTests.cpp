@@ -21,6 +21,7 @@ namespace AkUGCPlayerRegistryTest
 		FAkUGCLogicPackKeyPair KeyPair;
 		TArray<uint8> Artifact;
 		FString Url;
+		FString WorkUrl;
 	};
 
 	bool BuildFixture(FFixture& Out, FString& OutError)
@@ -75,6 +76,10 @@ namespace AkUGCPlayerRegistryTest
 			+ Out.Pack.Manifest.ReleaseId.ToString(
 				EGuidFormats::DigitsWithHyphensLower)
 			+ TEXT("/download");
+		Out.WorkUrl =
+			TEXT("http://127.0.0.1:18088/v1/works/")
+			+ Out.Pack.Manifest.ProjectId.ToString(
+				EGuidFormats::DigitsWithHyphensLower);
 		return true;
 	}
 
@@ -97,6 +102,70 @@ namespace AkUGCPlayerRegistryTest
 					*FAkUGCLogicPackHasher::Sha256Hex(Artifact))
 			},
 			{TEXT("X-AkUGC-Content-Hash"), ContentHash}
+		};
+		return Value;
+	}
+
+	FString WorkJson(
+		const FFixture& Fixture,
+		const TCHAR* Visibility = TEXT("public"),
+		const TCHAR* Status = TEXT("published"))
+	{
+		return FString::Printf(
+			TEXT("{\"work\":{")
+			TEXT("\"projectId\":\"%s\",")
+			TEXT("\"displayName\":\"Player Registry 作品页\",")
+			TEXT("\"visibility\":\"%s\",")
+			TEXT("\"revision\":2,")
+			TEXT("\"updatedAt\":\"2026-10-15T06:02:00Z\",")
+			TEXT("\"latestRelease\":{")
+			TEXT("\"releaseId\":\"%s\",")
+			TEXT("\"projectId\":\"%s\",")
+			TEXT("\"schemaVersion\":%d,")
+			TEXT("\"ownerSubject\":\"creator-a\",")
+			TEXT("\"submittedBySubject\":\"creator-a\",")
+			TEXT("\"publisherPublicKey\":\"%s\",")
+			TEXT("\"contentHash\":\"%s\",")
+			TEXT("\"artifactSha256\":\"%s\",")
+			TEXT("\"artifactSize\":%d,")
+			TEXT("\"status\":\"%s\",")
+			TEXT("\"revision\":3,")
+			TEXT("\"submittedAt\":\"2026-10-15T06:00:00Z\",")
+			TEXT("\"reviewedAt\":\"2026-10-15T06:01:00Z\",")
+			TEXT("\"publishedAt\":\"2026-10-15T06:02:00Z\",")
+			TEXT("\"updatedAt\":\"2026-10-15T06:02:00Z\"")
+			TEXT("}}}"),
+			*Fixture.Pack.Manifest.ProjectId.ToString(
+				EGuidFormats::DigitsWithHyphensLower),
+			Visibility,
+			*Fixture.Pack.Manifest.ReleaseId.ToString(
+				EGuidFormats::DigitsWithHyphensLower),
+			*Fixture.Pack.Manifest.ProjectId.ToString(
+				EGuidFormats::DigitsWithHyphensLower),
+			Fixture.Pack.Manifest.SchemaVersion,
+			*Fixture.KeyPair.PublicKey,
+			*Fixture.Pack.Manifest.ContentHash,
+			*FAkUGCLogicPackHasher::Sha256Hex(Fixture.Artifact),
+			Fixture.Artifact.Num(),
+			Status);
+	}
+
+	FAkUGCHttpResult WorkResult(
+		const FFixture& Fixture,
+		const FString& Json)
+	{
+		FAkUGCHttpResult Value;
+		Value.StatusCode = 200;
+		Value.EffectiveUrl = Fixture.WorkUrl;
+		FTCHARToUTF8 Bytes(*Json);
+		Value.Body.Append(
+			reinterpret_cast<const uint8*>(Bytes.Get()),
+			Bytes.Length());
+		Value.Headers = {
+			{
+				TEXT("Content-Type"),
+				TEXT("application/json; charset=utf-8")
+			}
 		};
 		return Value;
 	}
@@ -202,6 +271,128 @@ bool FAkUGCPlayerRegistryConfigurationTest::RunTest(
 			TEXT("server-says-trusted"),
 			Normalized,
 			Error));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAkUGCPlayerRegistryWorkPageTest,
+	"AkUGC.Runtime.ReleaseRegistry.WorkPageBoundaries",
+	EAutomationTestFlags::EditorContext
+		| EAutomationTestFlags::ClientContext
+		| EAutomationTestFlags::EngineFilter)
+
+bool FAkUGCPlayerRegistryWorkPageTest::RunTest(
+	const FString& Parameters)
+{
+	using namespace AkUGCPlayerRegistryTest;
+	FFixture Fixture;
+	FString Error;
+	if (!BuildFixture(Fixture, Error))
+	{
+		AddError(Error);
+		return false;
+	}
+	FAkUGCPlayerRegistryWorkPage Work;
+	FString Failure;
+	TestTrue(
+		TEXT("Published public work page resolves a Release ID"),
+		FAkUGCPlayerReleaseRegistryClient::ParseWorkPage(
+			WorkResult(Fixture, WorkJson(Fixture)),
+			Fixture.WorkUrl,
+			Fixture.Pack.Manifest.ProjectId,
+			Work,
+			Failure,
+			Error));
+	TestEqual(
+		TEXT("Work page remains bound to requested Project"),
+		Work.ProjectId,
+		Fixture.Pack.Manifest.ProjectId);
+	TestEqual(
+		TEXT("Work page resolves latest published Release"),
+		Work.LatestReleaseId,
+		Fixture.Pack.Manifest.ReleaseId);
+	TestEqual(
+		TEXT("Visibility is preserved for display"),
+		Work.Visibility,
+		FString(TEXT("public")));
+
+	TestFalse(
+		TEXT("Non-published work metadata is rejected"),
+		FAkUGCPlayerReleaseRegistryClient::ParseWorkPage(
+			WorkResult(
+				Fixture,
+				WorkJson(Fixture, TEXT("public"), TEXT("revoked"))),
+			Fixture.WorkUrl,
+			Fixture.Pack.Manifest.ProjectId,
+			Work,
+			Failure,
+			Error));
+	TestEqual(
+		TEXT("Invalid work state is a protocol failure"),
+		Failure,
+		FString(TEXT("protocol")));
+
+	FString WrongProject = WorkJson(Fixture);
+	WrongProject.ReplaceInline(
+		*Fixture.Pack.Manifest.ProjectId.ToString(
+			EGuidFormats::DigitsWithHyphensLower),
+		TEXT("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
+		ESearchCase::CaseSensitive);
+	TestFalse(
+		TEXT("Work page for another Project is rejected"),
+		FAkUGCPlayerReleaseRegistryClient::ParseWorkPage(
+			WorkResult(Fixture, WrongProject),
+			Fixture.WorkUrl,
+			Fixture.Pack.Manifest.ProjectId,
+			Work,
+			Failure,
+			Error));
+
+	FString Unknown = WorkJson(Fixture);
+	Unknown = TEXT("{\"serverTrusted\":true,") + Unknown.Mid(1);
+	TestFalse(
+		TEXT("Unknown work response fields are rejected"),
+		FAkUGCPlayerReleaseRegistryClient::ParseWorkPage(
+			WorkResult(Fixture, Unknown),
+			Fixture.WorkUrl,
+			Fixture.Pack.Manifest.ProjectId,
+			Work,
+			Failure,
+			Error));
+
+	FAkUGCHttpResult DuplicateContentType =
+		WorkResult(Fixture, WorkJson(Fixture));
+	DuplicateContentType.Headers.Add(
+		{
+			TEXT("content-type"),
+			TEXT("application/json; charset=utf-8")
+		});
+	TestFalse(
+		TEXT("Duplicate work Content-Type is rejected"),
+		FAkUGCPlayerReleaseRegistryClient::ParseWorkPage(
+			DuplicateContentType,
+			Fixture.WorkUrl,
+			Fixture.Pack.Manifest.ProjectId,
+			Work,
+			Failure,
+			Error));
+
+	FAkUGCHttpResult NotFound;
+	NotFound.StatusCode = 404;
+	NotFound.EffectiveUrl = Fixture.WorkUrl;
+	TestFalse(
+		TEXT("Hidden work page remains unavailable"),
+		FAkUGCPlayerReleaseRegistryClient::ParseWorkPage(
+			NotFound,
+			Fixture.WorkUrl,
+			Fixture.Pack.Manifest.ProjectId,
+			Work,
+			Failure,
+			Error));
+	TestEqual(
+		TEXT("Hidden work uses the not-available verdict"),
+		Failure,
+		FString(TEXT("not_available")));
 	return true;
 }
 

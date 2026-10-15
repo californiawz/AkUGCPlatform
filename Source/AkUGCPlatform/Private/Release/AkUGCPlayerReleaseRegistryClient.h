@@ -4,12 +4,38 @@
 #include "Network/AkUGCHttpTransport.h"
 #include "Pack/AkUGCWorkLibrary.h"
 
+struct FAkUGCPlayerRegistryWorkPage
+{
+	FGuid ProjectId;
+	FString DisplayName;
+	FString Visibility;
+	int64 Revision = 0;
+	FString UpdatedAt;
+	FGuid LatestReleaseId;
+};
+
 class FAkUGCPlayerReleaseRegistryClient
 {
 public:
 	static constexpr int32 MaxArtifactBytes =
 		static_cast<int32>(FAkUGCWorkLibrary::MaxFileBytes);
 	static constexpr int32 MaxResponseHeaderBytes = 64 * 1024;
+
+	static FAkUGCHttpRequestPtr StartGetWorkPage(
+		const FString& BaseUrl,
+		const FString& BearerToken,
+		const FGuid& ProjectId,
+		float TimeoutSeconds,
+		FString& OutExpectedUrl,
+		FString& OutError);
+
+	static bool ParseWorkPage(
+		const FAkUGCHttpResult& Transport,
+		const FString& ExpectedUrl,
+		const FGuid& ExpectedProjectId,
+		FAkUGCPlayerRegistryWorkPage& OutWork,
+		FString& OutFailureCode,
+		FString& OutError);
 
 	static FAkUGCHttpRequestPtr StartDownload(
 		const FString& BaseUrl,

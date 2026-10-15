@@ -1,7 +1,7 @@
 # Release Registry v1 契约
 
-> 状态：P19 最小分发闭环与 P20.2 Creator Studio 云项目接入；2026-10-15。
-> 范围：云项目、协作者、不可变 `.akugc` 版本的提交、审核、发布、撤回和下载。
+> 状态：P19 最小分发闭环与 P20.3 私人/公开作品页；2026-10-15。
+> 范围：云项目、协作者、发布可见性、作品页，以及不可变 `.akugc` 版本的提交、审核、发布、撤回和下载。
 
 ## 信任边界
 
@@ -11,6 +11,7 @@
 4. 每次新提交还必须调用受信任的 `AkUGCCore` 深度验证器，重新检查 ContentHash、Document、Logic IR、能力白名单和签名。验证器不可用时拒绝提交，不降级为只验外层签名。
 5. Registry 返回 `published` 包不代表客户端可以跳过验证。Creator、Player 和 DS 下载后仍以本地受信公钥调用现有 `FAkUGCLogicPackLoader::LoadVerified`。
 6. 本地模拟使用静态 Bearer Token 摘要配置；配置只保存 SHA-256 token 摘要，服务强制只监听 loopback。该认证器不是公网账号系统，公网部署前必须替换为正式身份提供方和 TLS 终结。
+7. 作品页中的 ReleaseId、ContentHash、摘要和 `publisherPublicKey` 都只是 Registry 元数据；Player 只能使用调用方独立提供的 Ed25519 公钥建立信任。
 
 ## Release 不变量
 
@@ -50,7 +51,7 @@
   - JSON：`{"reason":"..."}`。
 - `GET /v1/releases/{releaseId}/download`
   - Bearer：Player。
-  - 只有 `published` 返回制品；未发布、已拒绝和已撤回统一按 `404` 隐藏。
+  - 只有 `published` 且 Project 为 `public`，或 Player 同时是该私人 Project 的成员时返回制品；其他情况统一按 `404` 隐藏。
   - 响应携带 Artifact SHA-256 ETag 和 ContentHash，但二者都不能替代 Player 本地验签。
 
 ## Creator Studio 客户端
@@ -62,6 +63,8 @@
 - submit/get/publish 以及 Project/Member/Version 响应最多 64 KiB，必须是规范 UTF-8、无重复和未知字段的契约 JSON；返回的 ProjectId、ReleaseId、公钥及 ContentHash 必须与当前 Document 和本地签名记录一致。
 - P20.1 响应新增必需的 `submittedBySubject`；Creator 严格解析器同步校验该字段，避免真实 Registry 与本地协议夹具漂移。
 - P20.2 面板按 Project → Members → Versions 串行刷新，版本请求固定 `limit=100`；若返回 `nextCursor`，界面必须说明只展示最新 100 条，不能暗示历史完整。
+- P20.3 Project 响应新增必需的 `visibility`；只有 Owner 可从面板切换 `private|public`。相同目标幂等成功且不增加 Revision，实际变化完成后刷新 Project、Members 和 Versions。
+- 面板必须明确说明：公开只影响项目外 Player 的作品页与下载权限，只暴露仍为 `published` 的版本；切换可见性不修改、不重新签名本地制品，也不把 Registry 公钥提升为信任根。
 - 只有当前 Project 的 Owner 可以从面板设置或移除成员；Subject 必须匹配 `[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}`，可设置角色只有 Editor/Viewer，不能通过客户端请求修改 Owner。
 - Registry 元数据只用于显示状态和启用授权操作。客户端不能把响应里的 `publisherPublicKey` 当作信任根，也不能修改、重新签名或覆盖本地制品；任何 Registry 请求链都不得推进 Document Revision 或改变 Document Hash。
 - Reviewer 操作不进入 Creator 面板；Creator 只有在刷新得到 `approved` 后才能发起 publish。撤回和公钥轮换链登记留在后续切片。
@@ -69,13 +72,14 @@
 
 ## Packaged Player 客户端
 
-- Player 只对显式 ReleaseId 调用 `GET /v1/releases/{releaseId}/download`。P19 静态 token 模式仍只接受 `http://127.0.0.1` 或 `http://localhost`；地址、token 和独立信任公钥由当前运行入口注入，不写入配置或作品库元数据。
+- Player 可保留显式 ReleaseId 下载入口，也可对显式 ProjectId 调用 `GET /v1/works/{projectId}`，严格解析作品页中的最新 published ReleaseId 后再下载。P19 静态 token 模式仍只接受 `http://127.0.0.1` 或 `http://localhost`；地址、token 和独立信任公钥由当前运行入口注入，不写入配置或作品库元数据。
+- 作品页响应上限 64 KiB，必须是规范 UTF-8、唯一 `application/json; charset=utf-8`、无重复/未知字段的契约 JSON；ProjectId 必须与请求一致，最新 Release 必须属于同一 Project 且状态精确为 `published`。
 - Runtime 与 Creator 共用有界异步 libcurl 传输生命周期：禁止代理、重定向、netrc 和凭据跨地址转发；响应 Header 最多 64 KiB，制品最多 16 MiB。`Content-Length` 在 Header 到达时已超限会立即中止，响应压缩和 chunked artifact 均不接受。
 - 下载成功必须精确包含 `application/vnd.akugc+json`、`Content-Length`、Artifact SHA-256 `ETag` 和 `X-AkUGC-Content-Hash`。客户端核对最终 URL、精确字节长度、SHA-256 和重复 Header；这些字段只绑定传输结果，不能授予作品信任。
 - 信任根只能来自调用方独立提供的 64 位 Ed25519 公钥。Player 下载接口不读取 Registry 元数据里的 `publisherPublicKey`，也不接受包内公钥自证；错误公钥即使配合合法 HTTP 200、ContentHash 和 ETag 仍必须本地拒绝。
 - 入库前对原始响应字节执行规范 UTF-8、`LoadVerified`、请求 ReleaseId 和已签名 ContentHash 绑定检查；全部通过后才原子创建本地 `.ugcwork`。已存在同 ID 的不同内容继续按冲突拒绝，不会覆盖。
 - 选择作品时 `PrepareLibraryWork` 会从本地记录再次验签；只有准备成功后 `StartSolo` 才能建立 Session。401/403/404、重定向、超限、摘要错误、篡改制品和错误信任根都不得写入目标 Release 或启动 Session。
-- 当前产品切片提供 `FetchRegistryWork` / `CancelRegistryWork` 运行时入口；自动化通过仅对 Player 子进程可见的环境变量把本机 Alpha 凭据注入该入口，避免凭据出现在 Unreal 命令行元数据。玩家账号登录、凭据安全存储与远端 TLS 地址属于正式 IdP 切片，不能沿用静态 token 方案上线公网。
+- 当前产品切片提供 `FetchRegistryWork`、`FetchRegistryProjectWork` 与 `CancelRegistryWork` 运行时入口；Project 流程只从作品页取 ReleaseId，响应公钥不会进入本地验签参数。自动化通过仅对 Player 子进程可见的环境变量注入本机 Alpha token，避免凭据出现在 Unreal 命令行元数据。玩家账号登录、凭据安全存储与远端 TLS 地址属于正式 IdP 切片，不能沿用静态 token 方案上线公网。
 
 ## P20.1 云项目、版本与协作者
 
@@ -118,6 +122,33 @@
 - Release 幂等命名空间继续绑定项目 Owner，使 Owner 与 Editor 对同一稳定键和制品只产生一个版本；Editor 不能通过成为首次提交者获得发布或撤回权限。
 - Project 创建使用 Owner + Idempotency-Key 事务级 advisory lock；成员变化和 Project Revision 在单一事务内更新，并追加不可变成员审计事件。
 
+## P20.3 私人/公开作品页与发布可见性
+
+### 可见性不变量
+
+- Project 的 `visibility` 只能是 `private|public`。新建 Project 和迁移中的历史 Project 一律默认 `private`，不得因旧版曾允许凭 ReleaseId 下载而自动公开。
+- Release 状态与 Project 可见性相互独立：`published` 表示版本可被分发，`public` 表示项目外、已认证且具有 `player` 平台角色的主体可读取作品页和下载。
+- 私人 Project 的 Owner、Editor、Viewer 只有同时具有 `player` 平台角色时才能通过 Player 入口读取作品页或下载；项目外 Player 统一得到 `404`。项目管理接口的成员边界不变。
+- “公开”不是匿名互联网访问。静态认证阶段所有作品页和下载仍要求有效 Player Bearer Token。
+
+### 接口
+
+- `PUT /v1/projects/{projectId}/visibility`
+  - 仅 Owner；`Content-Type: application/json`。
+  - Body 精确为 `{"visibility":"private|public"}`，重复、大小写变体和未知字段均拒绝。
+  - 相同目标重试返回 `changed:false`，不增加 Revision、不追加审计；实际变化在 Project 行锁内更新 Visibility、Revision 和 UpdatedAt，并追加不可变可见性审计事件。
+- `GET /v1/works/{projectId}`
+  - Bearer：Player；不接受查询参数。
+  - 对公开 Project，任意已认证 Player 可读；对私人 Project，仅项目成员 Player 可读。
+  - 仅在至少一个 Release 当前仍为 `published` 时返回。`latestRelease` 按 SubmittedAt、ReleaseId 稳定倒序选择，不包含制品字节；最新版本撤回后，前一个仍为 published 的版本会成为当前作品页版本，全部撤回则返回 `404`。
+  - 返回 `projectId`、DisplayName、Visibility、Project Revision、UpdatedAt 和完整 latest Release 元数据；不返回成员列表或 token。
+
+### 下载与并发
+
+- Player 对 Release 元数据读取和下载都必须同时满足 published 状态以及“公开 Project 或当前项目成员”条件。未发布、已撤回、私人项目外访问都用同一 `404`，避免暴露状态差异。
+- PostgreSQL 可见性变化对 Project 行持有排他锁；并发相同目标只有一个请求增加 Revision 和产生审计。完成变化后的新请求按新 Visibility 判定，重叠读取允许在线性化点看到变化前或变化后的完整状态，不返回部分更新。
+- 可见性切换不改变 Release、Artifact、签名、ContentHash 或发布公钥，不创建新版本，也不替代撤回操作。
+
 ## 并发判定
 
 - 提交事务先按 `Owner + Idempotency-Key` 获取事务级 advisory lock，再检查幂等记录、插入或比对 Release，最后写入幂等绑定。
@@ -129,6 +160,6 @@
 
 - P19 v1 将小于 16 MiB 的制品保存在 PostgreSQL `bytea`，便于先证明事务与不可变语义；对象存储拆分在 Registry 契约稳定后进行，迁移时 ArtifactSHA256 和不可变语义不得改变。
 - Publisher 公钥当前由本地认证配置绑定；P18.1 的双签名轮换链登记 API 是后续 P19 切片，不能通过修改现有 Release 的公钥来模拟轮换。
-- P19.2 已接入 Creator Release 操作，P19.3 已接入 Packaged Player，P20.1 完成 Registry 项目权限基础，P20.2 已接入 Creator Studio 项目登记、成员管理和版本历史。
-- Reviewer UI、撤回 UI、私人/公开可见性、正式 IdP、构建任务、DS 固定版本和资产包上传不属于本切片。
+- P19.2 已接入 Creator Release 操作，P19.3 已接入 Packaged Player，P20.1 完成 Registry 项目权限基础，P20.2 已接入 Creator Studio 项目管理，P20.3 完成私人/公开作品页和 Player 按 Project 获取。
+- Reviewer UI、撤回 UI、公开作品发现列表/搜索、正式 IdP、构建任务、DS 固定版本和资产包上传不属于本切片。
 - 四台真实物理设备验收按当前决策延期；本阶段使用本机隔离 Owner、Editor、Viewer、Reviewer、Player 和 PostgreSQL 进程验证。

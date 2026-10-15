@@ -75,6 +75,59 @@ func TestHTTPLifecycleAndPublishedOnlyDownload(t *testing.T) {
 	if published.Code != http.StatusOK {
 		t.Fatalf("publish status = %d body=%s", published.Code, published.Body.String())
 	}
+	privateDownload := performRequest(handler, http.MethodGet, releasePath+"/download", nil, "player-token", nil)
+	if privateDownload.Code != http.StatusNotFound {
+		t.Fatalf("private download status = %d body=%s", privateDownload.Code, privateDownload.Body.String())
+	}
+	workPath := "/v1/works/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	privateWork := performRequest(handler, http.MethodGet, workPath, nil, "player-token", nil)
+	if privateWork.Code != http.StatusNotFound {
+		t.Fatalf("private work status = %d body=%s", privateWork.Code, privateWork.Body.String())
+	}
+	outsiderVisibility := performRequest(
+		handler,
+		http.MethodPut,
+		"/v1/projects/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/visibility",
+		[]byte(`{"visibility":"public"}`),
+		"player-token",
+		map[string]string{"Content-Type": "application/json"},
+	)
+	if outsiderVisibility.Code != http.StatusNotFound {
+		t.Fatalf("outsider visibility status = %d body=%s", outsiderVisibility.Code, outsiderVisibility.Body.String())
+	}
+	visibility := performRequest(
+		handler,
+		http.MethodPut,
+		"/v1/projects/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/visibility",
+		[]byte(`{"visibility":"public"}`),
+		"creator-token",
+		map[string]string{"Content-Type": "application/json"},
+	)
+	if visibility.Code != http.StatusOK {
+		t.Fatalf("public visibility status = %d body=%s", visibility.Code, visibility.Body.String())
+	}
+	var visibilityResponse struct {
+		Changed bool    `json:"changed"`
+		Project Project `json:"project"`
+	}
+	decodeResponse(t, visibility, &visibilityResponse)
+	if !visibilityResponse.Changed ||
+		visibilityResponse.Project.Visibility != ProjectVisibilityPublic {
+		t.Fatalf("public visibility response = %+v", visibilityResponse)
+	}
+	workResponse := performRequest(handler, http.MethodGet, workPath, nil, "player-token", nil)
+	if workResponse.Code != http.StatusOK {
+		t.Fatalf("public work status = %d body=%s", workResponse.Code, workResponse.Body.String())
+	}
+	var work struct {
+		Work WorkPage `json:"work"`
+	}
+	decodeResponse(t, workResponse, &work)
+	if work.Work.ProjectID != "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" ||
+		work.Work.LatestRelease.ReleaseID != "71111111-2222-3333-4444-555555555555" ||
+		work.Work.LatestRelease.Artifact != nil {
+		t.Fatalf("public work response = %+v", work.Work)
+	}
 	downloaded := performRequest(handler, http.MethodGet, releasePath+"/download", nil, "player-token", nil)
 	if downloaded.Code != http.StatusOK || !bytes.Equal(downloaded.Body.Bytes(), artifact) {
 		t.Fatalf("download failed: status=%d size=%d", downloaded.Code, downloaded.Body.Len())
@@ -97,6 +150,10 @@ func TestHTTPLifecycleAndPublishedOnlyDownload(t *testing.T) {
 	afterRevoke := performRequest(handler, http.MethodGet, releasePath+"/download", nil, "player-token", nil)
 	if afterRevoke.Code != http.StatusNotFound {
 		t.Fatalf("revoked download status = %d", afterRevoke.Code)
+	}
+	afterRevokeWork := performRequest(handler, http.MethodGet, workPath, nil, "player-token", nil)
+	if afterRevokeWork.Code != http.StatusNotFound {
+		t.Fatalf("revoked work status = %d", afterRevokeWork.Code)
 	}
 }
 
@@ -132,6 +189,17 @@ func TestHTTPRejectsDuplicateControlFields(t *testing.T) {
 	)
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("case-variant decision status = %d body=%s", response.Code, response.Body.String())
+	}
+	response = performRequest(
+		handler,
+		http.MethodPut,
+		"/v1/projects/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/visibility",
+		[]byte(`{"visibility":"public","visibility":"private"}`),
+		"creator-token",
+		map[string]string{"Content-Type": "application/json"},
+	)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("duplicate visibility status = %d body=%s", response.Code, response.Body.String())
 	}
 }
 

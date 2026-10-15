@@ -20,7 +20,8 @@ enum class EAkUGCRegistryPanelRequest : uint8
     ListMembers,
     ListVersions,
     SetMember,
-    RemoveMember
+    RemoveMember,
+    SetVisibility
 };
 
 class SAkUGCWorkLibraryPanel final : public SCompoundWidget
@@ -51,6 +52,7 @@ private:
     FReply RefreshRegistryProject();
     FReply SetRegistryMember();
     FReply RemoveRegistryMember();
+    FReply SetRegistryVisibility(const FString& Visibility);
     FReply CancelRegistryRequest();
     FReply Import();
     FReply BackupIdentity();
@@ -107,6 +109,7 @@ private:
     FString RegistryRequestProjectName;
     FString RegistryRequestMemberSubject;
     FString RegistryRequestMemberRole;
+    FString RegistryRequestVisibility;
     FAkUGCRegistryProjectView RegistryProject;
     FString RegistryProjectAccessRole;
     TArray<FAkUGCRegistryMemberView> RegistryMembers;

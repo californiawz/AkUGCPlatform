@@ -27,12 +27,21 @@ type projectMemberEvent struct {
 	At        time.Time
 }
 
+type projectVisibilityEvent struct {
+	ProjectID      string
+	Actor          string
+	FromVisibility ProjectVisibility
+	ToVisibility   ProjectVisibility
+	At             time.Time
+}
+
 type MemoryStore struct {
 	mutex              sync.RWMutex
 	projects           map[string]Project
 	projectMembers     map[string]map[string]ProjectMember
 	projectIdempotency map[string]projectIdempotencyRecord
 	memberEvents       []projectMemberEvent
+	visibilityEvents   []projectVisibilityEvent
 	releases           map[string]Release
 	idempotency        map[string]idempotencyRecord
 	transitions        []Transition
@@ -83,6 +92,7 @@ func (s *MemoryStore) CreateProject(
 		ProjectID:    creation.ProjectID,
 		DisplayName:  creation.DisplayName,
 		OwnerSubject: creation.OwnerSubject,
+		Visibility:   ProjectVisibilityPrivate,
 		Revision:     1,
 		CreatedAt:    creation.CreatedAt,
 		UpdatedAt:    creation.CreatedAt,
@@ -230,6 +240,34 @@ func (s *MemoryStore) RemoveProjectMember(
 	return project, true, nil
 }
 
+func (s *MemoryStore) SetProjectVisibility(
+	_ context.Context,
+	change ProjectVisibilityChange,
+) (Project, bool, error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	project, exists := s.projects[change.ProjectID]
+	if !exists || project.OwnerSubject != change.Actor {
+		return Project{}, false, ErrNotFound
+	}
+	if project.Visibility == change.Visibility {
+		return project, false, nil
+	}
+	previous := project.Visibility
+	project.Visibility = change.Visibility
+	project.Revision++
+	project.UpdatedAt = change.ChangedAt
+	s.projects[project.ProjectID] = project
+	s.visibilityEvents = append(s.visibilityEvents, projectVisibilityEvent{
+		ProjectID:      project.ProjectID,
+		Actor:          change.Actor,
+		FromVisibility: previous,
+		ToVisibility:   change.Visibility,
+		At:             change.ChangedAt,
+	})
+	return project, true, nil
+}
+
 func (s *MemoryStore) ListProjectVersions(
 	_ context.Context,
 	projectID string,
@@ -278,6 +316,35 @@ func (s *MemoryStore) ListProjectVersions(
 		page.NextCursor = page.Releases[len(page.Releases)-1].ReleaseID
 	}
 	return page, nil
+}
+
+func (s *MemoryStore) GetLatestPublishedRelease(
+	_ context.Context,
+	projectID string,
+) (Release, error) {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+	if _, exists := s.projects[projectID]; !exists {
+		return Release{}, ErrNotFound
+	}
+	var latest Release
+	found := false
+	for _, release := range s.releases {
+		if release.ProjectID != projectID || release.Status != StatusPublished {
+			continue
+		}
+		if !found ||
+			release.SubmittedAt.After(latest.SubmittedAt) ||
+			(release.SubmittedAt.Equal(latest.SubmittedAt) &&
+				release.ReleaseID > latest.ReleaseID) {
+			latest = release
+			found = true
+		}
+	}
+	if !found {
+		return Release{}, ErrNotFound
+	}
+	return latest.clone(), nil
 }
 
 func (s *MemoryStore) Submit(

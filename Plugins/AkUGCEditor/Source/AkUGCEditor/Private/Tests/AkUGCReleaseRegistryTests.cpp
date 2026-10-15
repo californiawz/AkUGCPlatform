@@ -59,17 +59,21 @@ namespace AkUGCReleaseRegistryTest
 			Status);
 	}
 
-	FString ProjectJson(int64 Revision = 1)
+	FString ProjectJson(
+		int64 Revision = 1,
+		const TCHAR* Visibility = TEXT("private"))
 	{
 		return FString::Printf(
 			TEXT("{")
 			TEXT("\"projectId\":\"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\",")
 			TEXT("\"displayName\":\"Creator Project\",")
 			TEXT("\"ownerSubject\":\"creator-a\",")
+			TEXT("\"visibility\":\"%s\",")
 			TEXT("\"revision\":%lld,")
 			TEXT("\"createdAt\":\"2026-10-15T06:00:00Z\",")
 			TEXT("\"updatedAt\":\"2026-10-15T06:01:00Z\"")
 			TEXT("}"),
+			Visibility,
 			static_cast<long long>(Revision));
 	}
 
@@ -379,6 +383,30 @@ bool FAkUGCProjectRegistryResponseTest::RunTest(const FString& Parameters)
 		TEXT("Project ID remains bound to the current document"),
 		Response.Project.ProjectId,
 		ProjectId);
+	TestEqual(
+		TEXT("Project defaults to private visibility"),
+		Response.Project.Visibility,
+		FString(TEXT("private")));
+
+	TestTrue(
+		TEXT("Visibility transition response parses"),
+		FAkUGCReleaseRegistryClient::ParseProjectResponse(
+			EAkUGCProjectRegistryOperation::SetVisibility,
+			Result(
+				200,
+				TEXT("{\"changed\":true,\"project\":")
+					+ ProjectJson(2, TEXT("public"))
+					+ TEXT("}")),
+			ProjectId,
+			Response,
+			Error));
+	TestTrue(
+		TEXT("Visibility changed flag is preserved"),
+		Response.bChanged);
+	TestEqual(
+		TEXT("Public visibility is preserved"),
+		Response.Project.Visibility,
+		FString(TEXT("public")));
 
 	TestTrue(
 		TEXT("Member list response parses"),
@@ -460,6 +488,19 @@ bool FAkUGCProjectRegistryResponseTest::RunTest(const FString& Parameters)
 				200,
 				TEXT("{\"accessRole\":\"owner\",\"project\":")
 					+ WrongProject
+					+ TEXT("}")),
+			ProjectId,
+			Response,
+			Error));
+
+	TestFalse(
+		TEXT("Unknown Project visibility is rejected"),
+		FAkUGCReleaseRegistryClient::ParseProjectResponse(
+			EAkUGCProjectRegistryOperation::GetProject,
+			Result(
+				200,
+				TEXT("{\"accessRole\":\"owner\",\"project\":")
+					+ ProjectJson(1, TEXT("unlisted"))
 					+ TEXT("}")),
 			ProjectId,
 			Response,
@@ -561,6 +602,13 @@ struct FAkUGCReleaseRegistryPanelTestAccess
 		Panel.RemoveRegistryMember();
 	}
 
+	static void SetVisibility(
+		SAkUGCWorkLibraryPanel& Panel,
+		const FString& Visibility)
+	{
+		Panel.SetRegistryVisibility(Visibility);
+	}
+
 	static void Poll(SAkUGCWorkLibraryPanel& Panel)
 	{
 		Panel.Tick(FGeometry(), FPlatformTime::Seconds(), 0.0f);
@@ -585,6 +633,12 @@ struct FAkUGCReleaseRegistryPanelTestAccess
 		const SAkUGCWorkLibraryPanel& Panel)
 	{
 		return Panel.RegistryProjectAccessRole;
+	}
+
+	static const FString& ProjectVisibility(
+		const SAkUGCWorkLibraryPanel& Panel)
+	{
+		return Panel.RegistryProject.Visibility;
 	}
 
 	static int32 MemberCount(const SAkUGCWorkLibraryPanel& Panel)
@@ -738,10 +792,27 @@ namespace AkUGCReleaseRegistryHttpTest
 				Stage = 5;
 				return false;
 			}
-			if (FAkUGCReleaseRegistryPanelTestAccess::ReleaseStatus(*Panel)
-				!= TEXT("published"))
+			if (Stage == 5)
 			{
-				return Fail(TEXT("Registry publish did not return published."));
+				if (FAkUGCReleaseRegistryPanelTestAccess::ReleaseStatus(*Panel)
+					!= TEXT("published"))
+				{
+					return Fail(TEXT("Registry publish did not return published."));
+				}
+				FAkUGCReleaseRegistryPanelTestAccess::SetVisibility(
+					*Panel,
+					TEXT("public"));
+				if (!FAkUGCReleaseRegistryPanelTestAccess::Pending(*Panel))
+				{
+					return Fail(TEXT("Public visibility request did not start."));
+				}
+				Stage = 6;
+				return false;
+			}
+			if (FAkUGCReleaseRegistryPanelTestAccess::ProjectVisibility(*Panel)
+				!= TEXT("public"))
+			{
+				return Fail(TEXT("Public visibility was not reflected after refresh."));
 			}
 			Test->TestEqual(
 				TEXT("Registry flow preserves Creator revision"),
@@ -754,7 +825,7 @@ namespace AkUGCReleaseRegistryHttpTest
 			UE_LOG(
 				LogTemp,
 				Display,
-				TEXT("[AkUGCReleaseRegistryHTTP] Passed Operations=16 LoopbackOnly=1"));
+				TEXT("[AkUGCReleaseRegistryHTTP] Passed Operations=20 LoopbackOnly=1 Visibility=public"));
 			Cleanup();
 			return true;
 		}

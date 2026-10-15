@@ -83,6 +83,80 @@ func (s *Service) GetProject(
 	return project, role, err
 }
 
+func (s *Service) SetProjectVisibility(
+	ctx context.Context,
+	principal Principal,
+	projectID string,
+	visibility ProjectVisibility,
+) (Project, bool, error) {
+	if principal.Subject == "" {
+		return Project{}, false, ErrUnauthenticated
+	}
+	canonicalID, err := canonicalUUID(projectID, true)
+	if err != nil {
+		return Project{}, false, fmt.Errorf("%w: invalid project ID", ErrInvalidInput)
+	}
+	if !visibility.Valid() {
+		return Project{}, false, fmt.Errorf("%w: visibility must be private or public", ErrInvalidInput)
+	}
+	role, member, err := s.store.GetProjectRole(ctx, canonicalID, principal.Subject)
+	if err != nil {
+		return Project{}, false, err
+	}
+	if !member || role != ProjectRoleOwner {
+		return Project{}, false, ErrNotFound
+	}
+	return s.store.SetProjectVisibility(ctx, ProjectVisibilityChange{
+		ProjectID:  canonicalID,
+		Actor:      principal.Subject,
+		Visibility: visibility,
+		ChangedAt:  s.now(),
+	})
+}
+
+func (s *Service) GetWorkPage(
+	ctx context.Context,
+	principal Principal,
+	projectID string,
+) (WorkPage, error) {
+	if principal.Subject == "" {
+		return WorkPage{}, ErrUnauthenticated
+	}
+	if !principal.HasRole(RolePlayer) {
+		return WorkPage{}, ErrForbidden
+	}
+	canonicalID, err := canonicalUUID(projectID, true)
+	if err != nil {
+		return WorkPage{}, fmt.Errorf("%w: invalid project ID", ErrInvalidInput)
+	}
+	project, err := s.store.GetProject(ctx, canonicalID)
+	if err != nil {
+		return WorkPage{}, err
+	}
+	if project.Visibility == ProjectVisibilityPrivate {
+		_, member, err := s.store.GetProjectRole(ctx, canonicalID, principal.Subject)
+		if err != nil {
+			return WorkPage{}, err
+		}
+		if !member {
+			return WorkPage{}, ErrNotFound
+		}
+	}
+	release, err := s.store.GetLatestPublishedRelease(ctx, canonicalID)
+	if err != nil {
+		return WorkPage{}, err
+	}
+	release.Artifact = nil
+	return WorkPage{
+		ProjectID:     project.ProjectID,
+		DisplayName:   project.DisplayName,
+		Visibility:    project.Visibility,
+		Revision:      project.Revision,
+		UpdatedAt:     project.UpdatedAt,
+		LatestRelease: release,
+	}, nil
+}
+
 func (s *Service) ListProjectMembers(
 	ctx context.Context,
 	principal Principal,
@@ -380,8 +454,7 @@ func (s *Service) Get(
 		return Release{}, err
 	}
 	if principal.HasRole(RoleReviewer) ||
-		release.OwnerSubject == principal.Subject ||
-		(release.Status == StatusPublished && principal.HasRole(RolePlayer)) {
+		release.OwnerSubject == principal.Subject {
 		release.Artifact = nil
 		return release, nil
 	}
@@ -394,6 +467,16 @@ func (s *Service) Get(
 	} else if member {
 		release.Artifact = nil
 		return release, nil
+	}
+	if release.Status == StatusPublished && principal.HasRole(RolePlayer) {
+		project, projectErr := s.store.GetProject(ctx, release.ProjectID)
+		if projectErr != nil {
+			return Release{}, projectErr
+		}
+		if project.Visibility == ProjectVisibilityPublic {
+			release.Artifact = nil
+			return release, nil
+		}
 	}
 	return Release{}, ErrNotFound
 }
@@ -419,6 +502,23 @@ func (s *Service) Download(
 	}
 	if release.Status != StatusPublished {
 		return Release{}, ErrNotFound
+	}
+	project, err := s.store.GetProject(ctx, release.ProjectID)
+	if err != nil {
+		return Release{}, err
+	}
+	if project.Visibility != ProjectVisibilityPublic {
+		_, member, err := s.store.GetProjectRole(
+			ctx,
+			release.ProjectID,
+			principal.Subject,
+		)
+		if err != nil {
+			return Release{}, err
+		}
+		if !member {
+			return Release{}, ErrNotFound
+		}
 	}
 	return release, nil
 }

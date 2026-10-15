@@ -30,10 +30,12 @@ func NewHTTPHandler(service *Service, auth Authenticator) http.Handler {
 	handler.mux.HandleFunc("GET /healthz", handler.health)
 	handler.mux.HandleFunc("POST /v1/projects", handler.createProject)
 	handler.mux.HandleFunc("GET /v1/projects/{projectID}", handler.getProject)
+	handler.mux.HandleFunc("PUT /v1/projects/{projectID}/visibility", handler.setProjectVisibility)
 	handler.mux.HandleFunc("GET /v1/projects/{projectID}/members", handler.listProjectMembers)
 	handler.mux.HandleFunc("PUT /v1/projects/{projectID}/members/{subject}", handler.setProjectMember)
 	handler.mux.HandleFunc("DELETE /v1/projects/{projectID}/members/{subject}", handler.removeProjectMember)
 	handler.mux.HandleFunc("GET /v1/projects/{projectID}/versions", handler.listProjectVersions)
+	handler.mux.HandleFunc("GET /v1/works/{projectID}", handler.getWorkPage)
 	handler.mux.HandleFunc("POST /v1/releases", handler.submit)
 	handler.mux.HandleFunc("GET /v1/releases/{releaseID}", handler.get)
 	handler.mux.HandleFunc("POST /v1/releases/{releaseID}/review", handler.review)
@@ -118,6 +120,65 @@ func (h *HTTPHandler) getProject(response http.ResponseWriter, request *http.Req
 		"accessRole": role,
 		"project":    project,
 	})
+}
+
+type setProjectVisibilityRequest struct {
+	Visibility ProjectVisibility `json:"visibility"`
+}
+
+func (h *HTTPHandler) setProjectVisibility(response http.ResponseWriter, request *http.Request) {
+	principal, ok := h.authenticate(response, request)
+	if !ok {
+		return
+	}
+	if err := requireNoQuery(request); err != nil {
+		writeAPIError(response, err)
+		return
+	}
+	if err := requireJSONContentType(request); err != nil {
+		writeAPIError(response, err)
+		return
+	}
+	var body setProjectVisibilityRequest
+	if err := decodeControlBody(response, request, &body, "visibility"); err != nil {
+		writeAPIError(response, err)
+		return
+	}
+	project, changed, err := h.service.SetProjectVisibility(
+		request.Context(),
+		principal,
+		request.PathValue("projectID"),
+		body.Visibility,
+	)
+	if err != nil {
+		writeAPIError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]any{
+		"changed": changed,
+		"project": project,
+	})
+}
+
+func (h *HTTPHandler) getWorkPage(response http.ResponseWriter, request *http.Request) {
+	principal, ok := h.authenticate(response, request)
+	if !ok {
+		return
+	}
+	if err := requireNoQuery(request); err != nil {
+		writeAPIError(response, err)
+		return
+	}
+	work, err := h.service.GetWorkPage(
+		request.Context(),
+		principal,
+		request.PathValue("projectID"),
+	)
+	if err != nil {
+		writeAPIError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"work": work})
 }
 
 func (h *HTTPHandler) listProjectMembers(response http.ResponseWriter, request *http.Request) {

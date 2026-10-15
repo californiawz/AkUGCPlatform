@@ -1,10 +1,19 @@
 #include "Release/AkUGCPlayerReleaseRegistryClient.h"
 
+#include <initializer_list>
+
+#include "Dom/JsonObject.h"
+#include "Misc/DateTime.h"
+#include "Misc/FileHelper.h"
 #include "Pack/AkUGCLogicPackHasher.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
 #include "Validation/AkUGCInputBudget.h"
 
 namespace AkUGCPlayerRegistryPrivate
 {
+	constexpr double MaxJsonSafeInteger = 9007199254740991.0;
+
 	bool Fail(
 		FString& OutFailureCode,
 		FString& OutError,
@@ -39,6 +48,95 @@ namespace AkUGCPlayerRegistryPrivate
 		return true;
 	}
 
+	bool ValidateFields(
+		const TSharedPtr<FJsonObject>& Object,
+		std::initializer_list<const TCHAR*> Required,
+		std::initializer_list<const TCHAR*> Optional,
+		const TCHAR* Label,
+		FString& OutFailureCode,
+		FString& OutError)
+	{
+		if (!Object.IsValid())
+		{
+			return Fail(
+				OutFailureCode,
+				OutError,
+				TEXT("protocol"),
+				FString::Printf(TEXT("%s 不是 JSON 对象。"), Label));
+		}
+		TSet<FString> Allowed;
+		for (const TCHAR* Name : Required)
+		{
+			Allowed.Add(Name);
+			if (!Object->HasField(Name))
+			{
+				return Fail(
+					OutFailureCode,
+					OutError,
+					TEXT("protocol"),
+					FString::Printf(TEXT("%s 缺少字段 %s。"), Label, Name));
+			}
+		}
+		for (const TCHAR* Name : Optional)
+		{
+			Allowed.Add(Name);
+		}
+		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Object->Values)
+		{
+			if (!Allowed.Contains(Pair.Key))
+			{
+				return Fail(
+					OutFailureCode,
+					OutError,
+					TEXT("protocol"),
+					FString::Printf(TEXT("%s 包含未知字段。"), Label));
+			}
+		}
+		return true;
+	}
+
+	bool ParseCanonicalGuid(const FString& Value, FGuid& OutGuid)
+	{
+		return FGuid::Parse(Value, OutGuid)
+			&& OutGuid.IsValid()
+			&& Value
+				== OutGuid.ToString(EGuidFormats::DigitsWithHyphensLower);
+	}
+
+	bool IsSafeSubject(const FString& Value)
+	{
+		if (Value.IsEmpty() || Value.Len() > 128)
+		{
+			return false;
+		}
+		for (int32 Index = 0; Index < Value.Len(); ++Index)
+		{
+			const TCHAR Character = Value[Index];
+			const bool bAllowed =
+				(Character >= TEXT('a') && Character <= TEXT('z'))
+				|| (Character >= TEXT('A') && Character <= TEXT('Z'))
+				|| (Character >= TEXT('0') && Character <= TEXT('9'))
+				|| (Index > 0
+					&& (Character == TEXT('.')
+						|| Character == TEXT('_')
+						|| Character == TEXT(':')
+						|| Character == TEXT('-')));
+			if (!bAllowed)
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+
+	bool IsTimestamp(const FString& Value)
+	{
+		FDateTime Parsed;
+		return Value.Len() >= 20
+			&& Value.Len() <= 64
+			&& FDateTime::ParseIso8601(*Value, Parsed);
+	}
+
 	bool FindSingleHeader(
 		const FAkUGCHttpResult& Transport,
 		const TCHAR* Name,
@@ -63,7 +161,7 @@ namespace AkUGCPlayerRegistryPrivate
 				OutError,
 				TEXT("protocol"),
 				FString::Printf(
-					TEXT("Registry 下载响应必须且只能包含一个 %s Header。"),
+					TEXT("Registry 响应必须且只能包含一个 %s Header。"),
 					Name));
 		}
 		return true;
@@ -107,6 +205,455 @@ namespace AkUGCPlayerRegistryPrivate
 		OutValue = static_cast<int64>(Parsed);
 		return true;
 	}
+
+	bool IsDisplayName(const FString& Value)
+	{
+		if (Value.IsEmpty()
+			|| Value != Value.TrimStartAndEnd()
+			|| FTCHARToUTF8(*Value).Length() > 128)
+		{
+			return false;
+		}
+		for (const TCHAR Character : Value)
+		{
+			if (Character < 32 || Character == 127)
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+
+	bool ParsePublishedRelease(
+		const TSharedPtr<FJsonObject>& Object,
+		const FGuid& ExpectedProjectId,
+		FGuid& OutReleaseId,
+		FString& OutFailureCode,
+		FString& OutError)
+	{
+		if (!ValidateFields(
+				Object,
+				{
+					TEXT("releaseId"),
+					TEXT("projectId"),
+					TEXT("schemaVersion"),
+					TEXT("ownerSubject"),
+					TEXT("submittedBySubject"),
+					TEXT("publisherPublicKey"),
+					TEXT("contentHash"),
+					TEXT("artifactSha256"),
+					TEXT("artifactSize"),
+					TEXT("status"),
+					TEXT("revision"),
+					TEXT("submittedAt"),
+					TEXT("updatedAt")
+				},
+				{
+					TEXT("reviewReason"),
+					TEXT("reviewedAt"),
+					TEXT("publishedAt"),
+					TEXT("revokedAt")
+				},
+				TEXT("Registry work latestRelease"),
+				OutFailureCode,
+				OutError))
+		{
+			return false;
+		}
+		FString ReleaseId;
+		FString ProjectId;
+		FString OwnerSubject;
+		FString SubmittedBySubject;
+		FString PublisherPublicKey;
+		FString ContentHash;
+		FString ArtifactSha256;
+		FString Status;
+		FString SubmittedAt;
+		FString UpdatedAt;
+		double SchemaVersion = -1;
+		double ArtifactSize = -1;
+		double Revision = -1;
+		FGuid ParsedProjectId;
+		if (!Object->TryGetStringField(TEXT("releaseId"), ReleaseId)
+			|| !Object->TryGetStringField(TEXT("projectId"), ProjectId)
+			|| !Object->TryGetNumberField(TEXT("schemaVersion"), SchemaVersion)
+			|| !Object->TryGetStringField(TEXT("ownerSubject"), OwnerSubject)
+			|| !Object->TryGetStringField(
+				TEXT("submittedBySubject"),
+				SubmittedBySubject)
+			|| !Object->TryGetStringField(
+				TEXT("publisherPublicKey"),
+				PublisherPublicKey)
+			|| !Object->TryGetStringField(TEXT("contentHash"), ContentHash)
+			|| !Object->TryGetStringField(
+				TEXT("artifactSha256"),
+				ArtifactSha256)
+			|| !Object->TryGetNumberField(TEXT("artifactSize"), ArtifactSize)
+			|| !Object->TryGetStringField(TEXT("status"), Status)
+			|| !Object->TryGetNumberField(TEXT("revision"), Revision)
+			|| !Object->TryGetStringField(TEXT("submittedAt"), SubmittedAt)
+			|| !Object->TryGetStringField(TEXT("updatedAt"), UpdatedAt)
+			|| !ParseCanonicalGuid(ReleaseId, OutReleaseId)
+			|| !ParseCanonicalGuid(ProjectId, ParsedProjectId)
+			|| ParsedProjectId != ExpectedProjectId
+			|| !IsSafeSubject(OwnerSubject)
+			|| !IsSafeSubject(SubmittedBySubject)
+			|| !IsLowerHex(PublisherPublicKey, 64)
+			|| !IsLowerHex(ContentHash, 64)
+			|| !IsLowerHex(ArtifactSha256, 64)
+			|| Status != TEXT("published")
+			|| !FMath::IsFinite(SchemaVersion)
+			|| SchemaVersion < 0
+			|| SchemaVersion > MAX_int32
+			|| FMath::FloorToDouble(SchemaVersion) != SchemaVersion
+			|| !FMath::IsFinite(ArtifactSize)
+			|| ArtifactSize < 1
+			|| ArtifactSize
+				> FAkUGCPlayerReleaseRegistryClient::MaxArtifactBytes
+			|| FMath::FloorToDouble(ArtifactSize) != ArtifactSize
+			|| !FMath::IsFinite(Revision)
+			|| Revision < 1
+			|| Revision > MaxJsonSafeInteger
+			|| FMath::FloorToDouble(Revision) != Revision
+			|| !IsTimestamp(SubmittedAt)
+			|| !IsTimestamp(UpdatedAt)
+			|| !Object->HasField(TEXT("publishedAt")))
+		{
+			return Fail(
+				OutFailureCode,
+				OutError,
+				TEXT("protocol"),
+				TEXT("Registry work latestRelease 字段无效或与请求 Project 不一致。"));
+		}
+		for (const TCHAR* Name : {
+			TEXT("reviewedAt"),
+			TEXT("publishedAt"),
+			TEXT("revokedAt")})
+		{
+			FString Value;
+			if (Object->HasField(Name)
+				&& (!Object->TryGetStringField(Name, Value)
+					|| !IsTimestamp(Value)))
+			{
+				return Fail(
+					OutFailureCode,
+					OutError,
+					TEXT("protocol"),
+					TEXT("Registry work latestRelease 时间字段无效。"));
+			}
+		}
+		FString ReviewReason;
+		if (Object->HasField(TEXT("reviewReason"))
+			&& (!Object->TryGetStringField(TEXT("reviewReason"), ReviewReason)
+				|| FTCHARToUTF8(*ReviewReason).Length() > 1024))
+		{
+			return Fail(
+				OutFailureCode,
+				OutError,
+				TEXT("protocol"),
+				TEXT("Registry work latestRelease 审核原因无效。"));
+		}
+		return true;
+	}
+}
+
+FAkUGCHttpRequestPtr
+FAkUGCPlayerReleaseRegistryClient::StartGetWorkPage(
+	const FString& BaseUrl,
+	const FString& BearerToken,
+	const FGuid& ProjectId,
+	float TimeoutSeconds,
+	FString& OutExpectedUrl,
+	FString& OutError)
+{
+	OutExpectedUrl.Reset();
+	OutError.Reset();
+	FString Normalized;
+	if (!NormalizeBaseUrl(BaseUrl, Normalized, OutError)
+		|| !ValidateBearerToken(BearerToken, OutError))
+	{
+		return nullptr;
+	}
+	if (!ProjectId.IsValid())
+	{
+		OutError = TEXT("Project ID 无效。");
+		return nullptr;
+	}
+	OutExpectedUrl =
+		Normalized
+		+ TEXT("/v1/works/")
+		+ ProjectId.ToString(EGuidFormats::DigitsWithHyphensLower);
+
+	FAkUGCHttpRequestSpec Spec;
+	Spec.Method = EAkUGCHttpMethod::Get;
+	Spec.Url = OutExpectedUrl;
+	Spec.BearerToken = BearerToken;
+	Spec.TimeoutSeconds = TimeoutSeconds;
+	Spec.MaxResponseBytes = MaxResponseHeaderBytes;
+	Spec.MaxResponseHeaderBytes = MaxResponseHeaderBytes;
+	Spec.bAllowLoopbackHttpWithBearer = true;
+	Spec.bAcceptCompressedResponse = false;
+	FAkUGCHttpRequestPtr Request =
+		FAkUGCHttpTransport::Start(MoveTemp(Spec));
+	if (!Request.IsValid())
+	{
+		OutError =
+			TEXT("Registry 传输不可用、忙碌或请求配置无效。");
+		OutExpectedUrl.Reset();
+	}
+	return Request;
+}
+
+bool FAkUGCPlayerReleaseRegistryClient::ParseWorkPage(
+	const FAkUGCHttpResult& Transport,
+	const FString& ExpectedUrl,
+	const FGuid& ExpectedProjectId,
+	FAkUGCPlayerRegistryWorkPage& OutWork,
+	FString& OutFailureCode,
+	FString& OutError)
+{
+	using namespace AkUGCPlayerRegistryPrivate;
+	OutWork = {};
+	OutFailureCode.Reset();
+	OutError.Reset();
+	if (ExpectedUrl.IsEmpty() || !ExpectedProjectId.IsValid())
+	{
+		return Fail(
+			OutFailureCode,
+			OutError,
+			TEXT("invalid_configuration"),
+			TEXT("Player Registry 作品页上下文无效。"));
+	}
+	if (Transport.bTooLarge)
+	{
+		return Fail(
+			OutFailureCode,
+			OutError,
+			TEXT("response_too_large"),
+			TEXT("Registry 作品页响应超过 64 KiB，已中止。"));
+	}
+	if (Transport.bHeadersTooLarge)
+	{
+		return Fail(
+			OutFailureCode,
+			OutError,
+			TEXT("header_too_large"),
+			TEXT("Registry 响应 Header 超过 64 KiB，已中止。"));
+	}
+	if (Transport.bTimedOut)
+	{
+		return Fail(
+			OutFailureCode,
+			OutError,
+			TEXT("timeout"),
+			TEXT("Registry 作品页请求超时。"));
+	}
+	if (Transport.bCancelled)
+	{
+		return Fail(
+			OutFailureCode,
+			OutError,
+			TEXT("cancelled"),
+			TEXT("Registry 作品页请求已取消。"));
+	}
+	if (Transport.NativeCode != 0)
+	{
+		return Fail(
+			OutFailureCode,
+			OutError,
+			TEXT("transport"),
+			FString::Printf(
+				TEXT("Registry 作品页传输失败（传输码 %d）。"),
+				Transport.NativeCode));
+	}
+	if (Transport.EffectiveUrl != ExpectedUrl
+		|| (Transport.StatusCode >= 300 && Transport.StatusCode < 400))
+	{
+		return Fail(
+			OutFailureCode,
+			OutError,
+			TEXT("redirect"),
+			TEXT("Registry 作品页拒绝重定向或最终地址变化。"));
+	}
+	if (Transport.StatusCode != 200)
+	{
+		const TCHAR* Code = TEXT("http_status");
+		if (Transport.StatusCode == 401)
+		{
+			Code = TEXT("unauthorized");
+		}
+		else if (Transport.StatusCode == 403)
+		{
+			Code = TEXT("forbidden");
+		}
+		else if (Transport.StatusCode == 404)
+		{
+			Code = TEXT("not_available");
+		}
+		return Fail(
+			OutFailureCode,
+			OutError,
+			Code,
+			FString::Printf(
+				TEXT("Registry 作品页请求被拒绝（HTTP %d）。"),
+				Transport.StatusCode));
+	}
+	if (Transport.Body.IsEmpty()
+		|| Transport.Body.Num() > MaxResponseHeaderBytes
+		|| HasHeader(Transport, TEXT("Location"))
+		|| HasHeader(Transport, TEXT("Content-Encoding")))
+	{
+		return Fail(
+			OutFailureCode,
+			OutError,
+			TEXT("protocol"),
+			TEXT("Registry 作品页响应为空、超限或包含禁止 Header。"));
+	}
+	FString ContentType;
+	if (!FindSingleHeader(
+			Transport,
+			TEXT("Content-Type"),
+			ContentType,
+			OutFailureCode,
+			OutError)
+		|| ContentType != TEXT("application/json; charset=utf-8"))
+	{
+		if (OutFailureCode.IsEmpty())
+		{
+			return Fail(
+				OutFailureCode,
+				OutError,
+				TEXT("protocol"),
+				TEXT("Registry 作品页 Content-Type 无效。"));
+		}
+		return false;
+	}
+
+	FString Json;
+	FFileHelper::BufferToString(
+		Json,
+		Transport.Body.GetData(),
+		Transport.Body.Num());
+	FTCHARToUTF8 RoundTrip(*Json);
+	if (RoundTrip.Length() != Transport.Body.Num()
+		|| FMemory::Memcmp(
+			RoundTrip.Get(),
+			Transport.Body.GetData(),
+			Transport.Body.Num()) != 0)
+	{
+		return Fail(
+			OutFailureCode,
+			OutError,
+			TEXT("protocol"),
+			TEXT("Registry 作品页响应不是规范 UTF-8 文本。"));
+	}
+	if (!AkUGCInputBudget::ValidateJson(
+			Json,
+			MaxResponseHeaderBytes,
+			TEXT("Registry work response"),
+			&OutError))
+	{
+		OutFailureCode = TEXT("protocol");
+		return false;
+	}
+	TSharedPtr<FJsonObject> Root;
+	if (!FJsonSerializer::Deserialize(
+			TJsonReaderFactory<>::Create(Json),
+			Root)
+		|| !Root.IsValid()
+		|| !ValidateFields(
+			Root,
+			{TEXT("work")},
+			{},
+			TEXT("Registry work response"),
+			OutFailureCode,
+			OutError))
+	{
+		if (OutFailureCode.IsEmpty())
+		{
+			return Fail(
+				OutFailureCode,
+				OutError,
+				TEXT("protocol"),
+				TEXT("Registry 作品页响应不是有效 JSON 对象。"));
+		}
+		return false;
+	}
+	const TSharedPtr<FJsonObject>* WorkObject = nullptr;
+	if (!Root->TryGetObjectField(TEXT("work"), WorkObject)
+		|| !WorkObject
+		|| !ValidateFields(
+			*WorkObject,
+			{
+				TEXT("projectId"),
+				TEXT("displayName"),
+				TEXT("visibility"),
+				TEXT("revision"),
+				TEXT("updatedAt"),
+				TEXT("latestRelease")
+			},
+			{},
+			TEXT("Registry work"),
+			OutFailureCode,
+			OutError))
+	{
+		if (OutFailureCode.IsEmpty())
+		{
+			return Fail(
+				OutFailureCode,
+				OutError,
+				TEXT("protocol"),
+				TEXT("Registry 作品页 work 字段无效。"));
+		}
+		return false;
+	}
+	FString ProjectId;
+	double Revision = -1;
+	const TSharedPtr<FJsonObject>* ReleaseObject = nullptr;
+	if (!(*WorkObject)->TryGetStringField(TEXT("projectId"), ProjectId)
+		|| !(*WorkObject)->TryGetStringField(
+			TEXT("displayName"),
+			OutWork.DisplayName)
+		|| !(*WorkObject)->TryGetStringField(
+			TEXT("visibility"),
+			OutWork.Visibility)
+		|| !(*WorkObject)->TryGetNumberField(TEXT("revision"), Revision)
+		|| !(*WorkObject)->TryGetStringField(
+			TEXT("updatedAt"),
+			OutWork.UpdatedAt)
+		|| !(*WorkObject)->TryGetObjectField(
+			TEXT("latestRelease"),
+			ReleaseObject)
+		|| !ReleaseObject
+		|| !ParseCanonicalGuid(ProjectId, OutWork.ProjectId)
+		|| OutWork.ProjectId != ExpectedProjectId
+		|| !IsDisplayName(OutWork.DisplayName)
+		|| (OutWork.Visibility != TEXT("private")
+			&& OutWork.Visibility != TEXT("public"))
+		|| !FMath::IsFinite(Revision)
+		|| Revision < 1
+		|| Revision > MaxJsonSafeInteger
+		|| FMath::FloorToDouble(Revision) != Revision
+		|| !IsTimestamp(OutWork.UpdatedAt)
+		|| !ParsePublishedRelease(
+			*ReleaseObject,
+			ExpectedProjectId,
+			OutWork.LatestReleaseId,
+			OutFailureCode,
+			OutError))
+	{
+		if (OutFailureCode.IsEmpty())
+		{
+			return Fail(
+				OutFailureCode,
+				OutError,
+				TEXT("protocol"),
+				TEXT("Registry 作品页字段无效或与请求 Project 不一致。"));
+		}
+		return false;
+	}
+	OutWork.Revision = static_cast<int64>(Revision);
+	return true;
 }
 
 FAkUGCHttpRequestPtr
